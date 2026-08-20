@@ -2,7 +2,7 @@
 id: e01
 slug: dpg2x-port
 title: "viseq DearPyGui 2.x migration (Python 3.13) + audit hygiene fold-in"
-status: planned
+status: done
 delta: MODIFIED   # existing app behavior is preserved but the runtime/dependency contract changes (1.x/Py<=3.11 -> 2.3.1/Py3.13)
 context: >-
   viseq must run on the user's Python 3.13 machine. The spike proved dearpygui 2.3.1 keeps the
