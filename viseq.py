@@ -13,6 +13,7 @@ from pythonosc import udp_client
 from pythonosc import dispatcher
 from pythonosc import osc_server
 from PIL import Image
+from typing import Any, Callable, Optional
 
 # --- HARD CAPS ON NETWORK-FED DATA (viOSC replies) ---
 # Bound memory use and block PIL decompression bombs (audit MED-6).
@@ -20,6 +21,11 @@ Image.MAX_IMAGE_PIXELS = 25_000_000            # PIL's hard ceiling (~25 MP)
 MAX_THUMBNAIL_PIXELS = 3_000_000              # explicit cap; real thumbs are ~58k px
 MAX_THUMBNAIL_BLOB_BYTES = 8 * 1024 * 1024    # per-blob cap
 MAX_STATE_JSON_BYTES = 1 * 1024 * 1024        # per-replydata cap
+
+# --- BEHAVIORAL CONSTANTS (audit L-6) ---
+THUMB_REQUEST_INTERVAL = 3.0    # min seconds between thumbnail requests per source
+LOG_HISTORY_LIMIT = 25          # max entries kept in the OSC log window
+MONITOR_OFFSET = (280, 260)     # grid spacing between monitor player windows
 
 # --- OSC CONFIGURATION ---
 # viseq talks exclusively to viOSC: /vimix/* messages are forwarded by viOSC
@@ -40,18 +46,18 @@ texture_queue = queue.Queue()
 log_queue = queue.Queue()  
 ui_task_queue = queue.Queue()       # UI mutations from worker threads, drained on the main thread
 
-def ui_task(fn):
+def ui_task(fn: Callable[[], None]) -> None:
     """Run a UI mutation on the main thread via the task queue."""
     ui_task_queue.put(fn)
 
-def enqueue_set_value(tag, value):
+def enqueue_set_value(tag: str, value: Any) -> None:
     """Queue a dpg.set_value(tag, value) for the main thread, if the item exists."""
     def _set():
         if dpg.does_item_exist(tag):
             dpg.set_value(tag, value)
     ui_task(_set)
 
-def log_error(context, message):
+def log_error(context: str, message: str) -> None:
     t = time.strftime("%H:%M:%S")
     log_queue.put(f"[{t}] ERROR: {context}: {message}")
 
@@ -78,7 +84,7 @@ phase_nudge = 0.0
 sync_event_seq = threading.Event()
 sync_event_led = threading.Event()
 
-# La struttura dati del sequencer con il nuovo parametro "msgs"
+# Sequencer data structure with the new "msgs" parameter
 tracks_data = []
 for r in range(NUM_TRACKS):
     track = {
@@ -117,25 +123,25 @@ lowpass_filter = es.LowPass(cutoffFrequency=250.0)
 thumbnails_data = {}        
 request_timestamps = {}     
 
-def get_input_devices():
+def get_input_devices() -> list[str]:
     devices = sd.query_devices()
     inputs = [f"{i}: {d['name']}" for i, d in enumerate(devices) if d['max_input_channels'] > 0]
     return inputs if inputs else ["No input device found"]
 
-def turn_off_led():
+def turn_off_led() -> None:
     def _turn_off():
         if dpg.does_item_exist("beat_led"):
             dpg.configure_item("beat_led", fill=(50, 50, 50, 255))
     ui_task(_turn_off)
 
-def flash_beat_led():
+def flash_beat_led() -> None:
     def _flash():
         if dpg.does_item_exist("beat_led"):
             dpg.configure_item("beat_led", fill=(255, 50, 50, 255))
             threading.Timer(0.1, turn_off_led).start()
     ui_task(_flash)
 
-def append_log(direction, address):
+def append_log(direction: str, address: str) -> None:
     t = time.strftime("%H:%M:%S")
     log_msg = f"[{t}] {direction}: {address}"
     log_queue.put(log_msg)
@@ -144,7 +150,7 @@ def append_log(direction, address):
 # SEQUENCER UI & CLIP ASSIGNMENT
 # ==============================================================================
 
-def assign_clip_to_track(sender, app_data, user_data):
+def assign_clip_to_track(sender: Any, app_data: Any, user_data: Any) -> None:
     row = user_data
     current_source = global_vimix_state.get("current_source")
     
@@ -163,7 +169,7 @@ def assign_clip_to_track(sender, app_data, user_data):
             tracks_data[row]["base_address"] = f"/vimix/{target_id}"
             update_track_slot_ui(row)
 
-def update_track_slot_ui(row):
+def update_track_slot_ui(row: int) -> None:
     slot_tag = f"seq_slot_{row}"
     if not dpg.does_item_exist(slot_tag): return
     
@@ -181,37 +187,37 @@ def update_track_slot_ui(row):
         else:
             dpg.add_button(label="ASSIGN\nCLIP", width=110, height=70, callback=assign_clip_to_track, user_data=row)
 
-def set_step_type(sender, app_data, user_data):
+def set_step_type(sender: Any, app_data: Any, user_data: Any) -> None:
     row, col, step_type = user_data
     tracks_data[row]["steps"][col]["type"] = step_type
     update_step_ui(row, col)
 
-def toggle_step_active(sender, app_data, user_data):
+def toggle_step_active(sender: Any, app_data: Any, user_data: Any) -> None:
     row, col = user_data
     tracks_data[row]["steps"][col]["active"] = app_data
     update_step_theme(row, col)
 
-def update_step_val(sender, app_data, user_data):
+def update_step_val(sender: Any, app_data: Any, user_data: Any) -> None:
     row, col, param_name = user_data
     if param_name == "color":
         tracks_data[row]["steps"][col][param_name] = app_data[:3]
     else:
         tracks_data[row]["steps"][col][param_name] = app_data
 
-def update_step_theme(row, col, is_head=False):
+def update_step_theme(row: int, col: int, is_head: bool = False) -> None:
     # Runs on any thread: capture state here, apply the theme on the main thread.
     cell_tag = f"seq_cell_{row}_{col}"
     is_active = tracks_data[row]["steps"][col]["active"]
     ui_task(lambda ct=cell_tag, ia=is_active, h=is_head: _apply_step_theme(ct, ia, h))
 
-def _apply_step_theme(cell_tag, is_active, is_head):
+def _apply_step_theme(cell_tag: str, is_active: bool, is_head: bool) -> None:
     if not dpg.does_item_exist(cell_tag): return
     if is_head:
         dpg.bind_item_theme(cell_tag, theme_cell_play_on if is_active else theme_cell_play_off)
     else:
         dpg.bind_item_theme(cell_tag, theme_cell_on if is_active else theme_cell_off)
 
-def update_step_ui(row, col):
+def update_step_ui(row: int, col: int) -> None:
     cell_tag = f"seq_cell_{row}_{col}"
     step_data = tracks_data[row]["steps"][col]
     
@@ -264,7 +270,7 @@ def update_step_ui(row, col):
     update_step_theme(row, col, is_head=(is_playing and current_step == col))
 
 
-def regen_thumb_callback(sender, app_data, user_data):
+def regen_thumb_callback(sender: Any, app_data: Any, user_data: Any) -> None:
     target_id = user_data
     if viosc_client:
         msg_addr = f"/viosc/regen_thumb/{target_id}"
@@ -284,7 +290,7 @@ def regen_thumb_callback(sender, app_data, user_data):
             with dpg.popup(loading_tag, mousebutton=dpg.mvMouseButton_Right):
                 dpg.add_menu_item(label="Regenerate Thumbnail (Random)", callback=regen_thumb_callback, user_data=target_id)
 
-def update_vimix_sources_ui(json_string):
+def update_vimix_sources_ui(json_string: str) -> None:
     global global_vimix_state, last_ui_signature, last_num_cols
     try:
         payload = json.loads(json_string)
@@ -430,7 +436,7 @@ def update_vimix_sources_ui(json_string):
     except Exception as e:
         log_error("UI update", e)
 
-def thumbnail_decoder_worker():
+def thumbnail_decoder_worker() -> None:
     while True:
         name, t_idx, blob_bytes = blob_queue.get()
         try:
@@ -451,7 +457,7 @@ def thumbnail_decoder_worker():
 monitor_players = []          # each: {"id", "tag", "target_id", "props"}
 monitor_player_counter = 0
 
-def get_current_target_id():
+def get_current_target_id() -> Optional[str]:
     """Return the name (or index) of the source currently selected in vimix."""
     current_source = global_vimix_state.get("current_source")
     if current_source is None:
@@ -462,19 +468,19 @@ def get_current_target_id():
             return str(name) if name else str(k)
     return None
 
-def find_source_by_name(name):
+def find_source_by_name(name: str) -> Any:
     for idx, props in global_vimix_state.get("sources", {}).items():
         if str(props.get("name")) == str(name):
             return idx, props
     return None, None
 
-def find_player_index(player_id):
+def find_player_index(player_id: int) -> Optional[int]:
     for i, p in enumerate(monitor_players):
         if p["id"] == player_id:
             return i
     return None
 
-def send_monitor_command(player_id):
+def send_monitor_command(player_id: int) -> None:
     idx = find_player_index(player_id)
     if idx is None:
         return
@@ -491,14 +497,14 @@ def send_monitor_command(player_id):
         osc_client.send_message(addr, [])
         append_log("OUT", f"{addr} (stop)")
 
-def new_monitor_player(sender=None, app_data=None, user_data=None):
+def new_monitor_player(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     global monitor_player_counter
     monitor_player_counter += 1
     player_id = monitor_player_counter
     tag = f"monitor_player_{player_id}"
     player = {"id": player_id, "tag": tag, "target_id": None, "props": ["seek"]}
     monitor_players.append(player)
-    pos = (10 + 280 * ((player_id - 1) % 4), 30 + 260 * ((player_id - 1) // 4))
+    pos = (10 + MONITOR_OFFSET[0] * ((player_id - 1) % 4), 30 + MONITOR_OFFSET[1] * ((player_id - 1) // 4))
     with dpg.window(label=f"Monitor Player {player_id}", tag=tag, width=270, height=265, pos=pos):
         head_tag = f"mon_head_{player_id}"
         dpg.add_text("Click the box below to assign the current source.", tag=head_tag, wrap=250)
@@ -519,7 +525,7 @@ def new_monitor_player(sender=None, app_data=None, user_data=None):
             dpg.add_button(label="Properties...", width=120, callback=lambda s, a, u: open_monitor_props(player_id), user_data=player_id)
             dpg.add_button(label="Remove", width=90, callback=lambda s, a, u: remove_monitor_player(player_id), user_data=player_id)
 
-def update_monitor_player_ui(player_id):
+def update_monitor_player_ui(player_id: int) -> None:
     try:
         idx = find_player_index(player_id)
         if idx is None:
@@ -553,7 +559,7 @@ def update_monitor_player_ui(player_id):
     except Exception as e:
         print(f"[viseq Monitor UI] Error updating player {player_id}: {e}")
 
-def rebuild_monitor_player_values(player_id):
+def rebuild_monitor_player_values(player_id: int) -> None:
     try:
         idx = find_player_index(player_id)
         if idx is None:
@@ -575,7 +581,7 @@ def rebuild_monitor_player_values(player_id):
     except Exception as e:
         print(f"[viseq Monitor UI] Error rebuilding values of player {player_id}: {e}")
 
-def refresh_monitor_player_values(player_id):
+def refresh_monitor_player_values(player_id: int) -> None:
     idx = find_player_index(player_id)
     if idx is None:
         return
@@ -597,7 +603,7 @@ def refresh_monitor_player_values(player_id):
             s = str(val)
         dpg.set_value(t, f"{prop}: {s}")
 
-def assign_monitor_player(sender, app_data, user_data):
+def assign_monitor_player(sender: Any, app_data: Any, user_data: Any) -> None:
     player_id = user_data
     idx = find_player_index(player_id)
     if idx is None:
@@ -618,7 +624,7 @@ def assign_monitor_player(sender, app_data, user_data):
     send_monitor_command(player_id)
     update_monitor_player_ui(player_id)
 
-def open_monitor_props(player_id):
+def open_monitor_props(player_id: int) -> None:
     idx = find_player_index(player_id)
     if idx is None:
         return
@@ -636,7 +642,7 @@ def open_monitor_props(player_id):
             for prop in ALL_PROPERTIES:
                 dpg.add_checkbox(label=prop, default_value=(prop in player["props"]), tag=f"mon_cb_{player_id}_{prop}", callback=on_monitor_prop_toggle, user_data=player_id)
 
-def on_monitor_prop_toggle(sender, app_data, user_data):
+def on_monitor_prop_toggle(sender: Any, app_data: Any, user_data: Any) -> None:
     player_id = user_data
     idx = find_player_index(player_id)
     if idx is None:
@@ -651,7 +657,7 @@ def on_monitor_prop_toggle(sender, app_data, user_data):
     send_monitor_command(player_id)
     rebuild_monitor_player_values(player_id)
 
-def remove_monitor_player(player_id):
+def remove_monitor_player(player_id: int) -> None:
     idx = find_player_index(player_id)
     if idx is None:
         return
@@ -665,7 +671,7 @@ def remove_monitor_player(player_id):
         dpg.delete_item(tag)
     del monitor_players[idx]
 
-def incoming_osc_handler(address, *args):
+def incoming_osc_handler(address: str, *args: Any) -> None:
     append_log("IN ", address)
     try:
         if address == "/viosc/replydata" and args:
@@ -678,7 +684,7 @@ def incoming_osc_handler(address, *args):
     except Exception as e:
         log_error("OSC input", e)
 
-def toggle_local_server():
+def toggle_local_server() -> None:
     global local_osc_server, local_server_thread, is_server_running
     if is_server_running:
         if local_osc_server:
@@ -703,7 +709,7 @@ def toggle_local_server():
         except Exception as e:
             dpg.set_value("server_status", f"Server Status: ERROR ({e})")
 
-def connect_to_viosc():
+def connect_to_viosc() -> None:
     global viosc_client
     ip = dpg.get_value("viosc_ip")
     port = dpg.get_value("viosc_port")
@@ -713,7 +719,7 @@ def connect_to_viosc():
     except Exception:
         dpg.set_value("viosc_status", f"Client Status: Initialization error")
 
-def callback_resync():
+def callback_resync() -> None:
     global current_step
     current_step = -1
     for r in range(NUM_TRACKS):
@@ -721,15 +727,15 @@ def callback_resync():
     sync_event_seq.set()
     sync_event_led.set()
 
-def callback_nudge_backward():
+def callback_nudge_backward() -> None:
     global phase_nudge
     phase_nudge += 0.05 
 
-def callback_nudge_forward():
+def callback_nudge_forward() -> None:
     global phase_nudge
     phase_nudge -= 0.05
 
-def audio_callback(indata, frames, time_info, status):
+def audio_callback(indata: np.ndarray, frames: int, time_info: Any, status: Any) -> None:
     global audio_buffer, audio_buffer_head
     if status: print(status)
     samples = indata[:, 0].astype(np.float32)
@@ -751,7 +757,7 @@ def audio_callback(indata, frames, time_info, status):
     if is_audio_analyzing:
         enqueue_set_value("vu_meter", float(np.max(np.abs(samples))))
 
-def get_audio_snapshot():
+def get_audio_snapshot() -> np.ndarray:
     """Chronological copy of the last len(audio_buffer) samples (newest at tail).
 
     Linearizes the ring buffer for the BPM thread. Called once per second (not per
@@ -762,7 +768,7 @@ def get_audio_snapshot():
         return audio_buffer.copy()
     return np.concatenate((audio_buffer[head:], audio_buffer[:head]))
 
-def essentia_analyzer_loop():
+def essentia_analyzer_loop() -> None:
     global current_bpm, beat_confidence
     last_error = ""
     while True:
@@ -784,7 +790,7 @@ def essentia_analyzer_loop():
                     log_error("BPM analysis", err)
         time.sleep(1.0)
 
-def visual_metronome_loop():
+def visual_metronome_loop() -> None:
     global phase_nudge
     while True:
         if is_beat_tracking and current_bpm > 0 and not is_playing:
@@ -800,7 +806,7 @@ def visual_metronome_loop():
 # ==============================================================================
 # NEW ASYNC THREAD FOR HIGH-RESOLUTION FADES
 # ==============================================================================
-def fade_tick_loop():
+def fade_tick_loop() -> None:
     while True:
         if is_playing:
             current_time = time.time()
@@ -830,7 +836,7 @@ def fade_tick_loop():
                             fade["active"] = False
         time.sleep(0.01) # 100 FPS check loop for smooth fades
 
-def sequencer_tick():
+def sequencer_tick() -> None:
     global current_step, phase_nudge
     while True:
         if is_playing:
@@ -911,11 +917,11 @@ def sequencer_tick():
         else:
             time.sleep(0.1)
 
-def on_lowpass_toggle(sender, app_data, user_data):
+def on_lowpass_toggle(sender: Any, app_data: Any, user_data: Any) -> None:
     global lowpass_enabled
     lowpass_enabled = bool(app_data)
 
-def toggle_audio_stream(sender, app_data, user_data):
+def toggle_audio_stream(sender: Any, app_data: Any, user_data: Any) -> None:
     global audio_stream, is_audio_analyzing, is_beat_tracking
     if user_data == "vu_meter": is_audio_analyzing = app_data
     elif user_data == "beat_tracking": is_beat_tracking = app_data
@@ -940,7 +946,7 @@ def toggle_audio_stream(sender, app_data, user_data):
         dpg.set_value("testo_bpm", "BPM: ---")
         turn_off_led()
 
-def toggle_play():
+def toggle_play() -> None:
     global is_playing, current_step
     is_playing = not is_playing
     if not is_playing:
@@ -1117,8 +1123,8 @@ try:
             has_new_logs = True
         
         if has_new_logs:
-            if len(osc_log_history) > 25:
-                del osc_log_history[:-25]
+            if len(osc_log_history) > LOG_HISTORY_LIMIT:
+                del osc_log_history[:-LOG_HISTORY_LIMIT]
             if dpg.does_item_exist("osc_log_text"):
                 dpg.set_value("osc_log_text", "\n".join(osc_log_history))
 
@@ -1176,7 +1182,7 @@ try:
                     
                 if uri and target_id not in thumbnails_data:
                     last_thumb = request_timestamps.get(f"thumb_{target_id}", 0)
-                    if current_time - last_thumb > 3.0:
+                    if current_time - last_thumb > THUMB_REQUEST_INTERVAL:
                         msg_addr = f"/viosc/thumb/{target_id}"
                         viosc_client.send_message(msg_addr, ["all"])
                         append_log("OUT", msg_addr)
