@@ -1,0 +1,37 @@
+story_id: e01s04
+title: "Audio analysis (VU/BPM) + ring buffer on 2.x"
+status: failing
+bcps: 2
+tasks:
+  - id: 1
+    description: "L-2: replace np.roll with a preallocated ring buffer (modulo indexing) in audio_callback"
+    verify: "python3 -m py_compile viseq.py"
+    risk: P2
+    status: failing
+    allure:
+      severity: normal
+      categories: ["performance"]
+  - id: 2
+    description: "Add a ring-buffer unit check to the harness (newest samples at tail, length-consistent after many callbacks)"
+    verify: "python3 tests/test_fixes.py 2>&1 | grep -c 'ring buffer' | grep -q 1"
+    risk: P2
+    status: failing
+    allure:
+      severity: normal
+      categories: ["unit"]
+  - id: 3
+    description: "Re-verify audio_callback has no direct dpg calls (VU meter via enqueue_set_value only)"
+    verify: "python3 -c \"import re; src=open('viseq.py').read(); body=re.search(r'def audio_callback\\\\(.*?(?=\\\\ndef |\\\\n# ===)', src, re.S).group(0); assert not re.search(r'dpg\\\\.\\\\w+', body), 'direct dpg in audio_callback'; print('OK')\""
+    risk: P1
+    status: failing
+    allure:
+      severity: high
+      categories: ["migration", "thread-safety"]
+  - id: 4
+    description: "Re-verify the BPM path (essentia loop reads lowpass_enabled flag, not dpg.get_value; BPM text via enqueue_set_value)"
+    verify: "python3 -c \"import re; src=open('viseq.py').read(); body=re.search(r'def essentia_analyzer_loop\\\\(.*?(?=\\\\ndef |\\\\n# ===)', src, re.S).group(0); assert 'lowpass_enabled' in body and 'dpg.get_value' not in body, 'BPM path regressed'; print('OK')\" && python3 tests/test_fixes.py"
+    risk: P1
+    status: failing
+    allure:
+      severity: high
+      categories: ["migration", "audio"]

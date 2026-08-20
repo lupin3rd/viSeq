@@ -1,0 +1,27 @@
+# specs/release-plan.yaml — WSJF-ordered epic list (slice-tasks)
+# All stories in e01 belong to one epic; order = WSJF (value per unit of work).
+
+release: 1.0.0
+
+epics:
+  - id: e01
+    slug: dpg2x-port
+    title: "viseq DearPyGui 2.x migration (Python 3.13) + audit hygiene fold-in"
+    wsjf: 100
+    baseline_bcps: 15
+    stories:
+      - id: e01s01
+        title: "Boot on DearPyGui 2.3.1 (tracer bullet)"
+        bcps: 3
+      - id: e01s02
+        title: "Sequencer + fade engine on 2.x"
+        bcps: 5
+      - id: e01s03
+        title: "OSC + state sync + media grid + thumbnails + monitor players on 2.x"
+        bcps: 3
+      - id: e01s04
+        title: "Audio analysis (VU/BPM) + ring buffer on 2.x"
+        bcps: 2
+      - id: e01s05
+        title: "Hygiene (type hints, EN comments, constants) + manual acceptance"
+        bcps: 2

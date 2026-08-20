@@ -1,0 +1,19 @@
+# viseq runtime dependencies
+#
+# IMPORTANT — Python version: this app targets the DearPyGui 1.x API
+# (dpg.create_context / create_viewport / setup_dearpygui / render_dearpygui_frame)
+# and Essentia. PyPI currently serves only dearpygui 2.x (API-incompatible rewrite)
+# and essentia wheels for a narrow set of Pythons. The version intersection that
+# installs cleanly from PyPI is Python 3.11:
+#   dearpygui 1.9.1            -> cp310/cp311 wheels (last 1.x line still on PyPI)
+#   essentia 2.1b6.dev1177     -> cp310/cp311/cp312 wheels
+#
+# Install with a Python 3.11 venv:
+#   python3.11 -m venv .venv && .venv/bin/pip install -r requirements.txt
+#
+dearpygui==1.9.1
+essentia==2.1b6.dev1177
+numpy>=1.26,<2
+python-osc==1.10.2
+sounddevice==0.5.6
+Pillow>=11,<13
