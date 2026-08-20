@@ -298,6 +298,24 @@ def update_vimix_sources_ui(json_string):
         sources = {k: v for k, v in sources.items() if isinstance(v, dict)}
         global_vimix_state["current_source"] = payload.get("current_source")
         global_vimix_state["sources"] = sources
+
+        # L-1: prune cached state for sources that no longer exist (main thread only),
+        # so thumbnails_data / request_timestamps / registry textures do not grow across churn.
+        live_ids = set()
+        for k, props in sources.items():
+            name = props.get("name")
+            live_ids.add(str(name) if name else str(k))
+        for target_id in list(thumbnails_data):
+            if target_id not in live_ids:
+                thumbnails_data.pop(target_id)
+                tex_tag = f"tex_{target_id}"
+                if dpg.does_item_exist(tex_tag):
+                    dpg.delete_item(tex_tag)
+        for key in list(request_timestamps):
+            if key.startswith("thumb_"):
+                target_id = key[len("thumb_"):]
+                if target_id not in live_ids:
+                    request_timestamps.pop(key)
         
         current_source = global_vimix_state["current_source"]
         data_dict = global_vimix_state["sources"]

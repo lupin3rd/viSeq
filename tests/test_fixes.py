@@ -168,6 +168,18 @@ small = Image.new("RGB", (320, 180), "red")
 buf = io.BytesIO(); small.save(buf, "PNG")
 check("MED-6 normal image decoded by worker", run_worker_once(buf.getvalue()))
 
+# ---------- L-1: stale-state pruning ----------
+viseq.thumbnails_data.clear()
+viseq.request_timestamps.clear()
+viseq.thumbnails_data["clipA"] = "tex_clipA"
+viseq.thumbnails_data["ghost"] = "tex_ghost"
+viseq.request_timestamps["thumb_clipA"] = 1.0
+viseq.request_timestamps["thumb_ghost"] = 2.0
+viseq.update_vimix_sources_ui(json.dumps({"current_source": 1, "sources": {"1": {"name": "clipA", "index": 1}}}))
+check("L-1 stale source pruned from thumbnails_data and request_timestamps",
+      "ghost" not in viseq.thumbnails_data and "thumb_ghost" not in viseq.request_timestamps
+      and "clipA" in viseq.thumbnails_data and "thumb_clipA" in viseq.request_timestamps)
+
 # ---------- HIGH-1: no direct dpg calls in worker threads ----------
 import re
 src = open("viseq.py").read()
