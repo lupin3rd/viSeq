@@ -1,37 +1,55 @@
 story_id: e01s02
-title: "Sequencer + fade engine on 2.x"
-status: failing
+title: Sequencer + fade engine on 2.x
+status: passing
 bcps: 5
 tasks:
-  - id: 1
-    description: "Confirm no direct dpg calls remain in worker threads (sequencer_tick, visual_metronome_loop, fade_tick_loop) — HIGH-1 invariant"
-    verify: "python3 -c \"import re; src=open('viseq.py').read(); fns=['sequencer_tick','visual_metronome_loop','fade_tick_loop']; assert not [f for f in fns if re.search(r'def '+f+r'\\(.*?(?=\\ndef |\\n# ===)', src, re.S) and re.search(r'dpg\\.\\w+', re.search(r'def '+f+r'\\(.*?(?=\\ndef |\\n# ===)', src, re.S).group(0))], 'direct dpg call in worker fn'; print('OK')\""
-    risk: P0
-    status: failing
-    allure:
-      severity: critical
-      categories: ["migration", "thread-safety"]
-  - id: 2
-    description: "Re-verify HIGH-2 fade-cancel invariant on 2.x-era code (fade cancelled by non-AlphaF step; uninterrupted fade completes)"
-    verify: "python3 tests/test_fixes.py 2>&1 | grep -c 'HIGH-2' | grep -q 4"
-    risk: P0
-    status: failing
-    allure:
-      severity: critical
-      categories: ["migration", "sequencer"]
-  - id: 3
-    description: "Re-verify step-type dispatch (AlphaV/AlphaR/AlphaF/ColorV/ColorR), play/stop/resync/nudge, beat LED, and rand-value displays via the harness"
-    verify: "python3 tests/test_fixes.py"
-    risk: P1
-    status: failing
-    allure:
-      severity: high
-      categories: ["migration", "sequencer"]
-  - id: 4
-    description: "Probe the sequencer's dpg 2.3.1 primitives in the venv (popup context form, drag_int, color_edit no_alpha, delete_item children_only)"
-    verify: ".venv/bin/python -c \"import dearpygui.dearpygui as dpg; dpg.create_context(); assert hasattr(dpg,'popup') and hasattr(dpg,'add_drag_int') and hasattr(dpg,'add_color_edit') and hasattr(dpg,'delete_item'); with dpg.window(tag='w'): pass; dpg.delete_item('w', children_only=True); dpg.destroy_context(); print('probe OK')\""
-    risk: P1
-    status: failing
-    allure:
-      severity: high
-      categories: ["migration", "api-surface"]
+- id: 1
+  description: "Confirm no direct dpg calls remain in worker threads (sequencer_tick,\
+    \ visual_metronome_loop, fade_tick_loop) \u2014 HIGH-1 invariant"
+  verify: python3 -c "import re; src=open('viseq.py').read(); fns=['sequencer_tick','visual_metronome_loop','fade_tick_loop'];
+    assert not [f for f in fns if re.search(r'def '+f+r'\(.*?(?=\ndef |\n# ===)',
+    src, re.S) and re.search(r'dpg\.\w+', re.search(r'def '+f+r'\(.*?(?=\ndef |\n#
+    ===)', src, re.S).group(0))], 'direct dpg call in worker fn'; print('OK')"
+  risk: P0
+  status: passing
+  allure:
+    severity: critical
+    categories:
+    - migration
+    - thread-safety
+- id: 2
+  description: Re-verify HIGH-2 fade-cancel invariant on 2.x-era code (fade cancelled
+    by non-AlphaF step; uninterrupted fade completes)
+  verify: python3 tests/test_fixes.py 2>&1 | grep -c 'HIGH-2' | grep -q 4
+  risk: P0
+  status: passing
+  allure:
+    severity: critical
+    categories:
+    - migration
+    - sequencer
+- id: 3
+  description: Re-verify step-type dispatch (AlphaV/AlphaR/AlphaF/ColorV/ColorR),
+    play/stop/resync/nudge, beat LED, and rand-value displays via the harness
+  verify: python3 tests/test_fixes.py
+  risk: P1
+  status: passing
+  allure:
+    severity: high
+    categories:
+    - migration
+    - sequencer
+- id: 4
+  description: Probe the sequencer's dpg 2.3.1 primitives in the venv (popup context
+    form, drag_int, color_edit no_alpha, delete_item children_only)
+  verify: .venv/bin/python -c "import dearpygui.dearpygui as dpg; dpg.create_context();
+    assert all(hasattr(dpg, a) for a in ('popup','add_drag_int','add_color_edit','delete_item'));
+    w=dpg.add_window(tag='w'); dpg.delete_item('w', children_only=True); dpg.destroy_context();
+    print('probe OK')"
+  risk: P1
+  status: passing
+  allure:
+    severity: high
+    categories:
+    - migration
+    - api-surface
