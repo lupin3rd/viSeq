@@ -1,45 +1,59 @@
 story_id: e01s01
-title: "Boot on DearPyGui 2.3.1 (tracer bullet)"
-status: failing
+title: Boot on DearPyGui 2.3.1 (tracer bullet)
+status: passing
 bcps: 3
 tasks:
-  - id: 1
-    description: "Create .venv (Python 3.13) and pin requirements.txt to the spike-verified set (dearpygui==2.3.1, essentia==2.1b6.dev1389, numpy>=2,<3, python-osc==1.10.2, sounddevice==0.5.6, Pillow>=11,<13)"
-    verify: ".venv/bin/pip install -r requirements.txt && .venv/bin/pip show dearpygui | grep -q 2.3.1 && .venv/bin/pip show essentia | grep -q 2.1b6.dev1389"
-    risk: P0
-    status: failing
-    allure:
-      severity: critical
-      categories: ["migration", "environment"]
-  - id: 2
-    description: "Boot viseq unmodified on 2.x (import, context, viewport, main loop stays up)"
-    verify: "timeout 8 .venv/bin/python viseq.py; test $? -eq 124"
-    risk: P0
-    status: failing
-    allure:
-      severity: critical
-      categories: ["migration", "boot"]
-  - id: 3
-    description: "L-4 clean exit: wrap main loop in try/finally — stop audio_stream, shutdown local_osc_server, join threads, destroy_context"
-    verify: "python3 -m py_compile viseq.py && timeout 8 .venv/bin/python viseq.py; test $? -eq 124"
-    risk: P1
-    status: failing
-    allure:
-      severity: high
-      categories: ["cleanup"]
-  - id: 4
-    description: "L-5 main-loop render cap: change time.sleep(0.005) to time.sleep(0.016)"
-    verify: "grep -n 'time.sleep(0.016)' viseq.py | head -1"
-    risk: P2
-    status: failing
-    allure:
-      severity: normal
-      categories: ["performance"]
-  - id: 5
-    description: "Keep the stub regression harness green against the 2.x era (stub note: dearpygui is now a package; the API module is dearpygui.dearpygui)"
-    verify: "python3 tests/test_fixes.py"
-    risk: P1
-    status: failing
-    allure:
-      severity: high
-      categories: ["regression"]
+- id: 1
+  description: Create .venv (Python 3.13) and pin requirements.txt to the spike-verified
+    set (dearpygui==2.3.1, essentia==2.1b6.dev1389, numpy>=2,<3, python-osc==1.10.2,
+    sounddevice==0.5.6, Pillow>=11,<13)
+  verify: .venv/bin/pip install -r requirements.txt && .venv/bin/pip show dearpygui
+    | grep -q 2.3.1 && .venv/bin/pip show essentia | grep -q 2.1b6.dev1389
+  risk: P0
+  status: passing
+  allure:
+    severity: critical
+    categories:
+    - migration
+    - environment
+- id: 2
+  description: Boot viseq unmodified on 2.x (import, context, viewport, main loop
+    stays up)
+  verify: timeout 8 .venv/bin/python viseq.py; test $? -eq 124
+  risk: P0
+  status: passing
+  allure:
+    severity: critical
+    categories:
+    - migration
+    - boot
+- id: 3
+  description: "L-4 clean exit: wrap main loop in try/finally \u2014 stop audio_stream,\
+    \ shutdown local_osc_server, join threads, destroy_context"
+  verify: python3 -m py_compile viseq.py && timeout 8 .venv/bin/python viseq.py; test
+    $? -eq 124
+  risk: P1
+  status: passing
+  allure:
+    severity: high
+    categories:
+    - cleanup
+- id: 4
+  description: 'L-5 main-loop render cap: change time.sleep(0.005) to time.sleep(0.016)'
+  verify: grep -n 'time.sleep(0.016)' viseq.py | head -1
+  risk: P2
+  status: passing
+  allure:
+    severity: normal
+    categories:
+    - performance
+- id: 5
+  description: 'Keep the stub regression harness green against the 2.x era (stub note:
+    dearpygui is now a package; the API module is dearpygui.dearpygui)'
+  verify: python3 tests/test_fixes.py
+  risk: P1
+  status: passing
+  allure:
+    severity: high
+    categories:
+    - regression

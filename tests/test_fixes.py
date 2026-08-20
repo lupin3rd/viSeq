@@ -47,6 +47,8 @@ class DpgStub:
     def is_dearpygui_running(self): return False
 
 dpg = DpgStub()
+# dearpygui 2.x is a package: the API module is dearpygui.dearpygui (what viseq.py imports).
+# The stub mirrors that layout (verified against 2.3.1 in SPIKE-dpg2x-api.md).
 dpg_pkg = types.ModuleType('dearpygui')
 dpg_pkg.__path__ = []
 sys.modules['dearpygui'] = dpg_pkg

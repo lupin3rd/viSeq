@@ -1057,99 +1057,112 @@ with dpg.viewport_menu_bar():
 dpg.setup_dearpygui()
 dpg.show_viewport()
 
-while dpg.is_dearpygui_running():
+try:
+    while dpg.is_dearpygui_running():
     
-    if dpg.does_item_exist("vimix_media_window"):
-        w = dpg.get_item_width("vimix_media_window")
-        current_cols = max(1, int((w - 20) / 145))
-        if current_cols != last_num_cols:
-            last_num_cols = current_cols
-            if global_vimix_state.get("sources"):
-                update_vimix_sources_ui(json.dumps(global_vimix_state))
+        if dpg.does_item_exist("vimix_media_window"):
+            w = dpg.get_item_width("vimix_media_window")
+            current_cols = max(1, int((w - 20) / 145))
+            if current_cols != last_num_cols:
+                last_num_cols = current_cols
+                if global_vimix_state.get("sources"):
+                    update_vimix_sources_ui(json.dumps(global_vimix_state))
 
-    has_new_logs = False
-    while not log_queue.empty():
-        osc_log_history.append(log_queue.get())
-        has_new_logs = True
+        has_new_logs = False
+        while not log_queue.empty():
+            osc_log_history.append(log_queue.get())
+            has_new_logs = True
         
-    if has_new_logs:
-        if len(osc_log_history) > 25:
-            del osc_log_history[:-25]
-        if dpg.does_item_exist("osc_log_text"):
-            dpg.set_value("osc_log_text", "\n".join(osc_log_history))
+        if has_new_logs:
+            if len(osc_log_history) > 25:
+                del osc_log_history[:-25]
+            if dpg.does_item_exist("osc_log_text"):
+                dpg.set_value("osc_log_text", "\n".join(osc_log_history))
 
-    # Run queued UI mutations from worker threads on the main thread (audit HIGH-1)
-    while not ui_task_queue.empty():
-        task = ui_task_queue.get()
-        try:
-            task()
-        except Exception as e:
-            log_error("UI task", e)
+        # Run queued UI mutations from worker threads on the main thread (audit HIGH-1)
+        while not ui_task_queue.empty():
+            task = ui_task_queue.get()
+            try:
+                task()
+            except Exception as e:
+                log_error("UI task", e)
 
-    latest_json = None
-    while not ui_state_queue.empty():
-        latest_json = ui_state_queue.get()
+        latest_json = None
+        while not ui_state_queue.empty():
+            latest_json = ui_state_queue.get()
     
-    if latest_json:
-        update_vimix_sources_ui(latest_json)
+        if latest_json:
+            update_vimix_sources_ui(latest_json)
 
-    while not texture_queue.empty():
-        name, img_data, w, h = texture_queue.get()
-        target_id = name
-        tex_tag = f"tex_{target_id}"
-        img_tag = f"img_{target_id}"
-        container_tag = f"thumb_container_{target_id}"
-        loading_tag = f"loading_txt_{target_id}"
+        while not texture_queue.empty():
+            name, img_data, w, h = texture_queue.get()
+            target_id = name
+            tex_tag = f"tex_{target_id}"
+            img_tag = f"img_{target_id}"
+            container_tag = f"thumb_container_{target_id}"
+            loading_tag = f"loading_txt_{target_id}"
         
-        if dpg.does_item_exist(tex_tag):
-            dpg.delete_item(tex_tag)
+            if dpg.does_item_exist(tex_tag):
+                dpg.delete_item(tex_tag)
             
-        dpg.add_static_texture(width=w, height=h, default_value=img_data, tag=tex_tag, parent="texture_registry")
+            dpg.add_static_texture(width=w, height=h, default_value=img_data, tag=tex_tag, parent="texture_registry")
             
-        thumbnails_data[target_id] = tex_tag
+            thumbnails_data[target_id] = tex_tag
         
-        if not dpg.does_item_exist(img_tag) and dpg.does_item_exist(container_tag):
-            if dpg.does_item_exist(loading_tag): 
-                dpg.delete_item(loading_tag)
-            dpg.add_image(texture_tag=tex_tag, tag=img_tag, width=110, height=80, parent=container_tag)
+            if not dpg.does_item_exist(img_tag) and dpg.does_item_exist(container_tag):
+                if dpg.does_item_exist(loading_tag): 
+                    dpg.delete_item(loading_tag)
+                dpg.add_image(texture_tag=tex_tag, tag=img_tag, width=110, height=80, parent=container_tag)
             
-            with dpg.popup(img_tag, mousebutton=dpg.mvMouseButton_Right):
-                dpg.add_menu_item(label="Regenerate Thumbnail (Random)", callback=regen_thumb_callback, user_data=target_id)
+                with dpg.popup(img_tag, mousebutton=dpg.mvMouseButton_Right):
+                    dpg.add_menu_item(label="Regenerate Thumbnail (Random)", callback=regen_thumb_callback, user_data=target_id)
                 
-        for r, track in enumerate(tracks_data):
-            if track.get("target_id") == target_id:
-                update_track_slot_ui(r)
-        for p in monitor_players:
-            if p.get("target_id") == target_id:
-                update_monitor_player_ui(p["id"])
+            for r, track in enumerate(tracks_data):
+                if track.get("target_id") == target_id:
+                    update_track_slot_ui(r)
+            for p in monitor_players:
+                if p.get("target_id") == target_id:
+                    update_monitor_player_ui(p["id"])
 
-    if viosc_client:
-        current_time = time.time()
-        for idx, props in global_vimix_state.get("sources", {}).items():
-            name = props.get("name")
-            uri = props.get("uri")
-            target_id = str(name) if name else str(idx)
+        if viosc_client:
+            current_time = time.time()
+            for idx, props in global_vimix_state.get("sources", {}).items():
+                name = props.get("name")
+                uri = props.get("uri")
+                target_id = str(name) if name else str(idx)
                     
-            if uri and target_id not in thumbnails_data:
-                last_thumb = request_timestamps.get(f"thumb_{target_id}", 0)
-                if current_time - last_thumb > 3.0:
-                    msg_addr = f"/viosc/thumb/{target_id}"
-                    viosc_client.send_message(msg_addr, ["all"])
-                    append_log("OUT", msg_addr)
-                    request_timestamps[f"thumb_{target_id}"] = current_time
+                if uri and target_id not in thumbnails_data:
+                    last_thumb = request_timestamps.get(f"thumb_{target_id}", 0)
+                    if current_time - last_thumb > 3.0:
+                        msg_addr = f"/viosc/thumb/{target_id}"
+                        viosc_client.send_message(msg_addr, ["all"])
+                        append_log("OUT", msg_addr)
+                        request_timestamps[f"thumb_{target_id}"] = current_time
 
-    # monitor players: cleanup closed windows and refresh values
-    for p in list(monitor_players):
-        if not dpg.does_item_exist(p["tag"]):
-            if p.get("target_id"):
-                addr = f"/viosc/monitor/{p['target_id']}"
-                osc_client.send_message(addr, [])
-                append_log("OUT", f"{addr} (stop)")
-            monitor_players.remove(p)
-            continue
-        refresh_monitor_player_values(p["id"])
+        # monitor players: cleanup closed windows and refresh values
+        for p in list(monitor_players):
+            if not dpg.does_item_exist(p["tag"]):
+                if p.get("target_id"):
+                    addr = f"/viosc/monitor/{p['target_id']}"
+                    osc_client.send_message(addr, [])
+                    append_log("OUT", f"{addr} (stop)")
+                monitor_players.remove(p)
+                continue
+            refresh_monitor_player_values(p["id"])
 
-    dpg.render_dearpygui_frame()
-    time.sleep(0.005)
-
-dpg.destroy_context()
+        dpg.render_dearpygui_frame()
+        time.sleep(0.016)
+finally:
+    # L-4 clean exit: stop audio, shut down the OSC server, destroy the context
+    if audio_stream is not None:
+        try:
+            audio_stream.stop()
+            audio_stream.close()
+        except Exception:
+            pass
+    if local_osc_server is not None:
+        try:
+            local_osc_server.shutdown()
+        except Exception:
+            pass
+    dpg.destroy_context()
