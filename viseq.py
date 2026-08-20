@@ -107,7 +107,8 @@ is_audio_analyzing = False
 is_beat_tracking = False
 lowpass_enabled = True          # mirrors the "Use Low-Pass Filter" checkbox (read on worker threads)
 audio_stream = None
-audio_buffer = np.zeros(samplerate * 6, dtype=np.float32)
+audio_buffer = np.zeros(samplerate * 6, dtype=np.float32)  # preallocated ring buffer (L-2)
+audio_buffer_head = 0               # next write position in audio_buffer (modulo its length)
 current_bpm = 120.0
 beat_confidence = 0.0
 rhythm_extractor = es.RhythmExtractor2013(method="multifeature")
@@ -729,13 +730,37 @@ def callback_nudge_forward():
     phase_nudge -= 0.05
 
 def audio_callback(indata, frames, time_info, status):
-    global audio_buffer
+    global audio_buffer, audio_buffer_head
     if status: print(status)
     samples = indata[:, 0].astype(np.float32)
-    audio_buffer = np.roll(audio_buffer, -frames)
-    audio_buffer[-frames:] = samples
+    # L-2 ring-buffer write: in-place, modulo indexing, no full-buffer reallocation
+    # (np.roll allocated a fresh ~1 MB array ~43x/s on every callback).
+    n = len(samples)
+    if n >= len(audio_buffer):              # defensive: block larger than the buffer
+        audio_buffer[:] = samples[-len(audio_buffer):]
+        audio_buffer_head = 0
+    else:
+        end = audio_buffer_head + n
+        if end <= len(audio_buffer):
+            audio_buffer[audio_buffer_head:end] = samples
+        else:
+            split = len(audio_buffer) - audio_buffer_head
+            audio_buffer[audio_buffer_head:] = samples[:split]
+            audio_buffer[:n - split] = samples[split:]
+        audio_buffer_head = end % len(audio_buffer)
     if is_audio_analyzing:
         enqueue_set_value("vu_meter", float(np.max(np.abs(samples))))
+
+def get_audio_snapshot():
+    """Chronological copy of the last len(audio_buffer) samples (newest at tail).
+
+    Linearizes the ring buffer for the BPM thread. Called once per second (not per
+    audio callback), so this allocation is acceptable.
+    """
+    head = audio_buffer_head
+    if head == 0:
+        return audio_buffer.copy()
+    return np.concatenate((audio_buffer[head:], audio_buffer[:head]))
 
 def essentia_analyzer_loop():
     global current_bpm, beat_confidence
@@ -743,7 +768,7 @@ def essentia_analyzer_loop():
     while True:
         if is_beat_tracking:
             try:
-                audio_slice = essentia.array(audio_buffer.copy())
+                audio_slice = essentia.array(get_audio_snapshot())
                 if np.max(np.abs(audio_slice)) > 0.005:
                     if lowpass_enabled: audio_slice = lowpass_filter(audio_slice)
                     bpm, beats, confidence, estimates, intervals = rhythm_extractor(audio_slice)

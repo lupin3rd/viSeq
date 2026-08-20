@@ -24,6 +24,7 @@ import sys
 import time
 import threading
 import types
+import numpy as np
 from PIL import Image
 
 # ---------- stubs ----------
@@ -179,6 +180,23 @@ viseq.update_vimix_sources_ui(json.dumps({"current_source": 1, "sources": {"1": 
 check("L-1 stale source pruned from thumbnails_data and request_timestamps",
       "ghost" not in viseq.thumbnails_data and "thumb_ghost" not in viseq.request_timestamps
       and "clipA" in viseq.thumbnails_data and "thumb_clipA" in viseq.request_timestamps)
+
+# ---------- L-2: ring-buffer audio capture (preallocated, modulo indexing) ----------
+sr = viseq.samplerate
+viseq.audio_buffer = np.zeros(sr * 6, dtype=np.float32)
+viseq.audio_buffer_head = 0
+buf_id = id(viseq.audio_buffer)
+block = 1024
+n_cb = 300                                      # 307200 samples > 264600 -> wraps
+for i in range(1, n_cb + 1):
+    chunk = np.full((block, 2), float(i), dtype=np.float32)   # one constant value per callback
+    viseq.audio_callback(chunk, block, None, None)
+snap = viseq.get_audio_snapshot()
+check("ring buffer: preallocated (no realloc), newest block at tail, length-consistent",
+      id(viseq.audio_buffer) == buf_id          # np.roll would rebind -> new id
+      and len(snap) == sr * 6                   # length-consistent
+      and np.all(snap != 0)                     # full overwrite after wrap
+      and np.array_equal(snap[-block:], np.full(block, float(n_cb))))  # newest at tail
 
 # ---------- HIGH-1: no direct dpg calls in worker threads ----------
 import re
