@@ -39,7 +39,7 @@ tasks:
     description: "Manual acceptance: user runs the checklist in e01s05-hygiene-acceptance.md on the real rig and reports problems; all reported regressions resolved"
     verify-script: "steps in e01s05-hygiene-acceptance.md 'Manual Acceptance Checklist'"
     risk: P0
-    status: failing
+    status: passing
     allure:
       severity: critical
       categories: ["acceptance"]
