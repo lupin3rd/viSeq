@@ -284,6 +284,85 @@ def test_l2_ring_buffer_preallocated_and_wraps():
     )
 
 
+# ---------- FEATURE: ColorR colors the step cell with the sent color ----------
+def test_colorr_send_colors_cell_with_sent_color(monkeypatch):
+    monkeypatch.setattr(viseq.random, "uniform", lambda a, b: 0.42)
+    track = viseq.tracks_data[0]
+    track["base_address"] = "/vimix/clipA"
+    step = track["steps"][0]
+    step.update({"type": "ColorR", "last_rand_color": [0, 0, 0]})
+    osc_sender = viseq.osc_client
+    osc_sender.messages.clear()
+    dpg.calls.clear()
+
+    viseq.send_colorr_step(track, 0, 0)
+
+    # the exact color sent to viOSC
+    assert (" /vimix/clipA/color".strip(), [0.42, 0.42, 0.42]) in osc_sender.messages, (
+        "ColorR must send [r,g,b] to /color"
+    )
+    assert step["last_rand_color"] == [0.42, 0.42, 0.42]
+
+    # drain the UI queue: the cell theme must be bound with the sent color
+    while not viseq.ui_task_queue.empty():
+        viseq.ui_task_queue.get()()
+    theme_tag = "theme_cell_color_seq_cell_0_0"
+    binds = [a for n, a, kw in dpg.calls if n == "bind_item_theme"]
+    assert ("seq_cell_0_0", theme_tag) in binds, "cell must be bound to its color theme"
+    theme_colors = [a[1] for n, a, kw in dpg.calls if n == "add_theme_color"]
+    assert (107, 107, 107, 255) in theme_colors, "ChildBg must be the sent color (0.42*255=107)"
+
+
+def test_step_type_change_clears_cell_color():
+    cell_tag = "seq_cell_0_3"
+    dpg.calls.clear()
+    viseq._bind_cell_color_theme(cell_tag, (128, 64, 191), True, True)
+    assert cell_tag in viseq.cell_color_cache, "color theme must be tracked in the cache"
+
+    # changing the step type away from ColorR clears the color
+    viseq.set_step_type(None, None, (0, 3, "NONE"))
+    assert cell_tag not in viseq.cell_color_cache, "type change must clear the cached color"
+    deletes = [a for n, a, kw in dpg.calls if n == "delete_item"]
+    assert any(a[0] == "theme_cell_color_seq_cell_0_3" for a in deletes), (
+        "type change must delete the color theme"
+    )
+
+
+# ---------- FEATURE: SeekR step type (random seek 0..1) ----------
+def test_seekr_send_sends_random_seek(monkeypatch):
+    monkeypatch.setattr(viseq.random, "uniform", lambda a, b: 0.42)
+    track = viseq.tracks_data[0]
+    track["base_address"] = "/vimix/clipA"
+    step = track["steps"][1]
+    step.update({"type": "SeekR"})
+    osc_sender = viseq.osc_client
+    osc_sender.messages.clear()
+    dpg.values.clear()
+
+    viseq.send_seekr_step(track, 0, 1)
+
+    assert (" /vimix/clipA/seek".strip(), 0.42) in osc_sender.messages, (
+        "SeekR must send a random 0..1 value to /seek"
+    )
+    assert step["last_rand_seek"] == 0.42
+
+    while not viseq.ui_task_queue.empty():
+        viseq.ui_task_queue.get()()
+    assert dpg.values.get("rand_seek_0_1") == "0.42", "cell must display the last seek value"
+
+
+def test_seekr_menu_item_available():
+    step = viseq.tracks_data[0]["steps"][2]
+    step["type"] = "NONE"
+    dpg.calls.clear()
+    viseq.update_step_ui(0, 2)
+    menu_items = [kw for n, a, kw in dpg.calls if n == "add_menu_item"]
+    assert any(
+        kw.get("label") == "Seek Random" and kw.get("user_data") == (0, 2, "SeekR")
+        for kw in menu_items
+    ), "context menu must offer the SeekR step type"
+
+
 # ---------- HIGH-1: no direct dpg calls in worker threads ----------
 def test_high1_no_direct_dpg_calls_in_worker_threads():
     src = Path("viseq.py").read_text()

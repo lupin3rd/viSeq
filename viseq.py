@@ -135,6 +135,7 @@ for _ in range(NUM_TRACKS):
                 "msgs": 1,  # NEW: number of messages to send in a single step
                 "color": [255, 255, 255],
                 "last_rand_v1": 0.0,
+                "last_rand_seek": 0.0,
                 "last_rand_color": [0, 0, 0],
             }
         )
@@ -157,6 +158,9 @@ lowpass_filter = es.LowPass(cutoffFrequency=250.0)
 
 thumbnails_data: dict[str, str] = {}
 request_timestamps: dict[str, float] = {}
+# Per-cell color themes bound for ColorR steps (tag -> (bg, border)); the cache is the
+# source of truth for "this cell shows a sent color" (see _apply_step_theme).
+cell_color_cache: dict[str, tuple[tuple[int, int, int, int], tuple[int, int, int, int]]] = {}
 
 
 def get_input_devices() -> list[str]:
@@ -254,7 +258,11 @@ def update_track_slot_ui(row: int) -> None:
 def set_step_type(sender: Any, app_data: Any, user_data: Any) -> None:
     row, col, step_type = user_data
     tracks_data[row]["steps"][col]["type"] = step_type
+    cell_tag = f"seq_cell_{row}_{col}"
+    if step_type != "ColorR":
+        _clear_cell_color(cell_tag)
     update_step_ui(row, col)
+    update_step_theme(row, col, is_head=(is_playing and current_step == col))
 
 
 def toggle_step_active(sender: Any, app_data: Any, user_data: Any) -> None:
@@ -281,10 +289,44 @@ def update_step_theme(row: int, col: int, is_head: bool = False) -> None:
 def _apply_step_theme(cell_tag: str, is_active: bool, is_head: bool) -> None:
     if not dpg.does_item_exist(cell_tag):
         return
+    # A cell that has sent a ColorR color keeps showing it; only the border reflects state.
+    if cell_tag in cell_color_cache:
+        rgb = cell_color_cache[cell_tag][0][:3]
+        _bind_cell_color_theme(cell_tag, rgb, is_active, is_head)
+        return
     if is_head:
         dpg.bind_item_theme(cell_tag, theme_cell_play_on if is_active else theme_cell_play_off)
     else:
         dpg.bind_item_theme(cell_tag, theme_cell_on if is_active else theme_cell_off)
+
+
+def _bind_cell_color_theme(
+    cell_tag: str, rgb: tuple[int, int, int], is_active: bool, is_head: bool
+) -> None:
+    """Bind a per-cell theme whose background is the sent color (main thread only)."""
+    border = (
+        (255, 255, 255, 255)
+        if is_head
+        else ((50, 255, 50, 255) if is_active else (80, 80, 80, 255))
+    )
+    theme_tag = f"theme_cell_color_{cell_tag}"
+    if cell_color_cache.get(cell_tag) != ((*rgb, 255), border):
+        if dpg.does_item_exist(theme_tag):
+            dpg.delete_item(theme_tag)
+        with dpg.theme(tag=theme_tag), dpg.theme_component(dpg.mvChildWindow):
+            dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (*rgb, 255))
+            dpg.add_theme_color(dpg.mvThemeCol_Border, border)
+            dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 5)
+        cell_color_cache[cell_tag] = ((*rgb, 255), border)
+    dpg.bind_item_theme(cell_tag, theme_tag)
+
+
+def _clear_cell_color(cell_tag: str) -> None:
+    """Remove a cell's color theme and forget it (step type changed away from ColorR)."""
+    cell_color_cache.pop(cell_tag, None)
+    theme_tag = f"theme_cell_color_{cell_tag}"
+    if dpg.does_item_exist(theme_tag):
+        dpg.delete_item(theme_tag)
 
 
 def update_step_ui(row: int, col: int) -> None:
@@ -322,6 +364,10 @@ def update_step_ui(row: int, col: int) -> None:
             )
             dpg.add_menu_item(
                 label="Color Random", callback=set_step_type, user_data=(row, col, "ColorR")
+            )
+            dpg.add_separator()
+            dpg.add_menu_item(
+                label="Seek Random", callback=set_step_type, user_data=(row, col, "SeekR")
             )
 
     if step_data["type"] == "AlphaV":
@@ -421,6 +467,16 @@ def update_step_ui(row: int, col: int) -> None:
             width=70,
             height=25,
             tag=f"rand_color_{row}_{col}",
+        )
+
+    elif step_data["type"] == "SeekR":
+        dpg.add_spacer(parent=cell_tag, height=5)
+        dpg.add_text(
+            f"{step_data.get('last_rand_seek', 0.0):.2f}",
+            color=(150, 200, 255, 255),
+            tag=f"rand_seek_{row}_{col}",
+            parent=cell_tag,
+            indent=20,
         )
 
     update_step_theme(row, col, is_head=(is_playing and current_step == col))
@@ -1162,6 +1218,39 @@ def fade_tick_loop() -> None:
         time.sleep(0.01)  # 100 FPS check loop for smooth fades
 
 
+def send_colorr_step(track: dict[str, Any], row: int, col: int) -> None:
+    """Send a random RGB for a ColorR step and color the step cell (HIGH-1 safe)."""
+    target_addr = f"{track['base_address']}/color"
+    r_val, g_val, b_val = (
+        random.uniform(0.0, 1.0),
+        random.uniform(0.0, 1.0),
+        random.uniform(0.0, 1.0),
+    )
+    osc_client.send_message(target_addr, [r_val, g_val, b_val])
+    append_log("OUT", f"{target_addr} [{r_val:.2f}, {g_val:.2f}, {b_val:.2f}]")
+
+    step_data = track["steps"][col]
+    step_data["last_rand_color"] = [r_val, g_val, b_val]
+    tag_color = f"rand_color_{row}_{col}"
+    enqueue_set_value(tag_color, list(step_data["last_rand_color"]))
+
+    rgb_255 = (int(r_val * 255), int(g_val * 255), int(b_val * 255))
+    ui_task(lambda: _bind_cell_color_theme(f"seq_cell_{row}_{col}", rgb_255, True, True))
+
+
+def send_seekr_step(track: dict[str, Any], row: int, col: int) -> None:
+    """Send a random seek (0..1) for a SeekR step and show the value in the cell."""
+    target_addr = f"{track['base_address']}/seek"
+    rand_val = random.uniform(0.0, 1.0)
+    osc_client.send_message(target_addr, float(rand_val))
+    append_log("OUT", f"{target_addr} [{rand_val:.2f}]")
+
+    step_data = track["steps"][col]
+    step_data["last_rand_seek"] = rand_val
+    tag_seek = f"rand_seek_{row}_{col}"
+    enqueue_set_value(tag_seek, f"{rand_val:.2f}")
+
+
 def sequencer_tick() -> None:
     global current_step, phase_nudge
     while True:
@@ -1233,20 +1322,10 @@ def sequencer_tick() -> None:
                                 )
 
                             elif step_data["type"] == "ColorR":
-                                target_addr = f"{base_addr}/color"
-                                r_val, g_val, b_val = (
-                                    random.uniform(0.0, 1.0),
-                                    random.uniform(0.0, 1.0),
-                                    random.uniform(0.0, 1.0),
-                                )
-                                osc_client.send_message(target_addr, [r_val, g_val, b_val])
-                                append_log(
-                                    "OUT", f"{target_addr} [{r_val:.2f}, {g_val:.2f}, {b_val:.2f}]"
-                                )
+                                send_colorr_step(track, r, current_step)
 
-                                step_data["last_rand_color"] = [r_val, g_val, b_val]
-                                tag_color = f"rand_color_{r}_{current_step}"
-                                enqueue_set_value(tag_color, list(step_data["last_rand_color"]))
+                            elif step_data["type"] == "SeekR":
+                                send_seekr_step(track, r, current_step)
 
                         except Exception as e:
                             print(f"[viseq OSC Error] {e}")
