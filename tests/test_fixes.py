@@ -546,6 +546,35 @@ def test_colorv_square_large_and_centered():
     assert buttons[-1].get("no_border") is True, "square must draw as a clean swatch"
 
 
+def test_color_square_indent_centers_in_cell():
+    # Measured on real DPG 2.3.1: child content starts at WindowPadding.x=8, so the
+    # centered indent is (cell - 2*padding - size)/2 = (90-16-40)/2 = 17, not (90-40)/2.
+    assert viseq.STEP_COLOR_SQUARE_INDENT == 17, "indent must center in the padded content region"
+
+
+def test_colorv_colorr_squares_share_geometry():
+    # Both branches must produce the exact same size and position for the swatch.
+    dpg.calls.clear()
+    viseq.tracks_data[0]["steps"][3].update({"type": "ColorV", "color": [0.5, 0.25, 0.75]})
+    viseq.update_step_ui(0, 3)
+    v_kw = [kw for n, a, kw in dpg.calls if n == "add_color_button"][-1]
+    dpg.calls.clear()
+    viseq.tracks_data[0]["steps"][2].update({"type": "ColorR", "last_rand_color": [0.2, 0.4, 0.6]})
+    viseq.update_step_ui(0, 2)
+    r_kw = [kw for n, a, kw in dpg.calls if n == "add_color_button"][-1]
+    for k in ("width", "height", "indent", "no_border"):
+        assert (
+            v_kw.get(k)
+            == r_kw.get(k)
+            == {
+                "width": viseq.STEP_COLOR_SQUARE_SIZE,
+                "height": viseq.STEP_COLOR_SQUARE_SIZE,
+                "indent": viseq.STEP_COLOR_SQUARE_INDENT,
+                "no_border": True,
+            }[k]
+        ), f"ColorV/ColorR must share geometry param {k}"
+
+
 def test_colorv_picker_popup_available():
     dpg.calls.clear()
     viseq.update_step_ui(0, 3)

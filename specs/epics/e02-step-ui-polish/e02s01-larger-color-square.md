@@ -20,7 +20,8 @@ scale (BUG-2026-08-21T222712) via `dpg_color_rgba`.
 **Before:** 70x25 `color_edit` (rendered ~20px tall), left-aligned under the checkbox row.
 **After:** a `STEP_COLOR_SQUARE_SIZE`x`STEP_COLOR_SQUARE_SIZE` (40px) `color_button` swatch
 horizontally centered inside the 90x90 cell (indent computed from the constants,
-`(90-40)/2 = 25`), with a small top spacer to keep vertical balance; ColorV opens the picker
+`(90-2*8-40)/2 = 17`, measured on real DPG 2.3.1 to land dead-center), with a small top
+spacer to keep vertical balance; ColorV opens the picker
 in a left-click popup, ColorR stays read-only; right-click step menu unchanged.
 
 ## Steps
