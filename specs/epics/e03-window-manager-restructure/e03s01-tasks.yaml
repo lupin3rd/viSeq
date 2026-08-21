@@ -1,0 +1,15 @@
+story_id: e03s01
+title: Settings window (hidden, opened from menubar) hosting the OSC config section
+status: pending
+bcps: 2
+tasks:
+- id: 1
+  description: "viOSC window -> Settings window: tag settings_window, label 'Settings', show=False, closable (no no_close); OSC section header + client/server setup + raw table move verbatim"
+  verify: .venv/bin/python -m pytest tests/ -q -k "settings_window"
+  risk: P2
+  status: passing
+- id: 2
+  description: "Menubar 'Settings' entry (show_settings_window callback); autostart_osc still updates the hidden status labels"
+  verify: .venv/bin/python -m pytest tests/ -q -k "settings"
+  risk: P2
+  status: passing

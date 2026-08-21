@@ -39,6 +39,18 @@ STEP_COLOR_SQUARE_INDENT = (
     STEP_CELL_SIZE - 2 * STEP_CELL_CONTENT_PADDING - STEP_COLOR_SQUARE_SIZE
 ) // 2
 
+# Clip-slot layout: a bare centered assign button, no table frame around it (audit L-6).
+# The borderless slot has no WindowPadding (content_region_avail == full size, measured on
+# 2.3.1), so horizontal centering is pure (width - button_width) / 2. Vertically the button's
+# frame rect sits SLOT_BUTTON_FRAME_INSET px below its layout box (measured), hence the -inset.
+SLOT_WIDTH = 135  # px width of the clip slot column
+SLOT_HEIGHT = 90  # px height of a sequencer row
+SLOT_BUTTON_WIDTH = 110  # px width of the assign button/thumbnail
+SLOT_BUTTON_HEIGHT = 70  # px height of the assign button/thumbnail
+SLOT_BUTTON_FRAME_INSET = 4  # px: ImGui button rect offset below its widget box (2.3.1)
+SLOT_BUTTON_INDENT = (SLOT_WIDTH - SLOT_BUTTON_WIDTH) // 2
+SLOT_BUTTON_TOP_SPACER = (SLOT_HEIGHT - SLOT_BUTTON_HEIGHT) // 2 - SLOT_BUTTON_FRAME_INSET
+
 # --- OSC CONFIGURATION ---
 # viseq talks exclusively to viOSC: /vimix/* messages are forwarded by viOSC
 # to Vimix (port 7000), replies come back on viOSC's output port 6667.
@@ -95,6 +107,11 @@ def enqueue_set_value(tag: str, value: Any) -> None:
 def log_error(context: str, message: str) -> None:
     t = time.strftime("%H:%M:%S")
     log_queue.put(f"[{t}] ERROR: {context}: {message}")
+
+
+def format_osc_log(history: list[str]) -> str:
+    """Render the OSC log newest-first (the latest line on top)."""
+    return "\n".join(reversed(history))
 
 
 # --- GLOBAL VIMIX STATE ---
@@ -249,34 +266,36 @@ def update_track_slot_ui(row: int) -> None:
     dpg.delete_item(slot_tag, children_only=True)
     target_id = tracks_data[row].get("target_id")
 
-    with dpg.group(parent=slot_tag, indent=4):
-        dpg.add_spacer(height=3)
-        if target_id:
-            if target_id in thumbnails_data:
-                tex_tag = thumbnails_data[target_id]
-                dpg.add_image_button(
-                    texture_tag=tex_tag,
-                    width=110,
-                    height=70,
-                    callback=assign_clip_to_track,
-                    user_data=row,
-                )
-            else:
-                dpg.add_button(
-                    label=f"{target_id[:10]}\n(Waiting...)",
-                    width=110,
-                    height=70,
-                    callback=assign_clip_to_track,
-                    user_data=row,
-                )
-        else:
-            dpg.add_button(
-                label="ASSIGN\nCLIP",
-                width=110,
-                height=70,
+    dpg.add_spacer(parent=slot_tag, height=SLOT_BUTTON_TOP_SPACER)
+    if target_id:
+        if target_id in thumbnails_data:
+            tex_tag = thumbnails_data[target_id]
+            dpg.add_image_button(
+                texture_tag=tex_tag,
+                width=SLOT_BUTTON_WIDTH,
+                height=SLOT_BUTTON_HEIGHT,
+                indent=SLOT_BUTTON_INDENT,
                 callback=assign_clip_to_track,
                 user_data=row,
             )
+        else:
+            dpg.add_button(
+                label=f"{target_id[:10]}\n(Waiting...)",
+                width=SLOT_BUTTON_WIDTH,
+                height=SLOT_BUTTON_HEIGHT,
+                indent=SLOT_BUTTON_INDENT,
+                callback=assign_clip_to_track,
+                user_data=row,
+            )
+    else:
+        dpg.add_button(
+            label="ASSIGN\nCLIP",
+            width=SLOT_BUTTON_WIDTH,
+            height=SLOT_BUTTON_HEIGHT,
+            indent=SLOT_BUTTON_INDENT,
+            callback=assign_clip_to_track,
+            user_data=row,
+        )
 
 
 def set_step_type(sender: Any, app_data: Any, user_data: Any) -> None:
@@ -1099,6 +1118,16 @@ def autostart_osc() -> None:
     start_osc_server(VIOSC_IP, VIOSC_LISTEN_PORT)
 
 
+def show_settings_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Open the general settings window from the top menubar."""
+    dpg.show_item("settings_window")
+
+
+def show_logs_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Open the OSC logs window from the top menubar (Show > Logs)."""
+    dpg.show_item("logs_window")
+
+
 def callback_resync() -> None:
     global current_step
     current_step = -1
@@ -1446,6 +1475,10 @@ with dpg.theme() as theme_cell_play_on, dpg.theme_component(dpg.mvChildWindow):
     dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (80, 220, 80, 255))
     dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 5)
 
+with dpg.theme() as theme_slot_clear, dpg.theme_component(dpg.mvChildWindow):
+    # borderless clip slot: no frame, no background (border=False + transparent ChildBg)
+    dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (0, 0, 0, 0))
+
 
 # WINDOW 1: SEQUENCER
 with dpg.window(label="Step Sequencer", width=1050, height=800, pos=(10, 10), no_close=True):
@@ -1471,7 +1504,7 @@ with dpg.window(label="Step Sequencer", width=1050, height=800, pos=(10, 10), no
     ):
         for _ in range(NUM_STEPS):
             dpg.add_table_column(width_fixed=True, init_width_or_weight=90)
-        dpg.add_table_column(width_fixed=True, init_width_or_weight=135)
+        dpg.add_table_column(width_fixed=True, init_width_or_weight=SLOT_WIDTH)
 
         for row in range(NUM_TRACKS):
             with dpg.table_row():
@@ -1484,11 +1517,16 @@ with dpg.window(label="Step Sequencer", width=1050, height=800, pos=(10, 10), no
                         pass
                     update_step_ui(row, step)
 
-                # ASSIGNABLE THUMBNAIL SLOT
+                # ASSIGNABLE CLIP SLOT (bare centered button, no table frame)
                 with dpg.child_window(
-                    width=135, height=90, border=True, tag=f"seq_slot_{row}", no_scrollbar=True
+                    width=SLOT_WIDTH,
+                    height=SLOT_HEIGHT,
+                    border=False,
+                    tag=f"seq_slot_{row}",
+                    no_scrollbar=True,
                 ):
                     pass
+                dpg.bind_item_theme(f"seq_slot_{row}", theme_slot_clear)
                 update_track_slot_ui(row)
 
     dpg.bind_item_theme("seq_table", theme_compact_table)
@@ -1530,8 +1568,12 @@ with dpg.window(label="Audio analyzer", width=350, height=220, pos=(10, 820), no
                 tag="beat_led",
             )
 
-# WINDOW 3: viOSC
-with dpg.window(label="viOSC", width=340, height=320, pos=(370, 820), no_close=True):
+# WINDOW 3: SETTINGS (hidden; opened from the menubar "Settings" entry)
+with dpg.window(
+    label="Settings", width=340, height=320, pos=(370, 820), tag="settings_window", show=False
+):
+    dpg.add_text("OSC", color=(200, 200, 200, 255))
+    dpg.add_separator()
     dpg.add_text("1. Setup Client (to viOSC):")
     with dpg.group(horizontal=True):
         dpg.add_input_text(default_value="127.0.0.1", tag="viosc_ip", width=120)
@@ -1566,8 +1608,10 @@ with dpg.window(
     with dpg.group(tag="vimix_media_group"):
         pass
 
-# WINDOW 5: OSC LOGS
-with dpg.window(label="OSC Logs", width=950, height=150, pos=(720, 820), no_close=True):
+# WINDOW 5: OSC LOGS (hidden; opened from the menubar "Show" > "Logs")
+with dpg.window(
+    label="OSC Logs", width=950, height=150, pos=(720, 820), tag="logs_window", show=False
+):
     dpg.add_text("Waiting for OSC traffic...", tag="osc_log_text")
 
 # NEW THREAD FOR HIGH-FREQUENCY FADES
@@ -1579,8 +1623,12 @@ threading.Thread(target=essentia_analyzer_loop, daemon=True).start()
 threading.Thread(target=thumbnail_decoder_worker, daemon=True).start()
 
 dpg.create_viewport(title="viseq - Audio-Reactive VJ Controller", width=1700, height=1000)
-with dpg.viewport_menu_bar(), dpg.menu(label="Monitor"):
-    dpg.add_menu_item(label="New Monitor Player", callback=new_monitor_player)
+with dpg.viewport_menu_bar():
+    with dpg.menu(label="Monitor"):
+        dpg.add_menu_item(label="New Monitor Player", callback=new_monitor_player)
+    with dpg.menu(label="Show"):
+        dpg.add_menu_item(label="Logs", callback=show_logs_window)
+    dpg.add_menu_item(label="Settings", callback=show_settings_window)
 dpg.setup_dearpygui()
 dpg.show_viewport()
 autostart_osc()  # boot: auto-connect OSC client + start listening server (no manual clicks)
@@ -1604,7 +1652,7 @@ try:
             if len(osc_log_history) > LOG_HISTORY_LIMIT:
                 del osc_log_history[:-LOG_HISTORY_LIMIT]
             if dpg.does_item_exist("osc_log_text"):
-                dpg.set_value("osc_log_text", "\n".join(osc_log_history))
+                dpg.set_value("osc_log_text", format_osc_log(osc_log_history))
 
         # Run queued UI mutations from worker threads on the main thread (audit HIGH-1)
         while not ui_task_queue.empty():

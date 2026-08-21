@@ -38,3 +38,19 @@ epics:
       - id: e02s02
         title: "Auto-start OSC client + listening server on launch"
         bcps: 3
+
+  - id: e03
+    slug: window-manager-restructure
+    title: "Menubar shell: Settings window, Show menu + Logs (newest-first), borderless clip slot"
+    wsjf: 50
+    baseline_bcps: 6
+    stories:
+      - id: e03s01
+        title: "Settings window (hidden, opened from menubar) hosting the OSC config section"
+        bcps: 2
+      - id: e03s02
+        title: "Show menu + Logs window (hidden by default) with newest-first rendering"
+        bcps: 2
+      - id: e03s03
+        title: "Clip slot: centered bare assign button, no table frame"
+        bcps: 2

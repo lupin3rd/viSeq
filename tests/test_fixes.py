@@ -168,6 +168,17 @@ import viseq  # noqa: E402  (needs the repo root on sys.path; stubs above must r
 # capture listen default right after import, before any calls-list clears
 listen_defaults = [kw.get("default_value") for n, a, kw in dpg.calls if n == "add_input_text"]
 
+# capture the boot-time window/menubar structure (e03) before any calls-list clears.
+# viseq uses the context-manager forms, so the stub records them as window/menu/child_window.
+import_time_windows = {kw.get("tag"): kw for n, a, kw in dpg.calls if n == "window"}
+import_time_menus = [kw for n, a, kw in dpg.calls if n == "menu"]
+import_time_menu_items = [kw for n, a, kw in dpg.calls if n == "add_menu_item"]
+import_time_slots = [
+    kw
+    for n, a, kw in dpg.calls
+    if n == "child_window" and str(kw.get("tag", "")).startswith("seq_slot_")
+]
+
 
 # ---------- MED-3: ColorR cell passes DPG-scale (0..255) RGBA value ----------
 def test_med3_colorr_dpg_scale_value():
@@ -649,3 +660,69 @@ def test_autostart_osc_connects_client_and_starts_server():
     assert dpg.values.get("viosc_status") == "Client Status: Ready on 127.0.0.1:6666"
     assert dpg.values.get("server_status") == "Server Status: Listening on 127.0.0.1:6667"
     assert "6667" in dpg.values.get("server_status", ""), "autostart must use the listen port"
+
+
+# ---------- e03: menubar shell (settings/logs windows, newest-first logs, clip slot) ----------
+def test_format_osc_log_newest_first():
+    assert viseq.format_osc_log(["a", "b", "c"]) == "c\nb\na", "latest log line must be on top"
+    assert viseq.format_osc_log([]) == ""
+    assert viseq.format_osc_log(["only"]) == "only"
+
+
+def test_settings_window_hidden_closable():
+    w = import_time_windows.get("settings_window")
+    assert w, "settings window must be tagged settings_window"
+    assert w.get("show") is False, "settings window must be hidden by default"
+    assert w.get("label") == "Settings"
+    assert not w.get("no_close"), "settings window must be closable with X"
+
+
+def test_logs_window_hidden_closable():
+    w = import_time_windows.get("logs_window")
+    assert w, "logs window must be tagged logs_window"
+    assert w.get("show") is False, "logs window must be hidden by default"
+    assert not w.get("no_close"), "logs window must be closable with X"
+
+
+def test_menubar_show_menu_and_settings_entry():
+    assert any(kw.get("label") == "Show" for kw in import_time_menus), "Show menu must exist"
+    items = {kw.get("label"): kw.get("callback") for kw in import_time_menu_items}
+    assert items.get("Logs") == viseq.show_logs_window, "Show > Logs must open the logs window"
+    assert items.get("Settings") == viseq.show_settings_window, (
+        "Settings menubar entry must open the settings window"
+    )
+
+
+def test_show_logs_window_callback():
+    dpg.calls.clear()
+    viseq.show_logs_window()
+    assert any(n == "show_item" and a == ("logs_window",) for n, a, kw in dpg.calls)
+
+
+def test_show_settings_window_callback():
+    dpg.calls.clear()
+    viseq.show_settings_window()
+    assert any(n == "show_item" and a == ("settings_window",) for n, a, kw in dpg.calls)
+
+
+def test_slot_borderless_centered_button():
+    slots = import_time_slots
+    assert slots, "clip slots must exist"
+    assert all(kw.get("border") is False for kw in slots), "clip slot must have no frame"
+    # measured on real DPG 2.3.1: borderless slot has no padding -> indent 12, spacer 6
+    assert viseq.SLOT_BUTTON_INDENT == 12, "110px button centered in the 135px slot"
+    assert viseq.SLOT_BUTTON_TOP_SPACER == 6, "70px button vertically centered (frame inset 4)"
+
+    dpg.calls.clear()
+    viseq.tracks_data[0]["target_id"] = None
+    viseq.thumbnails_data.clear()
+    viseq.update_track_slot_ui(0)
+    btns = [kw for n, a, kw in dpg.calls if n == "add_button"]
+    assert btns, "bare ASSIGN CLIP button must be created"
+    assert btns[-1].get("width") == viseq.SLOT_BUTTON_WIDTH, "button width from constants"
+    assert btns[-1].get("height") == viseq.SLOT_BUTTON_HEIGHT, "button height from constants"
+    assert btns[-1].get("indent") == viseq.SLOT_BUTTON_INDENT, "button horizontally centered"
+    spacers = [kw for n, a, kw in dpg.calls if n == "add_spacer"]
+    assert any(kw.get("height") == viseq.SLOT_BUTTON_TOP_SPACER for kw in spacers), (
+        "button vertically centered in the slot"
+    )
