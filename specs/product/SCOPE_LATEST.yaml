@@ -24,14 +24,14 @@ summary: >-
   the user's manual acceptance on the real rig.
 
 in_scope:
-  - e04s01: "Spectrum engine: spectrum_analyzer_loop worker (Hann FFT -> 32 normalized bars 0..1, ~30 FPS) with pure compute_spectrum_bars()/band_value_from_bars() helpers; bars redrawn in the audio window drawlist via the main-thread task queue."
-  - e04s02: "Band selection + value: Start/End sliders (0..1) + translucent selection rectangle on the spectrum; the selected band's mean level is displayed and continuously stored in the audio_band_value module variable (0..1) for future features."
+  - e04s01: "Spectrum engine: spectrum_analyzer_loop worker (Hann FFT -> 16 normalized bars 0..1, ~30 FPS) with pure compute_spectrum_bars()/band_value_from_bars() helpers; bars redrawn in the audio window drawlist via the main-thread task queue."
+  - e04s02: "Three selectable bands: band1/band2/band3, each individually enabled/disabled by a checkbox (disabled = not computed, overlay hidden); each band has its own Start/End range sliders and translucent rectangle; enabled bands' mean levels are displayed and stored in the band1/band2/band3 module variables (0..1) for future features."
 
 out_of_scope:
-  - "Directly draggable selection box (drag the rectangle on the spectrum with the mouse) — deferred: the simple Start/End sliders + overlay satisfy the current need; interactive drag is a possible polish."
-  - "More than one selectable band / multiple audio_band_value variables — deferred: single band for now."
+  - "Directly draggable selection boxes (drag the rectangles on the spectrum with the mouse) — deferred: the per-band Start/End sliders + overlays satisfy the current need."
+  - "More than three bands — band1/band2/band3 cover the need; more bands would need the same pattern."
   - "FFT display modes (log-frequency axis, peak-hold, smoothing) — deferred: simple linear bars."
-  - "Using audio_band_value in any feature yet — it is exposed as a variable for future work, nothing consumes it in this initiative."
+  - "Using band1/band2/band3 in any feature yet — they are exposed as variables for future work, nothing consumes them in this initiative."
   - "Changes to BPM analysis, low-pass flag, the OSC contract, or monitor players."
   - "Module split of viseq.py — deferred decision from e01 still holds."
 
@@ -45,11 +45,12 @@ constraints:
   - "Verification is headless (stub harness) + user manual acceptance; real GUI rendering cannot be verified headless."
 
 success_criteria:
-  - "With level analysis on, the audio window shows a live vertical-bar spectrum responding to the source."
-  - "Start/End sliders + the translucent rectangle select a spectral band; the band's mean level is shown as 0..1 text and stored in audio_band_value."
-  - "Silence yields near-zero bars and band value; a pure tone lights the bars around its frequency."
+  - "With level analysis on, the audio window shows a live 16-bar vertical spectrum responding to the source."
+  - "Bands 1-3 are individually enable/disable-able; disabled bands cost nothing (not computed, overlay hidden) and their variables stay 0."
+  - "Each enabled band's range (Start/End) selects a spectral region; its mean level is shown and stored in band1/band2/band3 (0..1)."
+  - "Silence yields near-zero bars and band values; a pure tone lights the bars around its frequency."
   - "The VU level bar is replaced by the spectrum; BPM/low-pass controls unchanged."
-  - "Regression harness fully green (existing 41 tests + new ones)."
+  - "Regression harness fully green (existing 50 tests + new ones)."
 
 references:
   - "specs/planning-context.yaml (frozen OSC contract)"

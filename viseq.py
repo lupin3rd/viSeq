@@ -203,19 +203,29 @@ lowpass_filter = es.LowPass(cutoffFrequency=250.0)
 
 # --- SPECTRUM ANALYZER (e04) ---
 SPECTRUM_FFT_SIZE = 2048  # samples per FFT frame
-SPECTRUM_BARS = 32  # number of spectrum bars (also the band grid)
+# 16 bars > 32: benchmarked lighter (~26% less compute per frame + half the draw calls);
+# the FFT dominates either way, and 16 bars keep a clear view of the audible range.
+SPECTRUM_BARS = 16
+NUM_BANDS = 3  # independent selectable bands (band1/band2/band3)
 SPECTRUM_FPS = 30.0  # spectrum redraw rate while analyzing
 SPECTRUM_DB_FLOOR = 60.0  # dB below full scale mapped to bar level 0
 SPEC_DRAWLIST_W = 330  # spectrum drawlist width (px)
-SPEC_DRAWLIST_H = 70  # spectrum drawlist height (px)
+SPEC_DRAWLIST_H = 40  # spectrum drawlist height (px)
 SPECTRUM_BAR_COLOR = (80, 255, 120, 255)  # green bars
-SPECTRUM_BAND_FILL = (255, 255, 0, 40)  # translucent selection rectangle
-SPECTRUM_BAND_EDGE = (255, 255, 0, 200)
+BAND_RECT_COLORS = {
+    1: ((255, 255, 0, 40), (255, 255, 0, 200)),  # yellow overlay
+    2: ((0, 255, 255, 40), (0, 255, 255, 200)),  # cyan overlay
+    3: ((255, 0, 255, 40), (255, 0, 255, 200)),  # magenta overlay
+}
+BAND_DEFAULT_RANGES = {1: (0.0, 0.33), 2: (0.33, 0.66), 3: (0.66, 1.0)}  # equal thirds
 
-# Last computed spectrum bars + the selected band level (0..1). Both are written on the
-# main thread inside the queued spectrum task; future features read audio_band_value.
+# Last computed spectrum bars + per-band state. All written on the main thread inside the
+# queued spectrum task; future features read band1/band2/band3 (0..1, 0 while disabled).
 spectrum_bars_cache: np.ndarray = np.zeros(SPECTRUM_BARS, dtype=np.float32)
-audio_band_value: float = 0.0
+bands_enabled: dict[int, bool] = {1: False, 2: False, 3: False}
+band1: float = 0.0
+band2: float = 0.0
+band3: float = 0.0
 
 thumbnails_data: dict[str, str] = {}
 request_timestamps: dict[str, float] = {}
@@ -1234,22 +1244,43 @@ def band_value_from_bars(bars: np.ndarray, start: float, end: float) -> float:
     return float(np.mean(bars[lo:hi]))
 
 
-def refresh_band_value(bars: np.ndarray) -> None:
-    """Recompute the band level from the current sliders; update text and overlay (main thread)."""
-    global audio_band_value
-    start = float(dpg.get_value("band_start"))
-    end = float(dpg.get_value("band_end"))
-    audio_band_value = band_value_from_bars(bars, start, end)
-    dpg.set_value("band_value_text", f"Band value: {audio_band_value:.2f}")
+def _set_band_variable(band_id: int, value: float) -> None:
+    """Store a band level into its module variable (band1/band2/band3)."""
+    global band1, band2, band3
+    if band_id == 1:
+        band1 = value
+    elif band_id == 2:
+        band2 = value
+    else:
+        band3 = value
+
+
+def refresh_band_value(bars: np.ndarray, band_id: int) -> None:
+    """Recompute one band's level from its sliders; update text and overlay (main thread)."""
+    if not bands_enabled[band_id]:
+        return
+    start = float(dpg.get_value(f"band{band_id}_start"))
+    end = float(dpg.get_value(f"band{band_id}_end"))
+    value = band_value_from_bars(bars, start, end)
+    _set_band_variable(band_id, value)
+    dpg.set_value(f"band{band_id}_value_text", f"{value:.2f}")
     dpg.configure_item(
-        "spec_band_rect",
+        f"band{band_id}_rect",
         pmin=(start * SPEC_DRAWLIST_W, 2),
         pmax=(end * SPEC_DRAWLIST_W, SPEC_DRAWLIST_H - 2),
+        show=True,
     )
 
 
+def refresh_bands(bars: np.ndarray) -> None:
+    """Refresh every enabled band (disabled bands stay 0 and hidden)."""
+    for band_id in bands_enabled:
+        if bands_enabled[band_id]:
+            refresh_band_value(bars, band_id)
+
+
 def update_spectrum_ui(bars: np.ndarray) -> None:
-    """Redraw the spectrum bars and refresh the band selection (main thread)."""
+    """Redraw the spectrum bars and refresh the enabled bands (main thread)."""
     global spectrum_bars_cache
     n = len(bars)
     bw = SPEC_DRAWLIST_W / n
@@ -1261,12 +1292,24 @@ def update_spectrum_ui(bars: np.ndarray) -> None:
             pmax=((i + 1) * bw - 1, SPEC_DRAWLIST_H - 2),
         )
     spectrum_bars_cache = bars
-    refresh_band_value(bars)
+    refresh_bands(bars)
+
+
+def on_band_enable(sender: Any, app_data: Any, user_data: Any) -> None:
+    """Show/hide a band's overlay and (re)compute it when the checkbox toggles."""
+    band_id = int(user_data)
+    bands_enabled[band_id] = bool(app_data)
+    if bands_enabled[band_id]:
+        refresh_band_value(spectrum_bars_cache, band_id)
+    else:
+        _set_band_variable(band_id, 0.0)
+        dpg.set_value(f"band{band_id}_value_text", "—")
+        dpg.configure_item(f"band{band_id}_rect", show=False)
 
 
 def on_band_change(sender: Any, app_data: Any, user_data: Any) -> None:
-    """Refresh the band value immediately when the selection sliders move."""
-    refresh_band_value(spectrum_bars_cache)
+    """Refresh a band when its selection sliders move."""
+    refresh_band_value(spectrum_bars_cache, int(user_data))
 
 
 def spectrum_analyzer_loop() -> None:
@@ -1631,18 +1674,18 @@ with dpg.window(label="Step Sequencer", width=1050, height=800, pos=(10, 10), no
 # WINDOW 2: AUDIO ANALYZER
 input_devices_list = get_input_devices()
 
-with dpg.window(label="Audio analyzer", width=350, height=250, pos=(10, 820), no_close=True):
+with dpg.window(label="Audio analyzer", width=350, height=268, pos=(10, 810), no_close=True):
     dpg.add_text("Select Audio Source:")
     dpg.add_combo(
         items=input_devices_list, default_value=input_devices_list[0], tag="combo_devices", width=-1
     )
-    dpg.add_spacer(height=4)
+    dpg.add_spacer(height=2)
     dpg.add_checkbox(
         label="Enable Level Analysis (Spectrum)",
         callback=toggle_audio_stream,
         user_data="vu_meter",
     )
-    dpg.add_spacer(height=4)
+    dpg.add_spacer(height=2)
     with dpg.drawlist(width=SPEC_DRAWLIST_W, height=SPEC_DRAWLIST_H, tag="spec_drawlist"):
         for i in range(SPECTRUM_BARS):
             dpg.draw_rectangle(
@@ -1652,38 +1695,48 @@ with dpg.window(label="Audio analyzer", width=350, height=250, pos=(10, 820), no
                 fill=SPECTRUM_BAR_COLOR,
                 tag=f"spec_bar_{i}",
             )
-        dpg.draw_rectangle(
-            pmin=(0, 2),
-            pmax=(SPEC_DRAWLIST_W, SPEC_DRAWLIST_H - 2),
-            color=SPECTRUM_BAND_EDGE,
-            fill=SPECTRUM_BAND_FILL,
-            tag="spec_band_rect",
-        )
-    with dpg.group(horizontal=True):
-        dpg.add_drag_float(
-            label="Start",
-            default_value=0.0,
-            min_value=0.0,
-            max_value=0.99,
-            speed=0.005,
-            format="%.2f",
-            width=110,
-            tag="band_start",
-            callback=on_band_change,
-        )
-        dpg.add_drag_float(
-            label="End",
-            default_value=1.0,
-            min_value=0.01,
-            max_value=1.0,
-            speed=0.005,
-            format="%.2f",
-            width=110,
-            tag="band_end",
-            callback=on_band_change,
-        )
-        dpg.add_text("Val: 0.00", tag="band_value_text")
-    dpg.add_separator()
+        for band_id, (fill, edge) in BAND_RECT_COLORS.items():
+            dpg.draw_rectangle(
+                pmin=(0, 2),
+                pmax=(SPEC_DRAWLIST_W, SPEC_DRAWLIST_H - 2),
+                color=edge,
+                fill=fill,
+                tag=f"band{band_id}_rect",
+                show=False,
+            )
+    for band_id, (start_default, end_default) in BAND_DEFAULT_RANGES.items():
+        with dpg.group(horizontal=True):
+            dpg.add_checkbox(
+                label=f"Band {band_id}",
+                tag=f"band{band_id}_enabled",
+                callback=on_band_enable,
+                user_data=band_id,
+            )
+            dpg.add_drag_float(
+                label="Start",
+                default_value=start_default,
+                min_value=0.0,
+                max_value=0.99,
+                speed=0.005,
+                format="%.2f",
+                width=80,
+                tag=f"band{band_id}_start",
+                callback=on_band_change,
+                user_data=band_id,
+            )
+            dpg.add_drag_float(
+                label="End",
+                default_value=end_default,
+                min_value=0.01,
+                max_value=1.0,
+                speed=0.005,
+                format="%.2f",
+                width=80,
+                tag=f"band{band_id}_end",
+                callback=on_band_change,
+                user_data=band_id,
+            )
+            dpg.add_text("—", tag=f"band{band_id}_value_text", color=(230, 230, 120, 255))
     dpg.add_checkbox(
         label="Enable BPM Analysis (Essentia)",
         callback=toggle_audio_stream,

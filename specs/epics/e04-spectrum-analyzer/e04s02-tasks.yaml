@@ -1,15 +1,15 @@
 story_id: e04s02
-title: Band selection: Start/End sliders + rectangle overlay + audio_band_value variable
+title: Three selectable bands (band1/band2/band3), individually enableable
 status: pending
 bcps: 3
 tasks:
 - id: 1
-  description: "Pure band_value_from_bars(bars, start, end) -> float (mean of selected bars, clamped, degenerate range -> >=1 bar) + unit tests (full/partial/inverted/empty)"
-  verify: .venv/bin/python -m pytest tests/ -q -k "band_value"
+  description: "Constants/state: NUM_BANDS=3, SPECTRUM_BARS=16 (benchmarked lighter), bands_enabled={1:False,2:False,3:False}, band1/band2/band3=0.0; per-band rect colors; pure band_value_from_bars unchanged"
+  verify: .venv/bin/python -m pytest tests/ -q -k "bands"
   risk: P2
-  status: passing
+  status: pending
 - id: 2
-  description: "Start/End drag sliders, translucent selection rectangle, 'Band value' text, audio_band_value module variable updated in the queued spectrum task; on_band_change callback refreshes on slider drag"
+  description: "refresh_bands (enabled only) + on_band_enable + on_band_change(band_id); three band rows in the audio window (checkbox + Start/End + value) and three hidden overlays; remove the single-band UI and audio_band_value"
   verify: .venv/bin/python -m pytest tests/ -q
   risk: P2
-  status: passing
+  status: pending

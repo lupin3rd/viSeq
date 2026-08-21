@@ -183,15 +183,28 @@ import_time_slots = [
 spec_drawlist_tag = any(
     n == "drawlist" and kw.get("tag") == "spec_drawlist" for n, a, kw in dpg.calls
 )
-band_start_slider = any(
-    n == "add_drag_float" and kw.get("tag") == "band_start" for n, a, kw in dpg.calls
-)
-band_end_slider = any(
-    n == "add_drag_float" and kw.get("tag") == "band_end" for n, a, kw in dpg.calls
-)
-band_value_text_tag = any(
-    n == "add_text" and kw.get("tag") == "band_value_text" for n, a, kw in dpg.calls
-)
+band_enabled_checkboxes = {
+    kw.get("tag")
+    for n, a, kw in dpg.calls
+    if n == "add_checkbox" and str(kw.get("tag", "")).startswith("band")
+}
+band_slider_tags = [
+    kw.get("tag")
+    for n, a, kw in dpg.calls
+    if n == "add_drag_float" and str(kw.get("tag", "")).startswith("band")
+]
+band_value_text_tags = {
+    kw.get("tag")
+    for n, a, kw in dpg.calls
+    if n == "add_text"
+    and str(kw.get("tag", "")).startswith("band")
+    and kw.get("tag") != "band_value_text"
+}
+band_rect_tags = {
+    kw.get("tag")
+    for n, a, kw in dpg.calls
+    if n == "draw_rectangle" and str(kw.get("tag", "")).startswith("band")
+}
 vu_meter_progress = any(
     n == "add_progress_bar" and kw.get("tag") == "vu_meter" for n, a, kw in dpg.calls
 )
@@ -805,16 +818,53 @@ def test_band_value_empty():
 
 
 def test_on_band_change_refreshes_value():
-    viseq.spectrum_bars_cache = np.full(32, 0.4)
+    viseq.spectrum_bars_cache = np.full(16, 0.4)
+    viseq.bands_enabled[1] = True
     dpg.values.clear()
-    viseq.on_band_change(None, None, None)
-    assert viseq.audio_band_value == 0.4, "stub sliders read 1.0/1.0 -> last bar level"
-    assert dpg.values.get("band_value_text") == "Band value: 0.40"
+    viseq.on_band_change(None, None, 1)
+    assert viseq.band1 == 0.4, "stub sliders read 1.0/1.0 -> last bar level"
+    assert dpg.values.get("band1_value_text") == "0.40"
+    viseq.bands_enabled[1] = False  # restore default
+
+
+def test_bands_disabled_by_default():
+    viseq.band1 = viseq.band2 = viseq.band3 = 0.0  # reset (module globals persist across tests)
+    assert viseq.bands_enabled == {1: False, 2: False, 3: False}
+    assert viseq.band1 == 0.0 and viseq.band2 == 0.0 and viseq.band3 == 0.0
+
+
+def test_refresh_bands_only_enabled():
+    bars = np.arange(16, dtype=float) / 15.0
+    viseq.spectrum_bars_cache = bars
+    viseq.bands_enabled[1] = True
+    viseq.bands_enabled[2] = True
+    dpg.values.clear()
+    viseq.refresh_bands(bars)
+    # stub sliders read 1.0/1.0 -> each enabled band = its last bar (15/15 = 1.0)
+    assert viseq.band1 == 1.0 and viseq.band2 == 1.0
+    assert viseq.band3 == 0.0, "disabled band must stay 0"
+    viseq.bands_enabled[1] = False
+    viseq.bands_enabled[2] = False
+
+
+def test_on_band_enable_hides_disabled():
+    dpg.calls.clear()
+    dpg.values.clear()
+    viseq.on_band_enable(None, False, 2)
+    assert viseq.bands_enabled[2] is False
+    assert dpg.values.get("band2_value_text") == "—", "disabled band shows a dash"
+    assert any(
+        n == "configure_item" and a == ("band2_rect",) and kw.get("show") is False
+        for n, a, kw in dpg.calls
+    ), "band2 overlay hidden"
 
 
 def test_audio_window_spectrum_ui_wired():
     assert spec_drawlist_tag, "spectrum drawlist must exist in the audio window"
-    assert band_start_slider and band_end_slider, "band Start/End sliders must exist"
-    assert band_value_text_tag, "band value text must exist"
     assert len(spec_bar_tags) == viseq.SPECTRUM_BARS, "one tagged bar per spectrum bin"
+    assert band_enabled_checkboxes == {"band1_enabled", "band2_enabled", "band3_enabled"}
+    assert {f"band{i}_start" for i in (1, 2, 3)}.issubset(band_slider_tags)
+    assert {f"band{i}_end" for i in (1, 2, 3)}.issubset(band_slider_tags)
+    assert band_value_text_tags == {"band1_value_text", "band2_value_text", "band3_value_text"}
+    assert band_rect_tags == {"band1_rect", "band2_rect", "band3_rect"}
     assert not vu_meter_progress, "VU progress bar must be replaced by the spectrum"
