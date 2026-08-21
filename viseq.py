@@ -31,7 +31,7 @@ DPG_COLOR_SCALE = 255.0  # DPG ToColor divides color inputs by 255 -> its color 
 
 # Step-cell layout: a centered square leaves the checkbox/type row on top (audit L-6)
 STEP_CELL_SIZE = 90  # px side of each sequencer step cell
-STEP_COLOR_SQUARE_SIZE = 60  # px side of the centered color square inside a step cell
+STEP_COLOR_SQUARE_SIZE = 40  # px side of the centered color square inside a step cell
 STEP_COLOR_SQUARE_INDENT = (STEP_CELL_SIZE - STEP_COLOR_SQUARE_SIZE) // 2
 
 # --- OSC CONFIGURATION ---

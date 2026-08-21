@@ -8,18 +8,19 @@
 step-type label + right-click menu) and, for ColorV/ColorR, a color widget. A plain
 `color_edit` cannot draw a large square: DPG ignores its `height` (ImGui draws the rect at
 frame height), so the old 70x25 widget always looked ~20px tall. The fix uses
-`add_color_button` (ImGui::ColorButton with explicit width×height) for both: a 60x60 swatch
-horizontally centered in the cell, with the ColorV button opening a left-click popup
-containing an RGB `color_picker` (callback still `update_step_val`). Colors are stored
-normalized 0..1 and must still reach DPG on the 0..255 scale (BUG-2026-08-21T222712) via
-`dpg_color_rgba`.
+`add_color_button` (ImGui::ColorButton with explicit width×height) for both: a square swatch
+sized by `STEP_COLOR_SQUARE_SIZE` (40px) horizontally centered in the cell, with the ColorV
+button opening a left-click popup containing an RGB `color_picker` (callback still
+`update_step_val`). Colors are stored normalized 0..1 and must still reach DPG on the 0..255
+scale (BUG-2026-08-21T222712) via `dpg_color_rgba`.
 
 ## Requirements
 
 #### ENHANCED: ColorV/ColorR step square is larger and centered
 **Before:** 70x25 `color_edit` (rendered ~20px tall), left-aligned under the checkbox row.
-**After:** a 60x60 `color_button` swatch horizontally centered inside the 90x90 cell (indent
-`(90-60)/2 = 15`), with a small top spacer to keep vertical balance; ColorV opens the picker
+**After:** a `STEP_COLOR_SQUARE_SIZE`x`STEP_COLOR_SQUARE_SIZE` (40px) `color_button` swatch
+horizontally centered inside the 90x90 cell (indent computed from the constants,
+`(90-40)/2 = 25`), with a small top spacer to keep vertical balance; ColorV opens the picker
 in a left-click popup, ColorR stays read-only; right-click step menu unchanged.
 
 ## Steps
