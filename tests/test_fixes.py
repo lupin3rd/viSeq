@@ -284,8 +284,34 @@ def test_l2_ring_buffer_preallocated_and_wraps():
     )
 
 
-# ---------- FEATURE: ColorR colors the step cell with the sent color ----------
-def test_colorr_send_colors_cell_with_sent_color(monkeypatch):
+# ---------- FEATURE: ColorV square picks+sends the color; ColorR square shows it ----------
+def test_colorv_send_sends_normalized_color():
+    track = viseq.tracks_data[0]
+    track["base_address"] = "/vimix/clipA"
+    step = track["steps"][4]
+    step.update({"type": "ColorV", "color": [0.5, 0.25, 0.75]})
+    osc_sender = viseq.osc_client
+    osc_sender.messages.clear()
+
+    viseq.send_colorv_step(track, 0, 4)
+
+    assert (" /vimix/clipA/color".strip(), [0.5, 0.25, 0.75]) in osc_sender.messages, (
+        "ColorV must send the picked color (0..1) without re-normalizing by 255"
+    )
+
+
+def test_colorv_square_default_is_normalized():
+    step = viseq.tracks_data[0]["steps"][5]
+    step.update({"type": "ColorV", "color": [0.5, 0.25, 0.75]})
+    dpg.calls.clear()
+    viseq.update_step_ui(0, 5)
+    color_edits = [kw for n, a, kw in dpg.calls if n == "add_color_edit"]
+    assert color_edits and color_edits[-1].get("default_value") == [0.5, 0.25, 0.75], (
+        "ColorV square must open with the stored color (0..1)"
+    )
+
+
+def test_colorr_square_shows_sent_color(monkeypatch):
     monkeypatch.setattr(viseq.random, "uniform", lambda a, b: 0.42)
     track = viseq.tracks_data[0]
     track["base_address"] = "/vimix/clipA"
@@ -293,38 +319,15 @@ def test_colorr_send_colors_cell_with_sent_color(monkeypatch):
     step.update({"type": "ColorR", "last_rand_color": [0, 0, 0]})
     osc_sender = viseq.osc_client
     osc_sender.messages.clear()
-    dpg.calls.clear()
+    dpg.values.clear()
 
     viseq.send_colorr_step(track, 0, 0)
 
-    # the exact color sent to viOSC
-    assert (" /vimix/clipA/color".strip(), [0.42, 0.42, 0.42]) in osc_sender.messages, (
-        "ColorR must send [r,g,b] to /color"
-    )
-    assert step["last_rand_color"] == [0.42, 0.42, 0.42]
-
-    # drain the UI queue: the cell theme must be bound with the sent color
+    assert (" /vimix/clipA/color".strip(), [0.42, 0.42, 0.42]) in osc_sender.messages
     while not viseq.ui_task_queue.empty():
         viseq.ui_task_queue.get()()
-    theme_tag = "theme_cell_color_seq_cell_0_0"
-    binds = [a for n, a, kw in dpg.calls if n == "bind_item_theme"]
-    assert ("seq_cell_0_0", theme_tag) in binds, "cell must be bound to its color theme"
-    theme_colors = [a[1] for n, a, kw in dpg.calls if n == "add_theme_color"]
-    assert (107, 107, 107, 255) in theme_colors, "ChildBg must be the sent color (0.42*255=107)"
-
-
-def test_step_type_change_clears_cell_color():
-    cell_tag = "seq_cell_0_3"
-    dpg.calls.clear()
-    viseq._bind_cell_color_theme(cell_tag, (128, 64, 191), True, True)
-    assert cell_tag in viseq.cell_color_cache, "color theme must be tracked in the cache"
-
-    # changing the step type away from ColorR clears the color
-    viseq.set_step_type(None, None, (0, 3, "NONE"))
-    assert cell_tag not in viseq.cell_color_cache, "type change must clear the cached color"
-    deletes = [a for n, a, kw in dpg.calls if n == "delete_item"]
-    assert any(a[0] == "theme_cell_color_seq_cell_0_3" for a in deletes), (
-        "type change must delete the color theme"
+    assert dpg.values.get("rand_color_0_0") == [0.42, 0.42, 0.42], (
+        "the step's little square must show the sent random color"
     )
 
 
@@ -416,7 +419,7 @@ def make_step(active: bool, stype: str, v1: float, v2: float, frames: int, msgs:
         "v2": v2,
         "frames": frames,
         "msgs": msgs,
-        "color": [255, 255, 255],
+        "color": [1.0, 1.0, 1.0],
         "last_rand_v1": 0.0,
         "last_rand_color": [0, 0, 0],
     }
