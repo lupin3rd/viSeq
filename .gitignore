@@ -12,3 +12,8 @@ venv/
 
 # Local spike/temp artifacts
 /tmp/
+
+# Gate tooling caches (G6)
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/

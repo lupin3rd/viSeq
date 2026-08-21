@@ -1,0 +1,11 @@
+# specs/state.yaml — session state (seed-conventions bootstrap)
+# workflow_mode is the canonical integrate-mode signal: solo-git = commit
+# directly on main with conventional commits; PR flow optional.
+
+workflow_mode: solo-git
+
+handoff:
+  next_skill: null
+
+git:
+  branch: main

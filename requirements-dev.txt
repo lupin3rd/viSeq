@@ -1,0 +1,6 @@
+# Development dependencies — mechanical gates (G6).
+# Install:  .venv/bin/pip install -r requirements-dev.txt
+ruff==0.16.4
+mypy==2.3.1
+pytest==9.1.1
+pre-commit==4.2.0

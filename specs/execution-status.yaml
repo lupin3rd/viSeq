@@ -1,0 +1,9 @@
+# specs/execution-status.yaml — flat story status (sole SoT)
+# Seeds the post-e01 baseline: all e01 stories landed (release 1.0.0).
+
+e01: done
+e01s01: done
+e01s02: done
+e01s03: done
+e01s04: done
+e01s05: done

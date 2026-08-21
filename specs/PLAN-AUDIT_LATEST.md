@@ -47,8 +47,8 @@
 - [ ] **G2:** Decide the DearPyGui fork: lock Python 3.11 + dpg 1.9.1, or plan the 2.x migration. This is the first HARD GATE.
 - [ ] **G3:** Define in_scope/out_of_scope for the accepted work (via `scope-work`).
 - [ ] **G4:** Define success criteria per work item (verifiable, test-backed).
-- [ ] **G5:** Bootstrap project conventions: CLAUDE.md + CONVENTIONS.md (`seed-conventions`) and initialize git (enables `solo-git`, commits, churn-based review).
-- [ ] **G6:** Choose and pin the mechanical gates: lint (ruff), typecheck (mypy, at least on new code), test runner (pytest) — needed before `develop-tdd`/`verify-work`/`audit-code` can gate anything.
+- [x] **G5:** Bootstrap project conventions: CLAUDE.md + CONVENTIONS.md (`seed-conventions`) and initialize git (enables `solo-git`, commits, churn-based review). — DONE 2026-08-21: AGENTS.md/CLAUDE.md (symlink) + CONVENTIONS.md + specs/ structure + workflow_mode solo-git in state.yaml.
+- [x] **G6:** Choose and pin the mechanical gates: lint (ruff), typecheck (mypy, at least on new code), test runner (pytest) — needed before `develop-tdd`/`verify-work`/`audit-code` can gate anything. — DONE 2026-08-21: ruff (curated ruleset, pyproject.toml), mypy (green on viseq.py + tests), pytest (17 checks, converted harness), pre-commit hooks, requirements-dev.txt.
 
 ## Verdict
 
