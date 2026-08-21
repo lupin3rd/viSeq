@@ -719,10 +719,20 @@ def test_slot_borderless_centered_button():
     viseq.update_track_slot_ui(0)
     btns = [kw for n, a, kw in dpg.calls if n == "add_button"]
     assert btns, "bare ASSIGN CLIP button must be created"
+    assert btns[-1].get("parent") == "seq_slot_0", "button must be parented to the clip slot"
     assert btns[-1].get("width") == viseq.SLOT_BUTTON_WIDTH, "button width from constants"
     assert btns[-1].get("height") == viseq.SLOT_BUTTON_HEIGHT, "button height from constants"
     assert btns[-1].get("indent") == viseq.SLOT_BUTTON_INDENT, "button horizontally centered"
     spacers = [kw for n, a, kw in dpg.calls if n == "add_spacer"]
     assert any(kw.get("height") == viseq.SLOT_BUTTON_TOP_SPACER for kw in spacers), (
         "button vertically centered in the slot"
+    )
+
+    # assigned-but-no-thumbnail case: the waiting button is also parented to the slot
+    dpg.calls.clear()
+    viseq.tracks_data[0]["target_id"] = "clipX"
+    viseq.update_track_slot_ui(0)
+    wait_btns = [kw for n, a, kw in dpg.calls if n == "add_button"]
+    assert wait_btns and wait_btns[-1].get("parent") == "seq_slot_0", (
+        "waiting button must be parented to the clip slot"
     )

@@ -277,6 +277,7 @@ def update_track_slot_ui(row: int) -> None:
                 indent=SLOT_BUTTON_INDENT,
                 callback=assign_clip_to_track,
                 user_data=row,
+                parent=slot_tag,
             )
         else:
             dpg.add_button(
@@ -286,6 +287,7 @@ def update_track_slot_ui(row: int) -> None:
                 indent=SLOT_BUTTON_INDENT,
                 callback=assign_clip_to_track,
                 user_data=row,
+                parent=slot_tag,
             )
     else:
         dpg.add_button(
@@ -295,6 +297,7 @@ def update_track_slot_ui(row: int) -> None:
             indent=SLOT_BUTTON_INDENT,
             callback=assign_clip_to_track,
             user_data=row,
+            parent=slot_tag,
         )
 
 
