@@ -1,0 +1,15 @@
+story_id: e04s01
+title: Spectrum engine: FFT worker + 32 normalized bars in a drawlist
+status: pending
+bcps: 3
+tasks:
+- id: 1
+  description: "Pure compute_spectrum_bars(samples) -> np.ndarray: Hann window, rfft, dB scale (-60 dBFS floor), 32 bins 0..1; unit tests (tone peak bin, silence -> ~0, shape/length, boundaries)"
+  verify: .venv/bin/python -m pytest tests/ -q -k "spectrum_bars"
+  risk: P1
+  status: passing
+- id: 2
+  description: "spectrum_analyzer_loop worker (30 FPS on the ring buffer, ui_task redraw, try/except) + spec drawlist with 32 tagged bar rectangles + update_spectrum_bars redraw; replace the VU progress bar in the audio window"
+  verify: .venv/bin/python -m pytest tests/ -q
+  risk: P1
+  status: passing

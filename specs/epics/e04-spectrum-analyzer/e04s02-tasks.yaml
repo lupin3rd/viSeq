@@ -1,0 +1,15 @@
+story_id: e04s02
+title: Band selection: Start/End sliders + rectangle overlay + audio_band_value variable
+status: pending
+bcps: 3
+tasks:
+- id: 1
+  description: "Pure band_value_from_bars(bars, start, end) -> float (mean of selected bars, clamped, degenerate range -> >=1 bar) + unit tests (full/partial/inverted/empty)"
+  verify: .venv/bin/python -m pytest tests/ -q -k "band_value"
+  risk: P2
+  status: passing
+- id: 2
+  description: "Start/End drag sliders, translucent selection rectangle, 'Band value' text, audio_band_value module variable updated in the queued spectrum task; on_band_change callback refreshes on slider drag"
+  verify: .venv/bin/python -m pytest tests/ -q
+  risk: P2
+  status: passing

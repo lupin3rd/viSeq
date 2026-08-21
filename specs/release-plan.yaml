@@ -54,3 +54,16 @@ epics:
       - id: e03s03
         title: "Clip slot: centered bare assign button, no table frame"
         bcps: 2
+
+  - id: e04
+    slug: spectrum-analyzer
+    title: "Selectable-band spectrum analyzer in the audio window"
+    wsjf: 55
+    baseline_bcps: 6
+    stories:
+      - id: e04s01
+        title: "Spectrum engine: FFT worker + 32 normalized bars in a drawlist"
+        bcps: 3
+      - id: e04s02
+        title: "Band selection: Start/End sliders + rectangle overlay + audio_band_value variable"
+        bcps: 3

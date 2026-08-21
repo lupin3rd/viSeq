@@ -179,6 +179,28 @@ import_time_slots = [
     if n == "child_window" and str(kw.get("tag", "")).startswith("seq_slot_")
 ]
 
+# e04: audio-window spectrum structure, captured before any calls-list clears
+spec_drawlist_tag = any(
+    n == "drawlist" and kw.get("tag") == "spec_drawlist" for n, a, kw in dpg.calls
+)
+band_start_slider = any(
+    n == "add_drag_float" and kw.get("tag") == "band_start" for n, a, kw in dpg.calls
+)
+band_end_slider = any(
+    n == "add_drag_float" and kw.get("tag") == "band_end" for n, a, kw in dpg.calls
+)
+band_value_text_tag = any(
+    n == "add_text" and kw.get("tag") == "band_value_text" for n, a, kw in dpg.calls
+)
+vu_meter_progress = any(
+    n == "add_progress_bar" and kw.get("tag") == "vu_meter" for n, a, kw in dpg.calls
+)
+spec_bar_tags = [
+    kw.get("tag")
+    for n, a, kw in dpg.calls
+    if n == "draw_rectangle" and str(kw.get("tag", "")).startswith("spec_bar_")
+]
+
 
 # ---------- MED-3: ColorR cell passes DPG-scale (0..255) RGBA value ----------
 def test_med3_colorr_dpg_scale_value():
@@ -736,3 +758,63 @@ def test_slot_borderless_centered_button():
     assert wait_btns and wait_btns[-1].get("parent") == "seq_slot_0", (
         "waiting button must be parented to the clip slot"
     )
+
+
+# ---------- e04: selectable-band spectrum analyzer ----------
+def test_spectrum_bars_silence_is_zero():
+    bars = viseq.compute_spectrum_bars(np.zeros(2048, dtype=np.float32))
+    assert bars.shape == (viseq.SPECTRUM_BARS,)
+    assert np.all(bars < 0.05), "silence must yield near-zero bars"
+
+
+def test_spectrum_bars_tone_peaks_near_bin():
+    sr = viseq.samplerate
+    t = np.arange(2048) / sr
+    tone = (0.8 * np.sin(2 * np.pi * 5000.0 * t)).astype(np.float32)
+    bars = viseq.compute_spectrum_bars(tone)
+    expected_bin = int(5000.0 / (sr / 2) * viseq.SPECTRUM_BARS)
+    assert abs(int(np.argmax(bars)) - expected_bin) <= 2, (
+        f"5kHz tone must peak near bin {expected_bin}, got {int(np.argmax(bars))}"
+    )
+    assert float(np.max(bars)) > 0.5, "a loud tone must light its bars"
+    assert bool(np.all(bars >= 0.0)) and bool(np.all(bars <= 1.0)), "bars stay in 0..1"
+
+
+def test_spectrum_bars_short_input_padded():
+    bars = viseq.compute_spectrum_bars(np.zeros(100, dtype=np.float32))
+    assert bars.shape == (viseq.SPECTRUM_BARS,)
+
+
+def test_band_value_full_range():
+    bars = np.full(32, 0.5)
+    assert viseq.band_value_from_bars(bars, 0.0, 1.0) == 0.5
+
+
+def test_band_value_partial_range():
+    bars = np.arange(32, dtype=float)
+    assert viseq.band_value_from_bars(bars, 0.0, 0.25) == 3.5, "mean of the first 8 bars"
+
+
+def test_band_value_inverted_range_clamps():
+    bars = np.arange(32, dtype=float)
+    assert viseq.band_value_from_bars(bars, 0.75, 0.25) == 24.0, "inverted range -> one bar"
+
+
+def test_band_value_empty():
+    assert viseq.band_value_from_bars(np.array([]), 0.0, 1.0) == 0.0
+
+
+def test_on_band_change_refreshes_value():
+    viseq.spectrum_bars_cache = np.full(32, 0.4)
+    dpg.values.clear()
+    viseq.on_band_change(None, None, None)
+    assert viseq.audio_band_value == 0.4, "stub sliders read 1.0/1.0 -> last bar level"
+    assert dpg.values.get("band_value_text") == "Band value: 0.40"
+
+
+def test_audio_window_spectrum_ui_wired():
+    assert spec_drawlist_tag, "spectrum drawlist must exist in the audio window"
+    assert band_start_slider and band_end_slider, "band Start/End sliders must exist"
+    assert band_value_text_tag, "band value text must exist"
+    assert len(spec_bar_tags) == viseq.SPECTRUM_BARS, "one tagged bar per spectrum bin"
+    assert not vu_meter_progress, "VU progress bar must be replaced by the spectrum"

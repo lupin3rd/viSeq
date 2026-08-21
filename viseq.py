@@ -6,6 +6,7 @@ import random
 import threading
 import time
 from collections.abc import Callable
+from functools import partial
 from typing import Any
 
 import dearpygui.dearpygui as dpg
@@ -199,6 +200,22 @@ current_bpm: float = 120.0
 beat_confidence: float = 0.0
 rhythm_extractor = es.RhythmExtractor2013(method="multifeature")
 lowpass_filter = es.LowPass(cutoffFrequency=250.0)
+
+# --- SPECTRUM ANALYZER (e04) ---
+SPECTRUM_FFT_SIZE = 2048  # samples per FFT frame
+SPECTRUM_BARS = 32  # number of spectrum bars (also the band grid)
+SPECTRUM_FPS = 30.0  # spectrum redraw rate while analyzing
+SPECTRUM_DB_FLOOR = 60.0  # dB below full scale mapped to bar level 0
+SPEC_DRAWLIST_W = 330  # spectrum drawlist width (px)
+SPEC_DRAWLIST_H = 70  # spectrum drawlist height (px)
+SPECTRUM_BAR_COLOR = (80, 255, 120, 255)  # green bars
+SPECTRUM_BAND_FILL = (255, 255, 0, 40)  # translucent selection rectangle
+SPECTRUM_BAND_EDGE = (255, 255, 0, 200)
+
+# Last computed spectrum bars + the selected band level (0..1). Both are written on the
+# main thread inside the queued spectrum task; future features read audio_band_value.
+spectrum_bars_cache: np.ndarray = np.zeros(SPECTRUM_BARS, dtype=np.float32)
+audio_band_value: float = 0.0
 
 thumbnails_data: dict[str, str] = {}
 request_timestamps: dict[str, float] = {}
@@ -1170,8 +1187,6 @@ def audio_callback(indata: np.ndarray, frames: int, time_info: Any, status: Any)
             audio_buffer[audio_buffer_head:] = samples[:split]
             audio_buffer[: n - split] = samples[split:]
         audio_buffer_head = end % len(audio_buffer)
-    if is_audio_analyzing:
-        enqueue_set_value("vu_meter", float(np.max(np.abs(samples))))
 
 
 def get_audio_snapshot() -> np.ndarray:
@@ -1184,6 +1199,86 @@ def get_audio_snapshot() -> np.ndarray:
     if head == 0:
         return audio_buffer.copy()
     return np.concatenate((audio_buffer[head:], audio_buffer[:head]))
+
+
+def compute_spectrum_bars(samples: np.ndarray, n_bars: int = SPECTRUM_BARS) -> np.ndarray:
+    """Magnitude spectrum of the latest samples, binned into n_bars levels (0..1).
+
+    Hann-windowed rfft, dB scale with a -SPECTRUM_DB_FLOOR floor; a full-scale sine
+    reaches ~1.0, silence ~0.0.
+    """
+    if samples.size < SPECTRUM_FFT_SIZE:
+        samples = np.pad(samples, (0, SPECTRUM_FFT_SIZE - samples.size))
+    frame = samples[-SPECTRUM_FFT_SIZE:] * np.hanning(SPECTRUM_FFT_SIZE)
+    mag = np.abs(np.fft.rfft(frame))[1:]  # drop DC
+    # max per bar: averaging in dB would drown a narrow peak among quiet bins
+    mag_bins = np.array_split(mag, n_bars)
+    db = 20.0 * np.log10(
+        np.array([np.max(b) for b in mag_bins]) / (SPECTRUM_FFT_SIZE / 4.0) + 1e-12
+    )
+    levels = (db + SPECTRUM_DB_FLOOR) / SPECTRUM_DB_FLOOR
+    return np.clip(levels, 0.0, 1.0)
+
+
+def band_value_from_bars(bars: np.ndarray, start: float, end: float) -> float:
+    """Mean level (0..1) of the bars in the selected band [start, end) (0..1 each)."""
+    if bars.size == 0:
+        return 0.0
+    n = bars.size
+    lo = round(start * n)
+    hi = round(end * n)
+    if hi <= lo:  # inverted/degenerate selection -> at least one bar
+        hi = lo + 1
+    lo = max(0, min(lo, n - 1))
+    hi = max(lo + 1, min(hi, n))
+    return float(np.mean(bars[lo:hi]))
+
+
+def refresh_band_value(bars: np.ndarray) -> None:
+    """Recompute the band level from the current sliders; update text and overlay (main thread)."""
+    global audio_band_value
+    start = float(dpg.get_value("band_start"))
+    end = float(dpg.get_value("band_end"))
+    audio_band_value = band_value_from_bars(bars, start, end)
+    dpg.set_value("band_value_text", f"Band value: {audio_band_value:.2f}")
+    dpg.configure_item(
+        "spec_band_rect",
+        pmin=(start * SPEC_DRAWLIST_W, 2),
+        pmax=(end * SPEC_DRAWLIST_W, SPEC_DRAWLIST_H - 2),
+    )
+
+
+def update_spectrum_ui(bars: np.ndarray) -> None:
+    """Redraw the spectrum bars and refresh the band selection (main thread)."""
+    global spectrum_bars_cache
+    n = len(bars)
+    bw = SPEC_DRAWLIST_W / n
+    for i, level in enumerate(bars):
+        h = level * (SPEC_DRAWLIST_H - 4)
+        dpg.configure_item(
+            f"spec_bar_{i}",
+            pmin=(i * bw + 1, SPEC_DRAWLIST_H - h),
+            pmax=((i + 1) * bw - 1, SPEC_DRAWLIST_H - 2),
+        )
+    spectrum_bars_cache = bars
+    refresh_band_value(bars)
+
+
+def on_band_change(sender: Any, app_data: Any, user_data: Any) -> None:
+    """Refresh the band value immediately when the selection sliders move."""
+    refresh_band_value(spectrum_bars_cache)
+
+
+def spectrum_analyzer_loop() -> None:
+    """Compute the spectrum ~30x/s and enqueue the main-thread redraw (HIGH-1)."""
+    while True:
+        if is_audio_analyzing:
+            try:
+                bars = compute_spectrum_bars(get_audio_snapshot())
+                ui_task(partial(update_spectrum_ui, bars))
+            except Exception as e:
+                log_error("Spectrum", str(e))
+        time.sleep(1.0 / SPECTRUM_FPS)
 
 
 def essentia_analyzer_loop() -> None:
@@ -1420,7 +1515,6 @@ def toggle_audio_stream(sender: Any, app_data: Any, user_data: Any) -> None:
         audio_stream.stop()
         audio_stream.close()
         audio_stream = None
-        dpg.set_value("vu_meter", 0.0)
         dpg.set_value("testo_bpm", "BPM: ---")
         turn_off_led()
 
@@ -1537,17 +1631,59 @@ with dpg.window(label="Step Sequencer", width=1050, height=800, pos=(10, 10), no
 # WINDOW 2: AUDIO ANALYZER
 input_devices_list = get_input_devices()
 
-with dpg.window(label="Audio analyzer", width=350, height=220, pos=(10, 820), no_close=True):
+with dpg.window(label="Audio analyzer", width=350, height=250, pos=(10, 820), no_close=True):
     dpg.add_text("Select Audio Source:")
     dpg.add_combo(
         items=input_devices_list, default_value=input_devices_list[0], tag="combo_devices", width=-1
     )
-    dpg.add_spacer(height=10)
+    dpg.add_spacer(height=4)
     dpg.add_checkbox(
-        label="Enable Level Analysis (VU)", callback=toggle_audio_stream, user_data="vu_meter"
+        label="Enable Level Analysis (Spectrum)",
+        callback=toggle_audio_stream,
+        user_data="vu_meter",
     )
-    dpg.add_progress_bar(tag="vu_meter", default_value=0.0, width=-1, height=15, overlay="")
-    dpg.add_spacer(height=10)
+    dpg.add_spacer(height=4)
+    with dpg.drawlist(width=SPEC_DRAWLIST_W, height=SPEC_DRAWLIST_H, tag="spec_drawlist"):
+        for i in range(SPECTRUM_BARS):
+            dpg.draw_rectangle(
+                pmin=(i * (SPEC_DRAWLIST_W / SPECTRUM_BARS) + 1, SPEC_DRAWLIST_H - 2),
+                pmax=((i + 1) * (SPEC_DRAWLIST_W / SPECTRUM_BARS) - 1, SPEC_DRAWLIST_H - 2),
+                color=(0, 0, 0, 0),
+                fill=SPECTRUM_BAR_COLOR,
+                tag=f"spec_bar_{i}",
+            )
+        dpg.draw_rectangle(
+            pmin=(0, 2),
+            pmax=(SPEC_DRAWLIST_W, SPEC_DRAWLIST_H - 2),
+            color=SPECTRUM_BAND_EDGE,
+            fill=SPECTRUM_BAND_FILL,
+            tag="spec_band_rect",
+        )
+    with dpg.group(horizontal=True):
+        dpg.add_drag_float(
+            label="Start",
+            default_value=0.0,
+            min_value=0.0,
+            max_value=0.99,
+            speed=0.005,
+            format="%.2f",
+            width=110,
+            tag="band_start",
+            callback=on_band_change,
+        )
+        dpg.add_drag_float(
+            label="End",
+            default_value=1.0,
+            min_value=0.01,
+            max_value=1.0,
+            speed=0.005,
+            format="%.2f",
+            width=110,
+            tag="band_end",
+            callback=on_band_change,
+        )
+        dpg.add_text("Val: 0.00", tag="band_value_text")
+    dpg.add_separator()
     dpg.add_checkbox(
         label="Enable BPM Analysis (Essentia)",
         callback=toggle_audio_stream,
@@ -1619,13 +1755,14 @@ with dpg.window(
 
 # NEW THREAD FOR HIGH-FREQUENCY FADES
 threading.Thread(target=fade_tick_loop, daemon=True).start()
+threading.Thread(target=spectrum_analyzer_loop, daemon=True).start()
 
 threading.Thread(target=sequencer_tick, daemon=True).start()
 threading.Thread(target=visual_metronome_loop, daemon=True).start()
 threading.Thread(target=essentia_analyzer_loop, daemon=True).start()
 threading.Thread(target=thumbnail_decoder_worker, daemon=True).start()
 
-dpg.create_viewport(title="viseq - Audio-Reactive VJ Controller", width=1700, height=1000)
+dpg.create_viewport(title="viseq - Audio-Reactive VJ Controller", width=1700, height=1080)
 with dpg.viewport_menu_bar():
     with dpg.menu(label="Monitor"):
         dpg.add_menu_item(label="New Monitor Player", callback=new_monitor_player)

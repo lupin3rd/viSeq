@@ -2,55 +2,56 @@
 # Consumed by: slice-tasks, plan-work, develop-tdd, verify-work
 
 core_value: >-
-  Restructure the app shell around a proper menubar: the OSC configuration moves into a
-  hidden "Settings" window opened from the top bar, a "Show" menu opens the previously
-  always-visible Logs window (now hidden by default, newest log first), and the sequencer
-  clip slot becomes a clean centered assign button with no table frame around it.
+  Add a simple selectable-band spectrum analyzer to the Audio analyzer window: vertical-bar
+  FFT spectrum, a modifiable band-selection rectangle, and the selected band's normalized
+  level (0..1) exposed as a program variable for future features.
 
 summary: >-
-  viseq (audio-reactive VJ controller for Vimix via the viOSC daemon) currently opens every
-  utility window at boot: viOSC config, OSC Logs, Audio analyzer, Vimix Media — cluttering a
-  1700x1000 screen. The user wants a conventional app-shell pattern: a top menubar with
-  "Settings" (opens the general settings window, which today contains only the OSC section and
-  will host more fields later), and "Show" (opens optional windows, starting with "Logs").
-  Both the settings and logs windows become hidden by default and re-open from the menu; the
-  logs render newest-first. In the sequencer, the rightmost clip-assign slot keeps its assign
-  button (thumbnail / waiting / "ASSIGN CLIP") but drops the bordered child-window frame and
-  centers the button vertically and horizontally in the row.
+  viseq's Audio analyzer window currently shows only a VU level bar when level analysis is
+  enabled. The user wants a simple spectrum analyzer: vertical bars over the audible range,
+  plus a modifiable selection box (band range) whose normalized average level (0..1) becomes
+  a live program variable for future use (e.g. audio-reactive features).
 
-  The frozen OSC contract, sequencer engine, and monitor players are untouched. The viOSC
-  window's content (client/server setup + raw state table) moves verbatim into the Settings
-  window under an "OSC" section header. Verification is headless (stub harness) plus the
-  user's manual acceptance on the real rig.
+  This initiative adds a dedicated spectrum worker (~30 FPS, Hann-windowed 2048-sample FFT on
+  the existing ring buffer) that bins magnitudes into 32 bars (dB scale, -60 dBFS floor),
+  drawn in a drawlist in the audio window; two Start/End sliders (0..1 of the spectrum) plus
+  a translucent overlay rectangle define the selected band; the band's mean bar level is
+  shown as text and stored in the module variable `audio_band_value` (0..1). The frozen OSC
+  contract, sequencer, and monitor players are untouched. The existing VU level bar is
+  replaced by the spectrum; BPM analysis and low-pass flag stay unchanged.
+
+  Verification is headless (stub harness + pure-function tests for FFT/bin/band math) plus
+  the user's manual acceptance on the real rig.
 
 in_scope:
-  - e03s01: "Settings window: the viOSC window becomes a hidden-by-default 'Settings' window (tag settings_window, closable, reopened from a 'Settings' entry in the top menubar); its content is grouped under an 'OSC' section; autostart OSC keeps working with the window hidden."
-  - e03s02: "Show menu + Logs: a 'Show' menu in the top menubar opens the Logs window (hidden by default, tag logs_window, closable); log lines render newest-first (latest at the top)."
-  - e03s03: "Clip slot polish: the rightmost sequencer slot keeps its assign button (thumbnail / waiting / ASSIGN CLIP, click to assign) but is centered in the row and rendered without the bordered child-window/table frame — only the button visible."
+  - e04s01: "Spectrum engine: spectrum_analyzer_loop worker (Hann FFT -> 32 normalized bars 0..1, ~30 FPS) with pure compute_spectrum_bars()/band_value_from_bars() helpers; bars redrawn in the audio window drawlist via the main-thread task queue."
+  - e04s02: "Band selection + value: Start/End sliders (0..1) + translucent selection rectangle on the spectrum; the selected band's mean level is displayed and continuously stored in the audio_band_value module variable (0..1) for future features."
 
 out_of_scope:
-  - "New settings fields beyond the existing OSC section — deferred: the window is prepared for them, none added."
-  - "Moving the Audio analyzer or Vimix Media windows behind the Show menu — deferred: not requested."
-  - "Monitor player changes (window layout, menu behavior) — untouched."
-  - "Log autoscroll, filtering, persistence, or levels — deferred: only the display order changes."
-  - "New OSC endpoints, addresses, or payloads — the viOSC contract is frozen."
+  - "Directly draggable selection box (drag the rectangle on the spectrum with the mouse) — deferred: the simple Start/End sliders + overlay satisfy the current need; interactive drag is a possible polish."
+  - "More than one selectable band / multiple audio_band_value variables — deferred: single band for now."
+  - "FFT display modes (log-frequency axis, peak-hold, smoothing) — deferred: simple linear bars."
+  - "Using audio_band_value in any feature yet — it is exposed as a variable for future work, nothing consumes it in this initiative."
+  - "Changes to BPM analysis, low-pass flag, the OSC contract, or monitor players."
   - "Module split of viseq.py — deferred decision from e01 still holds."
 
 constraints:
-  - "Runtime: Python 3.13, dearpygui 2.3.1, single-file viseq.py (no module split)."
+  - "Runtime: Python 3.13, dearpygui 2.3.1, numpy >=2,<3, single-file viseq.py (no module split)."
   - "OSC contract with viOSC is frozen (addresses and payloads in planning-context.yaml)."
   - "All UI mutations from worker threads must go through ui_task_queue (HIGH-1)."
   - "No dpg API calls before create_context() (spike landmine)."
-  - "autostart_osc must keep working with the settings window hidden (status labels are set on hidden items)."
+  - "The spectrum worker must never die from an exception (graceful degradation, BLE001/S110 posture)."
+  - "audio_band_value is written on the main thread (inside the queued UI task) and read by future main-thread features."
   - "Verification is headless (stub harness) + user manual acceptance; real GUI rendering cannot be verified headless."
 
 success_criteria:
-  - "At boot only the sequencer, audio analyzer, and media library windows are visible; settings and logs are closed."
-  - "The menubar has 'Settings' (opens the settings window) and 'Show' > 'Logs' (opens the logs window); both windows can also be closed with their X."
-  - "The OSC log shows the newest line at the top."
-  - "The clip slot shows only the assign button/thumbnail, centered in the row, with no bordered frame."
-  - "Regression harness fully green (existing 34 tests + new ones)."
+  - "With level analysis on, the audio window shows a live vertical-bar spectrum responding to the source."
+  - "Start/End sliders + the translucent rectangle select a spectral band; the band's mean level is shown as 0..1 text and stored in audio_band_value."
+  - "Silence yields near-zero bars and band value; a pure tone lights the bars around its frequency."
+  - "The VU level bar is replaced by the spectrum; BPM/low-pass controls unchanged."
+  - "Regression harness fully green (existing 41 tests + new ones)."
 
 references:
   - "specs/planning-context.yaml (frozen OSC contract)"
+  - "specs/tech-architecture/tech-stack.md"
   - "specs/epics/e02-step-ui-polish/ (prior UI polish: DPG color API 0..255, color_button swatch, WindowPadding-aware centering)"
