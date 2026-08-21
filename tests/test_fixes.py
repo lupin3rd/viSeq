@@ -124,9 +124,36 @@ osc = types.ModuleType("pythonosc")
 udp_client = types.ModuleType("pythonosc.udp_client")
 udp_client.SimpleUDPClient = lambda ip, port: Sender()
 dispatcher = types.ModuleType("pythonosc.dispatcher")
-dispatcher.Dispatcher = object
+
+
+class FakeDispatcher:
+    """Minimal stand-in for pythonosc Dispatcher (records the default handler)."""
+
+    def __init__(self):
+        self.handler = None
+
+    def set_default_handler(self, handler):
+        self.handler = handler
+
+
+dispatcher.Dispatcher = FakeDispatcher
 osc_server = types.ModuleType("pythonosc.osc_server")
-osc_server.ThreadingOSCUDPServer = object
+
+
+class FakeOSCServer:
+    """Minimal stand-in for ThreadingOSCUDPServer: start/stop without real sockets."""
+
+    def __init__(self, *a, **kw):
+        pass
+
+    def serve_forever(self):
+        pass
+
+    def shutdown(self):
+        pass
+
+
+osc_server.ThreadingOSCUDPServer = FakeOSCServer
 osc.udp_client = udp_client
 osc.dispatcher = dispatcher
 osc.osc_server = osc_server
@@ -489,3 +516,80 @@ def test_high2_uninterrupted_fade_completes():
         assert started and completed, "uninterrupted fade must start and complete (frames=4)"
     finally:
         viseq.is_playing = False
+
+
+# ---------- e02s01: larger centered color square in step cells ----------
+def _assert_color_square_large_centered(row: int, col: int, stype: str) -> None:
+    dpg.calls.clear()
+    viseq.update_step_ui(row, col)
+    edits = [kw for n, a, kw in dpg.calls if n == "add_color_edit"]
+    assert edits, f"no add_color_edit call issued for {stype} step"
+    kw = edits[-1]
+    assert kw.get("width") == viseq.STEP_COLOR_SQUARE_SIZE, "square must use the shared size"
+    assert kw.get("height") == viseq.STEP_COLOR_SQUARE_SIZE, "square must use the shared size"
+    assert kw.get("indent") == viseq.STEP_COLOR_SQUARE_INDENT, "square must be centered"
+
+
+def test_colorv_square_large_and_centered():
+    step = viseq.tracks_data[0]["steps"][3]
+    step.update({"type": "ColorV", "color": [0.5, 0.25, 0.75]})
+    _assert_color_square_large_centered(0, 3, "ColorV")
+    edits = [kw for n, a, kw in dpg.calls if n == "add_color_edit"]
+    assert edits[-1].get("default_value") == viseq.dpg_color_value([0.5, 0.25, 0.75]), (
+        "0..255 DPG scale contract must survive the resize"
+    )
+    assert edits[-1].get("no_picker") is not True, "ColorV must keep its picker"
+
+
+def test_colorr_square_large_and_centered():
+    step = viseq.tracks_data[0]["steps"][2]
+    step.update({"type": "ColorR", "last_rand_color": [0.2, 0.4, 0.6]})
+    _assert_color_square_large_centered(0, 2, "ColorR")
+    edits = [kw for n, a, kw in dpg.calls if n == "add_color_edit"]
+    assert edits[-1].get("default_value") == viseq.dpg_color_value([0.2, 0.4, 0.6]), (
+        "0..255 DPG scale contract must survive the resize"
+    )
+    assert edits[-1].get("no_picker") is True, "ColorR must stay read-only"
+
+
+# ---------- e02s02: OSC autostart (client + server at boot) ----------
+def _reset_osc_state() -> None:
+    viseq.viosc_client = None
+    viseq.is_server_running = False
+    viseq.local_osc_server = None
+    viseq.local_server_thread = None
+    dpg.values.clear()
+
+
+def test_start_osc_server_listens_on_defaults():
+    _reset_osc_state()
+    ok = viseq.start_osc_server("127.0.0.1", 6667)
+    assert ok and viseq.is_server_running is True
+    assert dpg.values.get("server_status") == "Server Status: Listening on 127.0.0.1:6667", (
+        "status label must reflect the listening server"
+    )
+
+
+def test_start_osc_server_idempotent():
+    _reset_osc_state()
+    assert viseq.start_osc_server("127.0.0.1", 6667) is True
+    thread = viseq.local_server_thread
+    assert viseq.start_osc_server("127.0.0.1", 9999) is True, "already running -> no-op True"
+    assert viseq.local_server_thread is thread, "must not restart an already running server"
+
+
+def test_connect_osc_client_sets_ready_status():
+    _reset_osc_state()
+    ok = viseq.connect_osc_client("127.0.0.1", 6666)
+    assert ok and viseq.viosc_client is not None
+    assert dpg.values.get("viosc_status") == "Client Status: Ready on 127.0.0.1:6666"
+
+
+def test_autostart_osc_connects_client_and_starts_server():
+    _reset_osc_state()
+    viseq.autostart_osc()
+    assert viseq.viosc_client is not None, "autostart must connect the OSC client"
+    assert viseq.is_server_running is True, "autostart must start the listening server"
+    assert dpg.values.get("viosc_status") == "Client Status: Ready on 127.0.0.1:6666"
+    assert dpg.values.get("server_status") == "Server Status: Listening on 127.0.0.1:6667"
+    assert "6667" in dpg.values.get("server_status", ""), "autostart must use the listen port"

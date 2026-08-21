@@ -1,0 +1,15 @@
+story_id: e02s01
+title: Larger centered color square in ColorV/ColorR step cells
+status: pending
+bcps: 2
+tasks:
+- id: 1
+  description: "ColorV branch: color_edit square grows to 62x62 and is horizontally centered in the 90x90 cell (indent 14, top spacer 8); picker/callback and 0..255 dpg_color_value conversion preserved"
+  verify: .venv/bin/python -m pytest tests/ -q -k "colorv"
+  risk: P2
+  status: passing
+- id: 2
+  description: "ColorR branch: same size/centering as ColorV via the shared constants; read-only display (no_picker) and set_value repaint path preserved"
+  verify: .venv/bin/python -m pytest tests/ -q -k "colorr"
+  risk: P2
+  status: passing

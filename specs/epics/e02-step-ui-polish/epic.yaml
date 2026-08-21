@@ -1,0 +1,27 @@
+# specs/epics/e02-step-ui-polish/epic.yaml — capsule manifest (slice-tasks)
+id: e02
+slug: step-ui-polish
+title: "Step-cell color square polish + OSC autostart"
+status: in_progress
+delta: ENHANCED   # adds visible layout polish and removes a manual boot step; no contract change
+context: >-
+  Post-e01 usability pass. (a) The ColorV/ColorR step squares (70x25, left-aligned) are too
+  small to read the color feedback of the /color OSC message; the user wants a larger square
+  centered in the 90x90 step button. (b) Every launch requires two manual clicks
+  (Connect Client + Start Server) before any OSC traffic; the user wants the client connected
+  and the listening server up automatically at boot with the default addresses, buttons kept
+  as override/fallback. Server start and client connect logic must be extracted into
+  testable core functions; the frozen viOSC contract is untouched.
+stories:
+  - id: e02s01
+    title: "Larger centered color square in ColorV/ColorR step cells"
+    bcps: 2
+    delta: ENHANCED
+  - id: e02s02
+    title: "Auto-start OSC client + listening server on launch"
+    bcps: 3
+    delta: ENHANCED
+references:
+  - "specs/product/SCOPE_LATEST.yaml"
+  - "specs/planning-context.yaml"
+  - "specs/bugs/BUG-2026-08-21T222712-colorr-square-not-painted.md"

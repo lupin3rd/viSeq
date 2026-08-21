@@ -29,11 +29,17 @@ LOG_HISTORY_LIMIT = 25  # max entries kept in the OSC log window
 MONITOR_OFFSET = (280, 260)  # grid spacing between monitor player windows
 DPG_COLOR_SCALE = 255.0  # DPG ToColor divides color inputs by 255 -> its color API is 0..255
 
+# Step-cell layout: a centered square leaves the checkbox/type row on top (audit L-6)
+STEP_CELL_SIZE = 90  # px side of each sequencer step cell
+STEP_COLOR_SQUARE_SIZE = 60  # px side of the centered color square inside a step cell
+STEP_COLOR_SQUARE_INDENT = (STEP_CELL_SIZE - STEP_COLOR_SQUARE_SIZE) // 2
+
 # --- OSC CONFIGURATION ---
 # viseq talks exclusively to viOSC: /vimix/* messages are forwarded by viOSC
 # to Vimix (port 7000), replies come back on viOSC's output port 6667.
 VIOSC_IP = "127.0.0.1"
 VIOSC_PORT = 6666
+VIOSC_LISTEN_PORT = 6667  # the port viOSC sends replies to; viseq's own server listens here
 osc_client = udp_client.SimpleUDPClient(VIOSC_IP, VIOSC_PORT)
 
 viosc_client: Any = None
@@ -411,21 +417,22 @@ def update_step_ui(row: int, col: int) -> None:
             )
 
     elif step_data["type"] == "ColorV":
-        dpg.add_spacer(parent=cell_tag, height=5)
+        dpg.add_spacer(parent=cell_tag, height=6)
         # color is stored normalized (0..1); DPG's color API expects 0..255 (ToColor /255)
         dpg.add_color_edit(
             parent=cell_tag,
             default_value=dpg_color_value(step_data["color"]),
             no_alpha=True,
             no_inputs=True,
-            width=70,
-            height=25,
+            width=STEP_COLOR_SQUARE_SIZE,
+            height=STEP_COLOR_SQUARE_SIZE,
+            indent=STEP_COLOR_SQUARE_INDENT,
             callback=update_step_val,
             user_data=(row, col, "color"),
         )
 
     elif step_data["type"] == "ColorR":
-        dpg.add_spacer(parent=cell_tag, height=5)
+        dpg.add_spacer(parent=cell_tag, height=6)
         # last_rand_color is stored normalized (0..1); DPG's color API expects 0..255
         dpg.add_color_edit(
             parent=cell_tag,
@@ -434,8 +441,9 @@ def update_step_ui(row: int, col: int) -> None:
             no_inputs=True,
             no_picker=True,
             no_tooltip=True,
-            width=70,
-            height=25,
+            width=STEP_COLOR_SQUARE_SIZE,
+            height=STEP_COLOR_SQUARE_SIZE,
+            indent=STEP_COLOR_SQUARE_INDENT,
             tag=f"rand_color_{row}_{col}",
         )
 
@@ -1014,6 +1022,26 @@ def incoming_osc_handler(address: str, *args: Any) -> None:
         log_error("OSC input", str(e))
 
 
+def start_osc_server(ip: str, port: int) -> bool:
+    """Start the local OSC listening server (main thread); True when it is up."""
+    global local_osc_server, local_server_thread, is_server_running
+    if is_server_running:
+        return True
+    try:
+        disp = dispatcher.Dispatcher()
+        disp.set_default_handler(incoming_osc_handler)
+        local_osc_server = osc_server.ThreadingOSCUDPServer((ip, port), disp)
+        local_server_thread = threading.Thread(target=local_osc_server.serve_forever, daemon=True)
+        local_server_thread.start()
+        is_server_running = True
+        dpg.set_item_label("btn_server_toggle", "Stop Server")
+        dpg.set_value("server_status", f"Server Status: Listening on {ip}:{port}")
+        return True
+    except Exception as e:
+        dpg.set_value("server_status", f"Server Status: ERROR ({e})")
+        return False
+
+
 def toggle_local_server() -> None:
     global local_osc_server, local_server_thread, is_server_running
     if is_server_running:
@@ -1025,32 +1053,30 @@ def toggle_local_server() -> None:
         dpg.set_item_label("btn_server_toggle", "Start Server")
         dpg.set_value("server_status", "Server Status: Stopped")
     else:
-        ip = dpg.get_value("listen_ip")
-        port = dpg.get_value("listen_port")
-        try:
-            disp = dispatcher.Dispatcher()
-            disp.set_default_handler(incoming_osc_handler)
-            local_osc_server = osc_server.ThreadingOSCUDPServer((ip, port), disp)
-            local_server_thread = threading.Thread(
-                target=local_osc_server.serve_forever, daemon=True
-            )
-            local_server_thread.start()
-            is_server_running = True
-            dpg.set_item_label("btn_server_toggle", "Stop Server")
-            dpg.set_value("server_status", f"Server Status: Listening on {ip}:{port}")
-        except Exception as e:
-            dpg.set_value("server_status", f"Server Status: ERROR ({e})")
+        start_osc_server(str(dpg.get_value("listen_ip")), int(dpg.get_value("listen_port")))
 
 
-def connect_to_viosc() -> None:
+def connect_osc_client(ip: str, port: int) -> bool:
+    """Create the viOSC client (main thread); True when ready."""
     global viosc_client
-    ip = dpg.get_value("viosc_ip")
-    port = dpg.get_value("viosc_port")
     try:
         viosc_client = udp_client.SimpleUDPClient(ip, port)
         dpg.set_value("viosc_status", f"Client Status: Ready on {ip}:{port}")
+        return True
     except Exception:
         dpg.set_value("viosc_status", "Client Status: Initialization error")
+        return False
+
+
+def connect_to_viosc() -> None:
+    """Connect the OSC client from the viOSC panel inputs (button callback)."""
+    connect_osc_client(str(dpg.get_value("viosc_ip")), int(dpg.get_value("viosc_port")))
+
+
+def autostart_osc() -> None:
+    """Boot wiring: auto-connect the viOSC client and start the listening server."""
+    connect_osc_client(VIOSC_IP, VIOSC_PORT)
+    start_osc_server(VIOSC_IP, VIOSC_LISTEN_PORT)
 
 
 def callback_resync() -> None:
@@ -1432,7 +1458,9 @@ with dpg.window(label="Step Sequencer", width=1050, height=800, pos=(10, 10), no
                 # THE 8 PADS
                 for step in range(NUM_STEPS):
                     cell_tag = f"seq_cell_{row}_{step}"
-                    with dpg.child_window(width=90, height=90, tag=cell_tag, no_scrollbar=True):
+                    with dpg.child_window(
+                        width=STEP_CELL_SIZE, height=STEP_CELL_SIZE, tag=cell_tag, no_scrollbar=True
+                    ):
                         pass
                     update_step_ui(row, step)
 
@@ -1495,7 +1523,7 @@ with dpg.window(label="viOSC", width=340, height=320, pos=(370, 820), no_close=T
     dpg.add_text("2. Setup Server (Listening):")
     with dpg.group(horizontal=True):
         dpg.add_input_text(default_value="127.0.0.1", tag="listen_ip", width=120)
-        dpg.add_input_int(default_value=6667, tag="listen_port", width=80, step=0)
+        dpg.add_input_int(default_value=VIOSC_LISTEN_PORT, tag="listen_port", width=80, step=0)
         dpg.add_button(label="Start Server", tag="btn_server_toggle", callback=toggle_local_server)
     dpg.add_text("Server Status: Stopped", tag="server_status", color=(150, 150, 150, 255))
     dpg.add_separator()
@@ -1535,6 +1563,7 @@ with dpg.viewport_menu_bar(), dpg.menu(label="Monitor"):
     dpg.add_menu_item(label="New Monitor Player", callback=new_monitor_player)
 dpg.setup_dearpygui()
 dpg.show_viewport()
+autostart_osc()  # boot: auto-connect OSC client + start listening server (no manual clicks)
 
 try:
     while dpg.is_dearpygui_running():

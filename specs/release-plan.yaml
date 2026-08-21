@@ -1,7 +1,7 @@
 # specs/release-plan.yaml — WSJF-ordered epic list (slice-tasks)
 # All stories in e01 belong to one epic; order = WSJF (value per unit of work).
 
-release: 1.0.0
+release: 1.1.0
 
 epics:
   - id: e01
@@ -25,3 +25,16 @@ epics:
       - id: e01s05
         title: "Hygiene (type hints, EN comments, constants) + manual acceptance"
         bcps: 2
+
+  - id: e02
+    slug: step-ui-polish
+    title: "Step-cell color square polish + OSC autostart"
+    wsjf: 60
+    baseline_bcps: 5
+    stories:
+      - id: e02s01
+        title: "Larger centered color square in ColorV/ColorR step cells"
+        bcps: 2
+      - id: e02s02
+        title: "Auto-start OSC client + listening server on launch"
+        bcps: 3

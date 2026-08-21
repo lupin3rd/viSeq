@@ -2,60 +2,52 @@
 # Consumed by: slice-tasks, plan-work, develop-tdd, verify-work
 
 core_value: >-
-  Make viseq run on the user's Python 3.13 machine by migrating it to DearPyGui 2.3.1,
-  preserving every current feature, and folding in the low-severity hygiene items from the
-  code audit — so the VJ controller works on the intended runtime with a cleaner codebase,
-  ready for future feature work.
+  Make the step-cell color feedback visible and the OSC plumbing zero-setup: the
+  ColorV/ColorR step squares become larger and centered in the step button, and the app
+  connects the OSC client and starts the listening server automatically at launch.
 
 summary: >-
-  viseq (audio-reactive VJ controller for Vimix via the viOSC daemon) is a single-file
-  DearPyGui 1.x app that only runs on Python <= 3.11. The user's machine is Python 3.13,
-  where neither dearpygui 1.x nor compatible essentia wheels install. The spike
-  (SPIKE-dpg2x-api.md) proved the migration is a near-1:1 port: the `dearpygui.dearpygui`
-  namespace that viseq already imports preserves the 1.x API surface (viewport flow, themes,
-  tables, textures, callbacks, mutex) on 2.3.1, with one landmine
-  (`get_dearpygui_version()` pre-context segfaults) and two removed aliases viseq does not use.
+  viseq (audio-reactive VJ controller for Vimix via the viOSC daemon) runs on Python 3.13 +
+  DearPyGui 2.3.1 after the e01 migration. Two usability gaps remain. First, the color
+  square in ColorV/ColorR step cells is small (70x25) and left-aligned, so the feedback for
+  the color OSC message is hard to see — the user wants a larger square centered in the step
+  button (same treatment for every OSC message that uses the color square, i.e. ColorV and
+  ColorR). Second, every launch currently requires two manual clicks ("Connect Client" and
+  "Start Server") before any OSC traffic flows; the app should do this automatically at boot
+  with the default addresses, keeping the manual buttons as override/fallback.
 
-  This initiative migrates the app to dearpygui 2.3.1 on Python 3.13 with zero feature or
-  behavior change, updates the dependency manifest, ports the regression harness, and folds in
-  the audit LOW items (stale-state pruning, audio ring buffer, clean exit, main-loop sleep,
-  named constants) plus type hints and English comments. viseq.py stays a single file; the
-  module split is explicitly deferred. Verification is headless (stub harness) plus a manual
-  acceptance run by the user on the real rig.
+  This initiative delivers both with minimal, testable changes: a layout tweak inside the
+  step-cell builder and an autostart call wired into the boot sequence, with the server
+  start/client connect logic extracted into testable core functions. The frozen OSC contract
+  with viOSC is untouched. Verification is headless (stub harness) plus the user's manual
+  acceptance on the real rig.
 
 in_scope:
-  - e01s01: "Target runtime boot: Python 3.13 venv, requirements.txt pinned to dearpygui 2.3.1 / essentia 2.1b6.dev1389, app boots to a stable window on 2.x, regression harness green, clean-exit fold-in (L-4), main-loop sleep fold-in (L-5)."
-  - e01s02: "Sequencer + fade engine on 2.x: step-type dispatch (AlphaV/AlphaR/AlphaF/ColorV/ColorR), async fade state machine incl. the HIGH-2 cancel invariant, play/stop/resync/nudge, beat LED — all UI access still routed through the main-thread task queue (HIGH-1)."
-  - e01s03: "OSC + state sync + media grid + thumbnails + monitor players on 2.x: incoming_osc_handler caps, replydata payload validation, defensive sorting, thumbnail pipeline with stale-state pruning fold-in (L-1), monitor players."
-  - e01s04: "Audio analysis on 2.x: VU meter + essentia BPM + lowpass flag paths, with the np.roll -> ring buffer fold-in (L-2)."
-  - e01s05: "Hygiene + acceptance: type hints on public functions, Italian code comments -> English (UI labels stay Italian), named-constants cleanup (L-6), and the user's manual acceptance checklist as the final gate."
+  - e02s01: "Step-cell color square polish: ColorV and ColorR color_edit squares grow larger and are centered inside the 90x90 step cell; interactive behavior (picker on ColorV, read-only display on ColorR, right-click step menu) preserved."
+  - e02s02: "OSC autostart: at boot the app connects the OSC client to viOSC (default 127.0.0.1:6666) and starts the listening server (default 127.0.0.1:6667) without user action; the existing 'Connect Client' / 'Start Server' buttons remain and work as before (including stop/toggle)."
 
 out_of_scope:
-  - "New features of any kind (step types, OSC endpoints, UI layout, monitor-player features) — deferred: future improvement, not this initiative."
-  - "Module split of viseq.py — deferred: user decision during elaboration; keeps the migration diff small and behavior-identical verification tractable."
-  - "Changes to viOSC or Vimix — external, contract is frozen."
-  - "Behavioral/visual changes to existing features — this is a preservation migration."
-  - "DearPyGui 2.x visual/theme redesign — rendering fidelity is verified by the user's acceptance run, not re-designed."
-  - "mypy/ruff/CI infrastructure — no lint/typecheck/CI tooling exists in the project and adding it is a separate initiative (recorded in PLAN-AUDIT_LATEST.md gaps G5-G6)."
+  - "Resizing or re-layout of the other step widgets (AlphaV/AlphaR/AlphaF/SeekR controls) — deferred: only the color square is requested."
+  - "New OSC endpoints, addresses, or payloads — the viOSC contract is frozen."
+  - "Auto-reconnect or connection watchdog logic — deferred: not requested."
+  - "Changes to viOSC or Vimix — external, contract frozen."
+  - "Module split of viseq.py — deferred decision from e01 still holds."
 
 constraints:
-  - "Runtime: Python 3.13, dearpygui 2.3.1 (cp313 wheel), essentia 2.1b6.dev1389 (cp313; dev1438 is cp314-only), numpy >=2,<3, python-osc 1.10.2, sounddevice 0.5.6, Pillow >=11,<13."
-  - "OSC contract with viOSC is frozen (addresses and payloads listed in planning-context.yaml)."
-  - "No dpg API calls before create_context() (spike landmine: get_dearpygui_version() segfaults pre-context)."
-  - "All UI mutations from worker threads must go through ui_task_queue (audit HIGH-1 fix must survive the migration)."
-  - "viseq.py remains a single file."
+  - "Runtime: Python 3.13, dearpygui 2.3.1, single-file viseq.py (no module split)."
+  - "OSC contract with viOSC is frozen (addresses and payloads in planning-context.yaml)."
+  - "All UI mutations from worker threads must go through ui_task_queue (HIGH-1)."
+  - "No dpg API calls before create_context() (spike landmine)."
+  - "Autostart must fail gracefully: if the listen port is busy, the server status shows the error and the button stays usable."
   - "Verification is headless (stub harness) + user manual acceptance; real GUI rendering cannot be verified headless."
 
 success_criteria:
-  - "App boots and runs stably on Python 3.13 + dearpygui 2.3.1 (no import/startup crash; window stays up)."
-  - "All current features behave identically (sequencer, fades, monitor players, thumbnails, VU/BPM, OSC in/out, log window)."
-  - "OSC contract with viOSC unchanged."
-  - "Regression harness (tests/test_fixes.py) updated and fully green."
-  - "requirements.txt installs cleanly on 3.13 in a fresh venv."
-  - "User completes the manual acceptance checklist on the real rig and reports no regressions (or the reported problems are resolved)."
+  - "ColorV and ColorR squares are visibly larger and horizontally centered in the step cell."
+  - "Clicking a ColorV square still opens the color picker and sends the picked color."
+  - "At launch, the client status reads 'Ready on 127.0.0.1:6666' and the server status reads 'Listening on 127.0.0.1:6667' with no clicks."
+  - "Manual client/server buttons still toggle/stop correctly."
+  - "Regression harness fully green (existing 23 tests + new ones)."
 
 references:
-  - "specs/planning-context.yaml (elaborate-spec)"
-  - "specs/archive/spikes/SPIKE-dpg2x-api.md (spike-prototype)"
-  - "specs/verifications/AUDIT-viseq.md (audit-code, incl. HIGH/MED fix log)"
-  - "specs/PLAN-AUDIT_LATEST.md (audit-plan)"
+  - "specs/planning-context.yaml (frozen OSC contract)"
+  - "specs/bugs/BUG-2026-08-21T222712-colorr-square-not-painted.md (prior color-square fix: DPG color API is 0..255)"
