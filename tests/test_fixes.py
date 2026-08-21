@@ -169,16 +169,16 @@ import viseq  # noqa: E402  (needs the repo root on sys.path; stubs above must r
 listen_defaults = [kw.get("default_value") for n, a, kw in dpg.calls if n == "add_input_text"]
 
 
-# ---------- MED-3: ColorR cell passes DPG-scale (0..255) 3-component value ----------
+# ---------- MED-3: ColorR cell passes DPG-scale (0..255) RGBA value ----------
 def test_med3_colorr_dpg_scale_value():
     viseq.tracks_data[0]["steps"][0]["type"] = "ColorR"
     viseq.tracks_data[0]["steps"][0]["last_rand_color"] = [0.5, 0.25, 0.75]
     dpg.calls.clear()
     viseq.update_step_ui(0, 0)
-    color_edits = [kw for n, a, kw in dpg.calls if n == "add_color_edit"]
-    assert color_edits, "no add_color_edit call issued for ColorR step"
-    assert color_edits[-1].get("default_value") == [127.5, 63.75, 191.25], (
-        "ColorR default_value must be on DPG's 0..255 API scale (ToColor divides by 255)"
+    buttons = [kw for n, a, kw in dpg.calls if n == "add_color_button"]
+    assert buttons, "no add_color_button call issued for ColorR step"
+    assert buttons[-1].get("default_value") == [127.5, 63.75, 191.25, 255.0], (
+        "ColorR default_value must be DPG-scale RGBA (ToColor divides by 255)"
     )
 
 
@@ -332,9 +332,9 @@ def test_colorv_square_default_is_dpg_scale():
     step.update({"type": "ColorV", "color": [0.5, 0.25, 0.75]})
     dpg.calls.clear()
     viseq.update_step_ui(0, 5)
-    color_edits = [kw for n, a, kw in dpg.calls if n == "add_color_edit"]
-    assert color_edits and color_edits[-1].get("default_value") == [127.5, 63.75, 191.25], (
-        "ColorV square must open on DPG's 0..255 API scale (ToColor divides by 255)"
+    buttons = [kw for n, a, kw in dpg.calls if n == "add_color_button"]
+    assert buttons and buttons[-1].get("default_value") == [127.5, 63.75, 191.25, 255.0], (
+        "ColorV square must open on DPG's 0..255 RGBA scale (ToColor divides by 255)"
     )
 
 
@@ -353,14 +353,19 @@ def test_colorr_square_shows_sent_color(monkeypatch):
     assert (" /vimix/clipA/color".strip(), [0.42, 0.42, 0.42]) in osc_sender.messages
     while not viseq.ui_task_queue.empty():
         viseq.ui_task_queue.get()()
-    assert dpg.values.get("rand_color_0_0") == [107.1, 107.1, 107.1], (
-        "the step's little square must show the sent color on DPG's 0..255 API scale"
+    assert dpg.values.get("rand_color_0_0") == [107.1, 107.1, 107.1, 255.0], (
+        "the step's little square must show the sent color as DPG-scale RGBA"
     )
 
 
 def test_dpg_color_scale_boundaries():
     assert viseq.dpg_color_value([0.0, 0.0, 0.0]) == [0.0, 0.0, 0.0]
     assert viseq.dpg_color_value([1.0, 1.0, 1.0]) == [255.0, 255.0, 255.0]
+
+
+def test_dpg_color_rgba_appends_opaque_alpha():
+    assert viseq.dpg_color_rgba([0.5, 0.25, 0.75]) == [127.5, 63.75, 191.25, 255.0]
+    assert viseq.dpg_color_rgba([0.0, 0.0, 0.0])[-1] == 255.0, "alpha must be opaque"
 
 
 # ---------- FEATURE: SeekR step type (random seek 0..1) ----------
@@ -522,9 +527,9 @@ def test_high2_uninterrupted_fade_completes():
 def _assert_color_square_large_centered(row: int, col: int, stype: str) -> None:
     dpg.calls.clear()
     viseq.update_step_ui(row, col)
-    edits = [kw for n, a, kw in dpg.calls if n == "add_color_edit"]
-    assert edits, f"no add_color_edit call issued for {stype} step"
-    kw = edits[-1]
+    buttons = [kw for n, a, kw in dpg.calls if n == "add_color_button"]
+    assert buttons, f"no add_color_button call issued for {stype} step"
+    kw = buttons[-1]
     assert kw.get("width") == viseq.STEP_COLOR_SQUARE_SIZE, "square must use the shared size"
     assert kw.get("height") == viseq.STEP_COLOR_SQUARE_SIZE, "square must use the shared size"
     assert kw.get("indent") == viseq.STEP_COLOR_SQUARE_INDENT, "square must be centered"
@@ -534,22 +539,44 @@ def test_colorv_square_large_and_centered():
     step = viseq.tracks_data[0]["steps"][3]
     step.update({"type": "ColorV", "color": [0.5, 0.25, 0.75]})
     _assert_color_square_large_centered(0, 3, "ColorV")
-    edits = [kw for n, a, kw in dpg.calls if n == "add_color_edit"]
-    assert edits[-1].get("default_value") == viseq.dpg_color_value([0.5, 0.25, 0.75]), (
+    buttons = [kw for n, a, kw in dpg.calls if n == "add_color_button"]
+    assert buttons[-1].get("default_value") == viseq.dpg_color_rgba([0.5, 0.25, 0.75]), (
         "0..255 DPG scale contract must survive the resize"
     )
-    assert edits[-1].get("no_picker") is not True, "ColorV must keep its picker"
+    assert buttons[-1].get("no_border") is True, "square must draw as a clean swatch"
+
+
+def test_colorv_picker_popup_available():
+    dpg.calls.clear()
+    viseq.update_step_ui(0, 3)
+    pickers = [kw for n, a, kw in dpg.calls if n == "add_color_picker"]
+    assert pickers, "ColorV must offer a color picker popup"
+    assert pickers[-1].get("no_alpha") is True, "picker must be RGB-only"
+    assert pickers[-1].get("callback") == viseq.update_step_val
+    assert pickers[-1].get("user_data") == (0, 3, "color")
+
+
+def test_colorv_pick_refreshes_square():
+    step = viseq.tracks_data[0]["steps"][4]
+    step.update({"type": "ColorV", "color": [0.1, 0.2, 0.3]})
+    dpg.values.clear()
+    dpg.values["color_square_0_4"] = [25.5, 51.0, 76.5, 255.0]  # square already exists
+    viseq.update_step_val(None, [0.5, 0.25, 0.75], (0, 4, "color"))
+    assert step["color"] == [0.5, 0.25, 0.75], "picked color must be stored normalized"
+    assert dpg.values.get("color_square_0_4") == [127.5, 63.75, 191.25, 255.0], (
+        "the step square must repaint with the picked color"
+    )
 
 
 def test_colorr_square_large_and_centered():
     step = viseq.tracks_data[0]["steps"][2]
     step.update({"type": "ColorR", "last_rand_color": [0.2, 0.4, 0.6]})
     _assert_color_square_large_centered(0, 2, "ColorR")
-    edits = [kw for n, a, kw in dpg.calls if n == "add_color_edit"]
-    assert edits[-1].get("default_value") == viseq.dpg_color_value([0.2, 0.4, 0.6]), (
+    buttons = [kw for n, a, kw in dpg.calls if n == "add_color_button"]
+    assert buttons[-1].get("default_value") == viseq.dpg_color_rgba([0.2, 0.4, 0.6]), (
         "0..255 DPG scale contract must survive the resize"
     )
-    assert edits[-1].get("no_picker") is True, "ColorR must stay read-only"
+    assert buttons[-1].get("tag") == "rand_color_0_2", "repaint tag must survive"
 
 
 # ---------- e02s02: OSC autostart (client + server at boot) ----------

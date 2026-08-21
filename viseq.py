@@ -72,6 +72,11 @@ def dpg_color_value(rgb: list[float]) -> list[float]:
     return [round(c * DPG_COLOR_SCALE, 2) for c in rgb]
 
 
+def dpg_color_rgba(rgb: list[float]) -> list[float]:
+    """DPG-scale RGB plus an opaque alpha (color_button needs 4 components)."""
+    return [*dpg_color_value(rgb), DPG_COLOR_SCALE]
+
+
 def enqueue_set_value(tag: str, value: Any) -> None:
     """Queue a dpg.set_value(tag, value) for the main thread, if the item exists."""
 
@@ -285,6 +290,10 @@ def update_step_val(sender: Any, app_data: Any, user_data: Any) -> None:
     row, col, param_name = user_data
     if param_name == "color":
         tracks_data[row]["steps"][col][param_name] = app_data[:3]
+        # live-refresh the step square when a color is picked from the popup picker
+        square_tag = f"color_square_{row}_{col}"
+        if dpg.does_item_exist(square_tag):
+            dpg.set_value(square_tag, dpg_color_rgba(app_data[:3]))
     else:
         tracks_data[row]["steps"][col][param_name] = app_data
 
@@ -418,28 +427,34 @@ def update_step_ui(row: int, col: int) -> None:
 
     elif step_data["type"] == "ColorV":
         dpg.add_spacer(parent=cell_tag, height=6)
-        # color is stored normalized (0..1); DPG's color API expects 0..255 (ToColor /255)
-        dpg.add_color_edit(
+        # color is stored normalized (0..1); color_button needs DPG-scale RGBA (0..255)
+        btn_tag = f"color_square_{row}_{col}"
+        dpg.add_color_button(
             parent=cell_tag,
-            default_value=dpg_color_value(step_data["color"]),
-            no_alpha=True,
-            no_inputs=True,
+            default_value=dpg_color_rgba(step_data["color"]),
+            no_border=True,
+            no_tooltip=True,
             width=STEP_COLOR_SQUARE_SIZE,
             height=STEP_COLOR_SQUARE_SIZE,
             indent=STEP_COLOR_SQUARE_INDENT,
-            callback=update_step_val,
-            user_data=(row, col, "color"),
+            tag=btn_tag,
         )
+        with dpg.popup(btn_tag, mousebutton=dpg.mvMouseButton_Left):
+            dpg.add_color_picker(
+                default_value=dpg_color_rgba(step_data["color"]),
+                no_alpha=True,
+                width=200,
+                callback=update_step_val,
+                user_data=(row, col, "color"),
+            )
 
     elif step_data["type"] == "ColorR":
         dpg.add_spacer(parent=cell_tag, height=6)
-        # last_rand_color is stored normalized (0..1); DPG's color API expects 0..255
-        dpg.add_color_edit(
+        # last_rand_color is stored normalized (0..1); color_button needs DPG-scale RGBA
+        dpg.add_color_button(
             parent=cell_tag,
-            default_value=dpg_color_value(step_data["last_rand_color"]),
-            no_alpha=True,
-            no_inputs=True,
-            no_picker=True,
+            default_value=dpg_color_rgba(step_data["last_rand_color"]),
+            no_border=True,
             no_tooltip=True,
             width=STEP_COLOR_SQUARE_SIZE,
             height=STEP_COLOR_SQUARE_SIZE,
@@ -1236,7 +1251,7 @@ def send_colorr_step(track: dict[str, Any], row: int, col: int) -> None:
     step_data = track["steps"][col]
     step_data["last_rand_color"] = [r_val, g_val, b_val]
     tag_color = f"rand_color_{row}_{col}"
-    enqueue_set_value(tag_color, dpg_color_value(step_data["last_rand_color"]))
+    enqueue_set_value(tag_color, dpg_color_rgba(step_data["last_rand_color"]))
 
 
 def send_seekr_step(track: dict[str, Any], row: int, col: int) -> None:
