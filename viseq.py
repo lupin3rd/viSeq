@@ -27,6 +27,7 @@ MAX_STATE_JSON_BYTES = 1 * 1024 * 1024  # per-replydata cap
 THUMB_REQUEST_INTERVAL = 3.0  # min seconds between thumbnail requests per source
 LOG_HISTORY_LIMIT = 25  # max entries kept in the OSC log window
 MONITOR_OFFSET = (280, 260)  # grid spacing between monitor player windows
+DPG_COLOR_SCALE = 255.0  # DPG ToColor divides color inputs by 255 -> its color API is 0..255
 
 # --- OSC CONFIGURATION ---
 # viseq talks exclusively to viOSC: /vimix/* messages are forwarded by viOSC
@@ -53,6 +54,16 @@ ui_task_queue: queue.Queue[Callable[[], None]] = (
 def ui_task(fn: Callable[[], None]) -> None:
     """Run a UI mutation on the main thread via the task queue."""
     ui_task_queue.put(fn)
+
+
+def dpg_color_value(rgb: list[float]) -> list[float]:
+    """Convert normalized 0..1 RGB to DPG's color API scale (0..255).
+
+    DPG 2.x parses color lists by dividing every channel by 255, so colors
+    pushed programmatically (default_value / set_value) must arrive on the
+    0..255 scale; user-picked colors arrive via callbacks already 0..1.
+    """
+    return [round(c * DPG_COLOR_SCALE, 2) for c in rgb]
 
 
 def enqueue_set_value(tag: str, value: Any) -> None:
@@ -401,10 +412,10 @@ def update_step_ui(row: int, col: int) -> None:
 
     elif step_data["type"] == "ColorV":
         dpg.add_spacer(parent=cell_tag, height=5)
-        # color is stored normalized (0..1), matching the color_edit value format
+        # color is stored normalized (0..1); DPG's color API expects 0..255 (ToColor /255)
         dpg.add_color_edit(
             parent=cell_tag,
-            default_value=list(step_data["color"]),
+            default_value=dpg_color_value(step_data["color"]),
             no_alpha=True,
             no_inputs=True,
             width=70,
@@ -415,10 +426,10 @@ def update_step_ui(row: int, col: int) -> None:
 
     elif step_data["type"] == "ColorR":
         dpg.add_spacer(parent=cell_tag, height=5)
-        # last_rand_color is stored normalized (0..1); no_alpha color_edit expects 3 components
+        # last_rand_color is stored normalized (0..1); DPG's color API expects 0..255
         dpg.add_color_edit(
             parent=cell_tag,
-            default_value=list(step_data["last_rand_color"]),
+            default_value=dpg_color_value(step_data["last_rand_color"]),
             no_alpha=True,
             no_inputs=True,
             no_picker=True,
@@ -1199,7 +1210,7 @@ def send_colorr_step(track: dict[str, Any], row: int, col: int) -> None:
     step_data = track["steps"][col]
     step_data["last_rand_color"] = [r_val, g_val, b_val]
     tag_color = f"rand_color_{row}_{col}"
-    enqueue_set_value(tag_color, list(step_data["last_rand_color"]))
+    enqueue_set_value(tag_color, dpg_color_value(step_data["last_rand_color"]))
 
 
 def send_seekr_step(track: dict[str, Any], row: int, col: int) -> None:

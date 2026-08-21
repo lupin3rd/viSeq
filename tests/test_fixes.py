@@ -142,16 +142,16 @@ import viseq  # noqa: E402  (needs the repo root on sys.path; stubs above must r
 listen_defaults = [kw.get("default_value") for n, a, kw in dpg.calls if n == "add_input_text"]
 
 
-# ---------- MED-3: ColorR cell passes normalized 3-component value ----------
-def test_med3_colorr_normalized_value():
+# ---------- MED-3: ColorR cell passes DPG-scale (0..255) 3-component value ----------
+def test_med3_colorr_dpg_scale_value():
     viseq.tracks_data[0]["steps"][0]["type"] = "ColorR"
     viseq.tracks_data[0]["steps"][0]["last_rand_color"] = [0.5, 0.25, 0.75]
     dpg.calls.clear()
     viseq.update_step_ui(0, 0)
     color_edits = [kw for n, a, kw in dpg.calls if n == "add_color_edit"]
     assert color_edits, "no add_color_edit call issued for ColorR step"
-    assert color_edits[-1].get("default_value") == [0.5, 0.25, 0.75], (
-        "ColorR default_value must be the normalized 3-component color"
+    assert color_edits[-1].get("default_value") == [127.5, 63.75, 191.25], (
+        "ColorR default_value must be on DPG's 0..255 API scale (ToColor divides by 255)"
     )
 
 
@@ -300,14 +300,14 @@ def test_colorv_send_sends_normalized_color():
     )
 
 
-def test_colorv_square_default_is_normalized():
+def test_colorv_square_default_is_dpg_scale():
     step = viseq.tracks_data[0]["steps"][5]
     step.update({"type": "ColorV", "color": [0.5, 0.25, 0.75]})
     dpg.calls.clear()
     viseq.update_step_ui(0, 5)
     color_edits = [kw for n, a, kw in dpg.calls if n == "add_color_edit"]
-    assert color_edits and color_edits[-1].get("default_value") == [0.5, 0.25, 0.75], (
-        "ColorV square must open with the stored color (0..1)"
+    assert color_edits and color_edits[-1].get("default_value") == [127.5, 63.75, 191.25], (
+        "ColorV square must open on DPG's 0..255 API scale (ToColor divides by 255)"
     )
 
 
@@ -326,9 +326,14 @@ def test_colorr_square_shows_sent_color(monkeypatch):
     assert (" /vimix/clipA/color".strip(), [0.42, 0.42, 0.42]) in osc_sender.messages
     while not viseq.ui_task_queue.empty():
         viseq.ui_task_queue.get()()
-    assert dpg.values.get("rand_color_0_0") == [0.42, 0.42, 0.42], (
-        "the step's little square must show the sent random color"
+    assert dpg.values.get("rand_color_0_0") == [107.1, 107.1, 107.1], (
+        "the step's little square must show the sent color on DPG's 0..255 API scale"
     )
+
+
+def test_dpg_color_scale_boundaries():
+    assert viseq.dpg_color_value([0.0, 0.0, 0.0]) == [0.0, 0.0, 0.0]
+    assert viseq.dpg_color_value([1.0, 1.0, 1.0]) == [255.0, 255.0, 255.0]
 
 
 # ---------- FEATURE: SeekR step type (random seek 0..1) ----------
