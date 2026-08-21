@@ -7,10 +7,10 @@ workflow_mode: solo-git
 handoff:
   next_skill: null
 
-active_flow: fix_bug
+active_flow: null
 bug_cycle:
-  current_step: 4
-  completed_steps: [1, 2, 3]
+  current_step: 0
+  completed_steps: [1, 2, 3, 4, 5]
 
 git:
   branch: main
