@@ -184,9 +184,9 @@ midi_pulses: int = 0  # running MIDI clock pulse count (worker thread)
 tap_times: list[float] = []  # TAP timestamps for the manual BPM mode
 band_prev_values: dict[int, float] = {1: 0.0, 2: 0.0, 3: 0.0}  # band rising-edge tracking
 # Width of the transport row (PLAY + spacer + < + RESYNC + > + spacer). Measured on real
-# DPG 2.3.1: buttons render ~40px wider than their declared widths, so the alignment spacer
-# is 336px, not the naive 296 (audit L-6).
-SEQ_TRANSPORT_WIDTH = 336
+# DPG 2.3.1: buttons render wider than their declared widths, so the alignment spacer is
+# 312px with the compact 28px-high transport (audit L-6).
+SEQ_TRANSPORT_WIDTH = 312
 
 # One LED per beat source, shown next to its checkbox on the sequencer (e05)
 BEAT_LED_TAGS = {
@@ -1782,12 +1782,12 @@ with dpg.theme() as theme_slot_clear, dpg.theme_component(dpg.mvChildWindow):
 # WINDOW 1: SEQUENCER
 with dpg.window(label="Step Sequencer", width=1050, height=800, pos=(10, 10), no_close=True):
     with dpg.group(horizontal=True):
-        dpg.add_button(label="PLAY", tag="btn_play", callback=toggle_play, width=100, height=40)
-        dpg.add_spacer(width=20)
-        dpg.add_button(label="<", callback=callback_nudge_backward, width=40, height=40)
-        dpg.add_button(label="RESYNC", callback=callback_resync, width=80, height=40)
-        dpg.add_button(label=">", callback=callback_nudge_forward, width=40, height=40)
-        dpg.add_spacer(width=16)
+        dpg.add_button(label="PLAY", tag="btn_play", callback=toggle_play, width=100, height=28)
+        dpg.add_spacer(width=14)
+        dpg.add_button(label="<", callback=callback_nudge_backward, width=36, height=28)
+        dpg.add_button(label="RESYNC", callback=callback_resync, width=72, height=28)
+        dpg.add_button(label=">", callback=callback_nudge_forward, width=36, height=28)
+        dpg.add_spacer(width=14)
         # Beat source line 1: BPM detection (with its BPM readout) + bands 1-2
         dpg.add_checkbox(
             label="Rilevazione BPM",
@@ -1862,13 +1862,13 @@ with dpg.window(label="Step Sequencer", width=1050, height=800, pos=(10, 10), no
             default_value=120,
             min_value=30,
             max_value=300,
-            width=64,
+            width=84,
             tag="manual_bpm_input",
             callback=on_manual_bpm,
             show=False,
         )
         dpg.add_button(
-            label="TAP", tag="btn_tap", callback=tap_bpm, width=44, height=40, show=False
+            label="TAP", tag="btn_tap", callback=tap_bpm, width=36, height=22, show=False
         )
         dpg.add_text("", tag="manual_bpm_text", color=(150, 255, 150, 255))
 

@@ -1070,9 +1070,9 @@ def test_beat_source_ui_wired():
 
 
 def test_beat_lines_alignment_spacer():
-    # Measured on real DPG 2.3.1: the transport row renders 336px wide (buttons render
-    # wider than declared), so line 2 starts under line 1.
-    assert viseq.SEQ_TRANSPORT_WIDTH == 336, "line 2 must start under line 1"
+    # Measured on real DPG 2.3.1 with the compact 28px transport: the row renders 312px
+    # wide (buttons render wider than declared), so line 2 starts under line 1.
+    assert viseq.SEQ_TRANSPORT_WIDTH == 312, "line 2 must start under line 1"
 
 
 def test_manual_bpm_live_text_wired():
