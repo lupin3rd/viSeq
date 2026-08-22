@@ -184,6 +184,17 @@ midi_pulses: int = 0  # running MIDI clock pulse count (worker thread)
 tap_times: list[float] = []  # TAP timestamps for the manual BPM mode
 band_prev_values: dict[int, float] = {1: 0.0, 2: 0.0, 3: 0.0}  # band rising-edge tracking
 
+# One LED per beat source, shown next to its checkbox on the sequencer (e05)
+BEAT_LED_TAGS = {
+    BEAT_SOURCE_ANALYSIS: "led_analysis",
+    BEAT_SOURCE_BAND1: "led_band1",
+    BEAT_SOURCE_BAND2: "led_band2",
+    BEAT_SOURCE_BAND3: "led_band3",
+    BEAT_SOURCE_MIDI: "led_midi",
+    BEAT_SOURCE_MANUAL: "led_manual",
+}
+BEAT_CHECKBOX_TAGS = {mode: f"cb_beat_{mode}" for mode in BEAT_SOURCE_LABELS}
+
 # Sequencer data structure with the new "msgs" parameter
 tracks_data: list[dict[str, Any]] = []
 for _ in range(NUM_TRACKS):
@@ -261,21 +272,19 @@ def get_input_devices() -> list[str]:
     return inputs if inputs else ["No input device found"]
 
 
-def turn_off_led() -> None:
-    def _turn_off():
-        if dpg.does_item_exist("beat_led"):
-            dpg.configure_item("beat_led", fill=(50, 50, 50, 255))
+def flash_led(tag: str) -> None:
+    """Flash a beat LED green on the main thread, fading back after 100ms (HIGH-1)."""
 
-    ui_task(_turn_off)
+    def _on():
+        if dpg.does_item_exist(tag):
+            dpg.configure_item(tag, fill=(80, 255, 120, 255))
 
+    def _off():
+        if dpg.does_item_exist(tag):
+            dpg.configure_item(tag, fill=(50, 50, 50, 255))
 
-def flash_beat_led() -> None:
-    def _flash():
-        if dpg.does_item_exist("beat_led"):
-            dpg.configure_item("beat_led", fill=(255, 50, 50, 255))
-            threading.Timer(0.1, turn_off_led).start()
-
-    ui_task(_flash)
+    ui_task(_on)
+    threading.Timer(0.1, lambda: ui_task(_off)).start()
 
 
 def append_log(direction: str, address: str) -> None:
@@ -1173,10 +1182,14 @@ def autostart_osc() -> None:
 
 
 def on_beat_source(sender: Any, app_data: Any, user_data: Any) -> None:
-    """Switch the sequencer beat source; reveal the manual widgets only in manual mode."""
+    """Select the sequencer beat source; exactly one checkbox stays active."""
     global beat_source, current_bpm
-    label_to_source = {label: key for key, label in BEAT_SOURCE_LABELS.items()}
-    beat_source = label_to_source.get(app_data, BEAT_SOURCE_ANALYSIS)
+    if not app_data:
+        dpg.set_value(sender, True)  # a beat source must remain selected
+        return
+    beat_source = user_data
+    for mode in BEAT_SOURCE_LABELS:
+        dpg.set_value(f"cb_beat_{mode}", mode == beat_source)
     is_manual = beat_source == BEAT_SOURCE_MANUAL
     dpg.configure_item("manual_bpm_input", show=is_manual)
     dpg.configure_item("btn_tap", show=is_manual)
@@ -1236,6 +1249,7 @@ def midi_clock_loop() -> None:
                         midi_pulses += 1
                         if midi_pulses >= MIDI_CLOCK_PULSES_PER_BEAT:
                             midi_pulses = 0
+                            flash_led("led_midi")
                             if beat_source == BEAT_SOURCE_MIDI and is_playing:
                                 sync_event_beat.set()
                 time.sleep(0.001)
@@ -1378,10 +1392,13 @@ def refresh_band_value(bars: np.ndarray, band_id: int) -> None:
     l_max = float(dpg.get_value(f"band{band_id}_max"))
     value = band_value_from_bars(bars, f_start, f_end, l_min, l_max)
     _set_band_variable(band_id, value)
-    # Beat trigger: the selected band mode fires when the band rises to >= 1.0 (edge only)
+    # Beat trigger: any band rising to >= 1.0 flashes its LED; only the selected band mode
+    # fires the sequencer beat event (edge only)
     band_source = {1: BEAT_SOURCE_BAND1, 2: BEAT_SOURCE_BAND2, 3: BEAT_SOURCE_BAND3}[band_id]
-    if beat_source == band_source and value >= 1.0 and band_prev_values[band_id] < 1.0:
-        sync_event_beat.set()
+    if value >= 1.0 and band_prev_values[band_id] < 1.0:
+        flash_led(f"led_band{band_id}")
+        if beat_source == band_source:
+            sync_event_beat.set()
     band_prev_values[band_id] = value
     dpg.set_value(f"band{band_id}_value_text", f"{value:.2f}")
     dpg.configure_item(
@@ -1476,7 +1493,7 @@ def visual_metronome_loop() -> None:
         if is_beat_tracking and current_bpm > 0 and not is_playing:
             base_sleep = 60.0 / current_bpm
             actual_sleep = max(0.0, base_sleep + phase_nudge)
-            flash_beat_led()
+            flash_led(BEAT_LED_TAGS[beat_source])
             sync_event_led.wait(actual_sleep)
             if sync_event_led.is_set():
                 sync_event_led.clear()
@@ -1655,10 +1672,7 @@ def sequencer_tick() -> None:
                         except Exception as e:
                             print(f"[viseq OSC Error] {e}")
 
-            flash_beat_led()
-            sync_event_seq.wait(actual_sleep)
-            if sync_event_seq.is_set():
-                sync_event_seq.clear()
+            flash_led(BEAT_LED_TAGS[beat_source])
         else:
             time.sleep(0.1)
 
@@ -1698,7 +1712,6 @@ def toggle_audio_stream(sender: Any, app_data: Any, user_data: Any) -> None:
         audio_stream.close()
         audio_stream = None
         dpg.set_value("testo_bpm", "BPM: ---")
-        turn_off_led()
 
 
 def toggle_play() -> None:
@@ -1768,19 +1781,79 @@ with dpg.window(label="Step Sequencer", width=1050, height=800, pos=(10, 10), no
         dpg.add_button(label="RESYNC", callback=callback_resync, width=80, height=40)
         dpg.add_button(label=">", callback=callback_nudge_forward, width=40, height=40)
         dpg.add_spacer(width=16)
-        dpg.add_combo(
-            items=list(BEAT_SOURCE_LABELS.values()),
-            default_value=BEAT_SOURCE_LABELS[BEAT_SOURCE_ANALYSIS],
-            tag="beat_source_combo",
+        # Beat source line 1: BPM detection (with its BPM readout) + bands 1-2
+        dpg.add_checkbox(
+            label="Rilevazione BPM",
+            tag="cb_beat_bpm_analysis",
+            default_value=True,
             callback=on_beat_source,
-            width=150,
+            user_data=BEAT_SOURCE_ANALYSIS,
         )
-        dpg.add_drag_int(
+        with dpg.drawlist(width=14, height=14):
+            dpg.draw_circle(
+                center=[7, 7],
+                radius=5,
+                color=(0, 0, 0, 255),
+                fill=(50, 50, 50, 255),
+                tag="led_analysis",
+            )
+        dpg.add_text("BPM: ---", tag="testo_bpm")
+        dpg.add_spacer(width=10)
+        for mode, label in ((BEAT_SOURCE_BAND1, "Band 1"), (BEAT_SOURCE_BAND2, "Band 2")):
+            dpg.add_checkbox(
+                label=label,
+                tag=f"cb_beat_{mode}",
+                callback=on_beat_source,
+                user_data=mode,
+            )
+            with dpg.drawlist(width=14, height=14):
+                dpg.draw_circle(
+                    center=[7, 7],
+                    radius=5,
+                    color=(0, 0, 0, 255),
+                    fill=(50, 50, 50, 255),
+                    tag=BEAT_LED_TAGS[mode],
+                )
+            dpg.add_spacer(width=10)
+
+    # Beat source line 2: band 3 + MIDI + manual (with the numeric input and TAP)
+    with dpg.group(horizontal=True):
+        for mode, label in ((BEAT_SOURCE_BAND3, "Band 3"), (BEAT_SOURCE_MIDI, "MIDI Sync")):
+            dpg.add_checkbox(
+                label=label,
+                tag=f"cb_beat_{mode}",
+                callback=on_beat_source,
+                user_data=mode,
+            )
+            with dpg.drawlist(width=14, height=14):
+                dpg.draw_circle(
+                    center=[7, 7],
+                    radius=5,
+                    color=(0, 0, 0, 255),
+                    fill=(50, 50, 50, 255),
+                    tag=BEAT_LED_TAGS[mode],
+                )
+            dpg.add_spacer(width=10)
+        dpg.add_checkbox(
+            label="BPM Manuale",
+            tag="cb_beat_manual_bpm",
+            callback=on_beat_source,
+            user_data=BEAT_SOURCE_MANUAL,
+        )
+        with dpg.drawlist(width=14, height=14):
+            dpg.draw_circle(
+                center=[7, 7],
+                radius=5,
+                color=(0, 0, 0, 255),
+                fill=(50, 50, 50, 255),
+                tag="led_manual",
+            )
+        dpg.add_spacer(width=6)
+        dpg.add_input_int(
             default_value=120,
             min_value=30,
             max_value=300,
             width=64,
-            format="%.0f",
             tag="manual_bpm_input",
             callback=on_manual_bpm,
             show=False,
@@ -1923,15 +1996,6 @@ with dpg.window(label="Audio analyzer", width=350, height=272, pos=(10, 806), no
             callback=toggle_audio_stream,
             user_data="beat_tracking",
         )
-        dpg.add_text("BPM: ---", tag="testo_bpm")
-        with dpg.drawlist(width=26, height=26):
-            dpg.draw_circle(
-                center=[13, 13],
-                radius=9,
-                color=(0, 0, 0, 255),
-                fill=(50, 50, 50, 255),
-                tag="beat_led",
-            )
     dpg.add_checkbox(
         label="Use Low-Pass Filter (kick only)",
         default_value=True,

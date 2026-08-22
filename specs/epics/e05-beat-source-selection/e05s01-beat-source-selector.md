@@ -1,21 +1,22 @@
-# e05s01 — Beat source selector (6 modes) + sequencer dispatch; remove boot sync
+# e05s01 — Beat source selector (6 checkboxes + LEDs on two lines); remove boot sync
 
 **type:** feature
 **risk:** P1
 **context:** sequencer
 
-**Context:** A combo right of the RESYNC button lets the user choose the timing source. The
-default stays the BPM analysis. The sequencer tick loop branches: interval-driven modes
-(analysis, manual) sleep 60/bpm as today; event-driven modes (band1/2/3, MIDI) wait on a
-`sync_event_beat` instead. The boot-time `/vimix/current/sync` send is removed.
+**Context:** Six checkboxes (radio-style, exactly one active) on two lines right of the
+RESYNC control, each with its own beat LED: Rilevazione BPM (with the BPM readout), Band
+1/2/3, MIDI Sync, BPM Manuale. The BPM LED is removed from the audio analyzer window; the
+beat decision happens on the sequencer. The sequencer tick loop branches: interval-driven
+modes (analysis, manual) sleep 60/bpm; event-driven modes (band1/2/3, MIDI) wait on
+`sync_event_beat`. The boot-time `/vimix/current/sync` send is removed.
 
 ## Requirements
 
-#### ENHANCED: Beat source selector with 6 modes
-**Before:** sequencer always uses the analyzed BPM; boot sends `/vimix/current/sync`.
-**After:** a combo (Rilevazione BPM / Battito Band 1..3 / MIDI Sync / BPM Manuale) right of
-RESYNC; the sequencer advances on the fixed interval for analysis/manual, or on the beat
-event for band/MIDI modes; nothing is sent at boot.
+#### ENHANCED: Beat source selector with 6 modes, checkbox + LED
+**Before:** a combo; the BPM LED lived in the audio window; boot sent `/vimix/current/sync`.
+**After:** two lines of radio-style checkboxes with per-mode LEDs on the sequencer; the BPM
+readout sits next to Rilevazione BPM; nothing is sent at boot.
 
 ## Steps
 

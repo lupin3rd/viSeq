@@ -208,17 +208,24 @@ band_rect_tags = {
 vu_meter_progress = any(
     n == "add_progress_bar" and kw.get("tag") == "vu_meter" for n, a, kw in dpg.calls
 )
-beat_source_combo = any(
-    n == "add_combo" and kw.get("tag") == "beat_source_combo" for n, a, kw in dpg.calls
-)
+beat_checkbox_tags = {
+    kw.get("tag")
+    for n, a, kw in dpg.calls
+    if n == "add_checkbox" and str(kw.get("tag", "")).startswith("cb_beat_")
+}
+beat_led_tags = {
+    kw.get("tag")
+    for n, a, kw in dpg.calls
+    if n == "draw_circle" and str(kw.get("tag", "")).startswith("led_")
+}
 manual_bpm_input_widget = any(
-    n == "add_drag_int" and kw.get("tag") == "manual_bpm_input" for n, a, kw in dpg.calls
+    n == "add_input_int" and kw.get("tag") == "manual_bpm_input" for n, a, kw in dpg.calls
 )
 tap_button_widget = any(n == "add_button" and kw.get("tag") == "btn_tap" for n, a, kw in dpg.calls)
 manual_bpm_hidden = all(
     kw.get("show") is False
     for n, a, kw in dpg.calls
-    if n in ("add_drag_int", "add_button") and kw.get("tag") in ("manual_bpm_input", "btn_tap")
+    if n in ("add_input_int", "add_button") and kw.get("tag") in ("manual_bpm_input", "btn_tap")
 )
 tap_hidden = manual_bpm_hidden
 spec_bar_tags = [
@@ -987,15 +994,51 @@ def test_on_manual_bpm_sets_current_bpm():
 
 def test_on_beat_source_switches_mode_and_widgets():
     dpg.values["manual_bpm_input"] = 128
-    viseq.on_beat_source(None, "BPM Manuale", None)
+    dpg.values["cb_beat_bpm_analysis"] = False
+    viseq.on_beat_source(None, True, viseq.BEAT_SOURCE_MANUAL)
     assert viseq.beat_source == viseq.BEAT_SOURCE_MANUAL
     assert viseq.current_bpm == 128.0
     shows = {a[0]: kw.get("show") for n, a, kw in dpg.calls if n == "configure_item"}
     assert shows.get("manual_bpm_input") is True and shows.get("btn_tap") is True
-    viseq.on_beat_source(None, "Rilevazione BPM", None)
+    dpg.values["cb_beat_manual_bpm"] = False
+    viseq.on_beat_source(None, True, viseq.BEAT_SOURCE_ANALYSIS)
     assert viseq.beat_source == viseq.BEAT_SOURCE_ANALYSIS
     shows = {a[0]: kw.get("show") for n, a, kw in dpg.calls if n == "configure_item"}
     assert shows.get("manual_bpm_input") is False and shows.get("btn_tap") is False
+
+
+def test_beat_source_single_selection_radio():
+    dpg.values["cb_beat_manual_bpm"] = True
+    dpg.values["cb_beat_band1_beat"] = False
+    viseq.on_beat_source(None, True, viseq.BEAT_SOURCE_BAND1)
+    assert viseq.beat_source == viseq.BEAT_SOURCE_BAND1
+    # the manual checkbox must be unchecked, band1 checked
+    assert dpg.values.get("cb_beat_manual_bpm") is False
+    assert dpg.values.get("cb_beat_band1_beat") is True
+    # unchecking the active source must keep it selected
+    viseq.on_beat_source("cb_beat_band1_beat", False, viseq.BEAT_SOURCE_BAND1)
+    assert viseq.beat_source == viseq.BEAT_SOURCE_BAND1
+
+
+def test_flash_led_enqueues_main_thread():
+    dpg.calls.clear()
+    viseq.flash_led("led_midi")
+    while not viseq.ui_task_queue.empty():
+        viseq.ui_task_queue.get()()
+    assert any(
+        n == "configure_item" and a == ("led_midi",) and kw.get("fill") == (80, 255, 120, 255)
+        for n, a, kw in dpg.calls
+    ), "flash must set the LED green via the main-thread queue"
+
+
+def test_sequencer_waits_once_per_step():
+    # Regression: a duplicated sync_event_seq.wait made the manual BPM run at half speed
+    src = Path("viseq.py").read_text()
+    fn = re.search(r"def sequencer_tick\(.*?\n(?=def |\n# ===)", src, re.S)
+    assert fn, "sequencer_tick not found"
+    assert fn.group(0).count("sync_event_seq.wait") == 1, (
+        "sequencer_tick must wait exactly once per step (duplicate wait halves the BPM)"
+    )
 
 
 def test_midi_beats_from_pulses():
@@ -1006,6 +1049,21 @@ def test_midi_beats_from_pulses():
 
 
 def test_beat_source_ui_wired():
-    assert beat_source_combo, "beat source combo must exist next to RESYNC"
+    assert beat_checkbox_tags == {
+        "cb_beat_bpm_analysis",
+        "cb_beat_band1_beat",
+        "cb_beat_band2_beat",
+        "cb_beat_band3_beat",
+        "cb_beat_midi_sync",
+        "cb_beat_manual_bpm",
+    }, "one checkbox per beat source"
+    assert beat_led_tags == {
+        "led_analysis",
+        "led_band1",
+        "led_band2",
+        "led_band3",
+        "led_midi",
+        "led_manual",
+    }, "one LED per beat source"
     assert manual_bpm_input_widget and tap_button_widget, "manual BPM widgets must exist"
     assert manual_bpm_hidden and tap_hidden, "manual widgets hidden unless manual mode"
