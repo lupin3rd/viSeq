@@ -1186,3 +1186,50 @@ def test_new_monitor_shows_assign_button():
     assert assigns, "a fresh monitor player must show the CLICK TO ASSIGN button"
     assert not player["target_id"]
     _monitor_cleanup(count)
+
+
+# ---------- e08: step copy/paste + robust disc play detection ----------
+def test_video_is_playing_handles_formats():
+    assert viseq.video_is_playing({"play": True}, 0.0, 0.5) is True
+    assert viseq.video_is_playing({"play": 1}, 0.0, 0.5) is True
+    assert viseq.video_is_playing({"play": "true"}, 0.0, 0.5) is True
+    assert viseq.video_is_playing({"play": False}, 0.0, 0.5) is False
+    assert viseq.video_is_playing({"play": 0}, 0.0, 0.5) is False
+    assert viseq.video_is_playing({"play": "false"}, 0.0, 0.5) is False, (
+        "a 'false' string must not count as playing"
+    )
+    assert viseq.video_is_playing({}, 0.0, 0.5) is True, "advancing seek -> playing"
+    assert viseq.video_is_playing({}, 0.5, 0.5) is False, "static seek -> paused"
+
+
+def test_copy_paste_step():
+    step = viseq.tracks_data[0]["steps"][2]
+    step.update(
+        {"type": "ColorR", "active": True, "v1": 0.33, "last_rand_color": [0.5, 0.25, 0.75]}
+    )
+    viseq.copy_step(None, None, (0, 2))
+    assert viseq.copied_step_data is not None
+    viseq.paste_step(None, None, (0, 5))
+    pasted = viseq.tracks_data[0]["steps"][5]
+    assert pasted["type"] == "ColorR" and pasted["active"] is True
+    assert pasted["v1"] == 0.33
+    assert pasted["last_rand_color"] == [0.5, 0.25, 0.75]
+    assert pasted["last_rand_color"] is not step["last_rand_color"], "deep copy expected"
+
+
+def test_paste_step_to_row():
+    src = viseq.tracks_data[1]["steps"][0]
+    src.update({"type": "AlphaV", "v1": 0.77, "active": True})
+    viseq.copy_step(None, None, (1, 0))
+    viseq.paste_step_to_row(None, None, (1, 3))
+    for c in range(viseq.NUM_STEPS):
+        st = viseq.tracks_data[1]["steps"][c]
+        assert st["type"] == "AlphaV" and st["v1"] == 0.77, f"step {c} must match the copy"
+    viseq.copied_step_data = None
+
+
+def test_step_popup_has_copy_paste_items():
+    dpg.calls.clear()
+    viseq.update_step_ui(0, 0)
+    items = [kw.get("label") for n, a, kw in dpg.calls if n == "add_menu_item"]
+    assert "Copy Step" in items and "Paste Step" in items and "Paste to Row" in items

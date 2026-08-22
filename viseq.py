@@ -1,4 +1,5 @@
 import contextlib
+import copy
 import io
 import json
 import math
@@ -200,6 +201,7 @@ MIDI_CLOCK_PULSES_PER_BEAT = 24  # MIDI standard: 24 clock pulses (0xF8) per qua
 midi_pulses: int = 0  # running MIDI clock pulse count (worker thread)
 tap_times: list[float] = []  # TAP timestamps for the manual BPM mode
 band_prev_values: dict[int, float] = {1: 0.0, 2: 0.0, 3: 0.0}  # band rising-edge tracking
+copied_step_data: dict[str, Any] | None = None  # step config copied for paste (e08)
 # Width of the transport row (PLAY + spacer + < + RESYNC + > + spacer). Measured on real
 # DPG 2.3.1: buttons render wider than their declared widths, so the alignment spacer is
 # 312px with the compact 28px-high transport (audit L-6).
@@ -388,6 +390,32 @@ def set_step_type(sender: Any, app_data: Any, user_data: Any) -> None:
     update_step_ui(row, col)
 
 
+def copy_step(sender: Any, app_data: Any, user_data: Any) -> None:
+    """Remember the full configuration of a step for later paste (e08)."""
+    global copied_step_data
+    row, col = user_data
+    copied_step_data = copy.deepcopy(tracks_data[row]["steps"][col])
+
+
+def paste_step(sender: Any, app_data: Any, user_data: Any) -> None:
+    """Apply the copied step configuration to the given step (e08)."""
+    row, col = user_data
+    if copied_step_data is None:
+        return
+    tracks_data[row]["steps"][col] = copy.deepcopy(copied_step_data)
+    update_step_ui(row, col)
+
+
+def paste_step_to_row(sender: Any, app_data: Any, user_data: Any) -> None:
+    """Apply the copied step configuration to every step of the sequencer row (e08)."""
+    row, _ = user_data
+    if copied_step_data is None:
+        return
+    for c in range(NUM_STEPS):
+        tracks_data[row]["steps"][c] = copy.deepcopy(copied_step_data)
+        update_step_ui(row, c)
+
+
 def toggle_step_active(sender: Any, app_data: Any, user_data: Any) -> None:
     row, col = user_data
     tracks_data[row]["steps"][col]["active"] = app_data
@@ -461,6 +489,12 @@ def update_step_ui(row: int, col: int) -> None:
             dpg.add_separator()
             dpg.add_menu_item(
                 label="Seek Random", callback=set_step_type, user_data=(row, col, "SeekR")
+            )
+            dpg.add_separator()
+            dpg.add_menu_item(label="Copy Step", callback=copy_step, user_data=(row, col))
+            dpg.add_menu_item(label="Paste Step", callback=paste_step, user_data=(row, col))
+            dpg.add_menu_item(
+                label="Paste to Row", callback=paste_step_to_row, user_data=(row, col)
             )
 
     if step_data["type"] == "AlphaV":
@@ -1082,6 +1116,22 @@ def update_monitor_player_ui(player_id: int) -> None:
         print(f"[viseq Monitor UI] Error updating player {player_id}: {e}")
 
 
+def video_is_playing(props: dict[str, Any], prev_seek: float, cur_seek: float) -> bool:
+    """True when the source video is moving: explicit play flag, or seek advancing.
+
+    viOSC may report play as a bool, 0/1, or a string; when it is absent, a
+    progressing seek is a reliable playing signal (paused video -> static seek).
+    """
+    play = props.get("play")
+    if isinstance(play, bool):
+        return play
+    if isinstance(play, (int, float)):
+        return play != 0
+    if isinstance(play, str):
+        return play.strip().lower() in ("1", "true", "yes", "on")
+    return cur_seek > prev_seek + 1e-4
+
+
 def refresh_monitor_display(player_id: int) -> None:
     """Spin the turntable and update the alpha/seek bars from the source props.
 
@@ -1104,10 +1154,12 @@ def refresh_monitor_display(player_id: int) -> None:
     speed = float(props.get("speed") or 1.0)
     if speed <= 0.0:
         speed = 1.0
-    # 33 RPM at speed 1.0 (0.55 rev/s = 3.455 rad/s); the disc spins only while playing
+    seek = max(0.0, min(1.0, float(props.get("seek") or 0.0)))
+    # 33 RPM at speed 1.0 (0.55 rev/s = 3.455 rad/s); the disc spins only while moving
     disc_rate = MONITOR_DISC_RPM / 60.0 * 2.0 * math.pi
-    if bool(props.get("play")):
+    if video_is_playing(props, player.get("prev_seek", 0.0), seek):
         player["disc_angle"] = player.get("disc_angle", 0.0) + disc_rate * speed * dt
+    player["prev_seek"] = seek
     angle = player.get("disc_angle", 0.0)
     if dpg.does_item_exist(f"mon_arm_{player_id}"):
         dpg.configure_item(
