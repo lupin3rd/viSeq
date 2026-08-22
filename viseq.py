@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import math
 import queue
 import random
 import threading
@@ -56,6 +57,15 @@ SLOT_BUTTON_TOP_SPACER = (SLOT_HEIGHT - SLOT_BUTTON_HEIGHT) // 2 - SLOT_BUTTON_F
 MEDIA_BADGE_W = 28  # px width of the media-index badge button
 MEDIA_BADGE_H = 20  # px height of the media-index badge button
 MEDIA_TILE_H = 146  # px height of a media tile (title + photo + badge row)
+
+# Monitor player: compact graphical readout (e07)
+MONITOR_THUMB_W = 115  # thumbnail width, same as the Mediagrid/sequencer
+MONITOR_THUMB_H = 65  # thumbnail height, same as the Mediagrid/sequencer
+MONITOR_DISC_SIZE = 46  # px side of the turntable disc
+MONITOR_ALPHA_W = 10  # px width of the vertical alpha bar
+MONITOR_SEEK_W = 250  # px width of the horizontal seek bar
+MONITOR_DISC_R = 17.0  # radius of the rotating turntable arm
+DEFAULT_MONITOR_PROPS = ["alpha", "seek", "speed"]  # requested when a monitor starts
 
 # --- OSC CONFIGURATION ---
 # viseq talks exclusively to viOSC: /vimix/* messages are forwarded by viOSC
@@ -910,13 +920,20 @@ def new_monitor_player(sender: Any = None, app_data: Any = None, user_data: Any 
     monitor_player_counter += 1
     player_id = monitor_player_counter
     tag = f"monitor_player_{player_id}"
-    player = {"id": player_id, "tag": tag, "target_id": None, "props": ["seek"]}
+    player = {
+        "id": player_id,
+        "tag": tag,
+        "target_id": None,
+        "props": list(DEFAULT_MONITOR_PROPS),
+        "disc_angle": 0.0,
+        "disc_last": 0.0,
+    }
     monitor_players.append(player)
     pos = (
         10 + MONITOR_OFFSET[0] * ((player_id - 1) % 4),
         30 + MONITOR_OFFSET[1] * ((player_id - 1) // 4),
     )
-    with dpg.window(label=f"Monitor Player {player_id}", tag=tag, width=270, height=265, pos=pos):
+    with dpg.window(label=f"Monitor Player {player_id}", tag=tag, width=270, height=150, pos=pos):
         head_tag = f"mon_head_{player_id}"
         dpg.add_text("Click the box below to assign the current source.", tag=head_tag, wrap=250)
         with dpg.popup(head_tag, mousebutton=dpg.mvMouseButton_Right):
@@ -931,25 +948,8 @@ def new_monitor_player(sender: Any = None, app_data: Any = None, user_data: Any 
                 callback=lambda s, a, u: remove_monitor_player(player_id),
                 user_data=player_id,
             )
-        dpg.add_spacer(height=6)
-        with (
-            dpg.child_window(
-                width=160, height=120, tag=f"mon_box_{player_id}", border=True, no_scrollbar=True
-            ),
-            dpg.group(indent=4, tag=f"mon_box_content_{player_id}"),
-        ):
-            dpg.add_spacer(height=3)
-            dpg.add_button(
-                label="CLICK TO ASSIGN",
-                width=150,
-                height=110,
-                callback=assign_monitor_player,
-                user_data=player_id,
-            )
-        dpg.add_spacer(height=6)
-        with dpg.group(tag=f"mon_vals_{player_id}"):
-            dpg.add_text("No monitoring yet.")
-        dpg.add_spacer(height=6)
+        with dpg.group(tag=f"mon_body_{player_id}"):
+            pass
         with dpg.group(horizontal=True):
             dpg.add_button(
                 label="Properties...",
@@ -978,62 +978,103 @@ def update_monitor_player_ui(player_id: int) -> None:
         head = f"mon_head_{player_id}"
         if dpg.does_item_exist(head):
             if target_id:
-                dpg.set_value(head, f"Source: {target_id}")
+                dpg.set_value(head, target_id)  # just the source name, no label
             else:
                 dpg.set_value(head, "Click the box below to assign the current source.")
-        box = f"mon_box_{player_id}"
-        content = f"mon_box_content_{player_id}"
-        if dpg.does_item_exist(box):
-            if dpg.does_item_exist(content):
-                dpg.delete_item(content)
-            with dpg.group(parent=box, indent=4, tag=content):
-                dpg.add_spacer(height=3)
-                if target_id:
+        body = f"mon_body_{player_id}"
+        if not dpg.does_item_exist(body):
+            return
+        dpg.delete_item(body, children_only=True)
+        with dpg.group(parent=body):
+            if target_id:
+                with dpg.group(horizontal=True):
                     if target_id in thumbnails_data:
-                        dpg.add_image(texture_tag=thumbnails_data[target_id], width=150, height=110)
+                        dpg.add_image(
+                            texture_tag=thumbnails_data[target_id],
+                            width=MONITOR_THUMB_W,
+                            height=MONITOR_THUMB_H,
+                        )
                     else:
-                        dpg.add_text("Loading thumbnail...", color=(150, 150, 150, 255), wrap=140)
-                else:
-                    dpg.add_button(
-                        label="CLICK TO ASSIGN",
-                        width=150,
-                        height=110,
-                        callback=assign_monitor_player,
-                        user_data=player_id,
+                        dpg.add_text(
+                            "Loading thumbnail...",
+                            color=(150, 150, 150, 255),
+                            width=MONITOR_THUMB_W,
+                            height=MONITOR_THUMB_H,
+                        )
+                    # turntable disc: spins while playing, rate follows speed
+                    with dpg.drawlist(width=MONITOR_DISC_SIZE, height=MONITOR_DISC_SIZE):
+                        dpg.draw_circle(
+                            center=[MONITOR_DISC_SIZE // 2, MONITOR_DISC_SIZE // 2],
+                            radius=20,
+                            color=(60, 60, 70, 255),
+                            fill=(25, 25, 35, 255),
+                        )
+                        dpg.draw_circle(
+                            center=[MONITOR_DISC_SIZE // 2, MONITOR_DISC_SIZE // 2],
+                            radius=13,
+                            color=(40, 40, 50, 255),
+                        )
+                        dpg.draw_line(
+                            p1=[MONITOR_DISC_SIZE // 2, MONITOR_DISC_SIZE // 2],
+                            p2=[MONITOR_DISC_SIZE // 2, MONITOR_DISC_SIZE // 2 - 17],
+                            color=(180, 190, 200, 255),
+                            thickness=2,
+                            tag=f"mon_arm_{player_id}",
+                        )
+                        dpg.draw_circle(
+                            center=[MONITOR_DISC_SIZE // 2, MONITOR_DISC_SIZE // 2],
+                            radius=3,
+                            color=(70, 70, 80, 255),
+                            fill=(90, 90, 100, 255),
+                        )
+                    # vertical alpha bar (filled from the bottom)
+                    with dpg.drawlist(width=MONITOR_ALPHA_W, height=MONITOR_DISC_SIZE):
+                        dpg.draw_rectangle(
+                            pmin=[0, 0],
+                            pmax=[MONITOR_ALPHA_W, MONITOR_DISC_SIZE],
+                            color=(60, 60, 70, 255),
+                            fill=(35, 35, 45, 255),
+                        )
+                        dpg.draw_rectangle(
+                            pmin=[0, MONITOR_DISC_SIZE],
+                            pmax=[MONITOR_ALPHA_W, MONITOR_DISC_SIZE],
+                            color=(200, 255, 200, 255),
+                            fill=(120, 220, 120, 255),
+                            tag=f"mon_alpha_fill_{player_id}",
+                        )
+                # horizontal seek bar (video progress 0..1)
+                with dpg.drawlist(width=MONITOR_SEEK_W, height=10):
+                    dpg.draw_rectangle(
+                        pmin=[0, 0],
+                        pmax=[MONITOR_SEEK_W, 10],
+                        color=(60, 60, 70, 255),
+                        fill=(35, 35, 45, 255),
                     )
-        rebuild_monitor_player_values(player_id)
+                    dpg.draw_rectangle(
+                        pmin=[0, 0],
+                        pmax=[0, 10],
+                        color=(180, 220, 255, 255),
+                        fill=(90, 160, 220, 255),
+                        tag=f"mon_seek_fill_{player_id}",
+                    )
+            else:
+                dpg.add_button(
+                    label="CLICK TO ASSIGN",
+                    width=MONITOR_SEEK_W,
+                    height=60,
+                    callback=assign_monitor_player,
+                    user_data=player_id,
+                )
     except Exception as e:
         print(f"[viseq Monitor UI] Error updating player {player_id}: {e}")
 
 
-def rebuild_monitor_player_values(player_id: int) -> None:
-    try:
-        idx = find_player_index(player_id)
-        if idx is None:
-            return
-        player = monitor_players[idx]
-        vals = f"mon_vals_{player_id}"
-        if not dpg.does_item_exist(vals):
-            return
-        dpg.delete_item(vals, children_only=True)
-        if not player["target_id"]:
-            dpg.add_text("No monitoring yet.", parent=vals)
-            return
-        props = player.get("props", [])
-        if not props:
-            dpg.add_text(
-                "Monitoring stopped (no properties selected).",
-                parent=vals,
-                color=(200, 200, 200, 255),
-            )
-            return
-        for prop in props:
-            dpg.add_text(f"{prop}: ---", parent=vals, tag=f"mon_val_{player_id}_{prop}", wrap=250)
-    except Exception as e:
-        print(f"[viseq Monitor UI] Error rebuilding values of player {player_id}: {e}")
+def refresh_monitor_display(player_id: int) -> None:
+    """Spin the turntable and update the alpha/seek bars from the source props.
 
-
-def refresh_monitor_player_values(player_id: int) -> None:
+    Runs on the main thread every frame; the disc angle advances only while
+    the video plays, at a rate proportional to the speed.
+    """
     idx = find_player_index(player_id)
     if idx is None:
         return
@@ -1042,18 +1083,35 @@ def refresh_monitor_player_values(player_id: int) -> None:
     if not target_id:
         return
     _, props = find_source_by_name(target_id)
-    for prop in player.get("props", []):
-        t = f"mon_val_{player_id}_{prop}"
-        if not dpg.does_item_exist(t):
-            continue
-        val = props.get(prop) if props else None
-        if isinstance(val, float):
-            s = f"{val:.3f}"
-        elif val is None:
-            s = "---"
-        else:
-            s = str(val)
-        dpg.set_value(t, f"{prop}: {s}")
+    if props is None:
+        return
+    now = time.time()
+    dt = now - player.get("disc_last", now)
+    player["disc_last"] = now
+    speed = float(props.get("speed") or 1.0)
+    if bool(props.get("play")):
+        player["disc_angle"] = player.get("disc_angle", 0.0) + 2.0 * speed * dt
+    angle = player.get("disc_angle", 0.0)
+    if dpg.does_item_exist(f"mon_arm_{player_id}"):
+        dpg.configure_item(
+            f"mon_arm_{player_id}",
+            p2=[
+                MONITOR_DISC_SIZE / 2 + MONITOR_DISC_R * math.sin(angle),
+                MONITOR_DISC_SIZE / 2 - MONITOR_DISC_R * math.cos(angle),
+            ],
+        )
+    alpha = max(0.0, min(1.0, float(props.get("alpha") or 0.0)))
+    if dpg.does_item_exist(f"mon_alpha_fill_{player_id}"):
+        dpg.configure_item(
+            f"mon_alpha_fill_{player_id}",
+            pmin=[0, MONITOR_DISC_SIZE - alpha * MONITOR_DISC_SIZE],
+        )
+    seek = max(0.0, min(1.0, float(props.get("seek") or 0.0)))
+    if dpg.does_item_exist(f"mon_seek_fill_{player_id}"):
+        dpg.configure_item(
+            f"mon_seek_fill_{player_id}",
+            pmax=[seek * MONITOR_SEEK_W, 10],
+        )
 
 
 def assign_monitor_player(sender: Any, app_data: Any, user_data: Any) -> None:
@@ -1075,7 +1133,7 @@ def assign_monitor_player(sender: Any, app_data: Any, user_data: Any) -> None:
                 )
             return
     player["target_id"] = target_id
-    player["props"] = ["seek"]
+    player["props"] = list(DEFAULT_MONITOR_PROPS)
     send_monitor_command(player_id)
     update_monitor_player_ui(player_id)
 
@@ -1125,7 +1183,6 @@ def on_monitor_prop_toggle(sender: Any, app_data: Any, user_data: Any) -> None:
             new_props.append(prop)
     player["props"] = new_props
     send_monitor_command(player_id)
-    rebuild_monitor_player_values(player_id)
 
 
 def remove_monitor_player(player_id: int) -> None:
@@ -2217,7 +2274,7 @@ try:
                     append_log("OUT", f"{addr} (stop)")
                 monitor_players.remove(p)
                 continue
-            refresh_monitor_player_values(p["id"])
+            refresh_monitor_display(p["id"])
 
         dpg.render_dearpygui_frame()
         time.sleep(0.016)

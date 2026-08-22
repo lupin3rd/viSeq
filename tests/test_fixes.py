@@ -1110,3 +1110,66 @@ def test_media_tile_alpha_missing_shows_dash():
         json.dumps({"current_source": 1, "sources": {"2": {"name": "clipB", "index": 5}}})
     )
     assert dpg.values.get("tile_alpha_clipB") == "---", "missing alpha must show a dash"
+
+
+# ---------- e07: compact graphical monitor player ----------
+def _monitor_cleanup(count_before: int) -> None:
+    viseq.monitor_players.pop()
+    viseq.monitor_player_counter = count_before
+
+
+def test_monitor_default_props_alpha_seek_speed():
+    count = viseq.monitor_player_counter
+    viseq.new_monitor_player(None, None, None)
+    player = viseq.monitor_players[-1]
+    assert player["props"] == ["alpha", "seek", "speed"], (
+        "a new monitor must request alpha, seek, speed"
+    )
+    _monitor_cleanup(count)
+
+
+def test_monitor_assign_sets_default_props():
+    viseq.global_vimix_state["current_source"] = 1
+    viseq.global_vimix_state["sources"] = {"1": {"name": "clipA", "index": 1}}
+    count = viseq.monitor_player_counter
+    viseq.new_monitor_player(None, None, None)
+    player = viseq.monitor_players[-1]
+    viseq.assign_monitor_player(None, None, player["id"])
+    assert player["target_id"] == "clipA"
+    assert player["props"] == ["alpha", "seek", "speed"], "assign must request the defaults"
+    _monitor_cleanup(count)
+
+
+def test_monitor_graphical_elements_and_refresh():
+    viseq.global_vimix_state["current_source"] = 1
+    viseq.global_vimix_state["sources"] = {
+        "1": {"name": "clipA", "index": 1, "alpha": 0.5, "seek": 0.3, "speed": 1.5, "play": True}
+    }
+    viseq.thumbnails_data["clipA"] = "tex_clipA"
+    count = viseq.monitor_player_counter
+    viseq.new_monitor_player(None, None, None)
+    player = viseq.monitor_players[-1]
+    dpg.calls.clear()
+    viseq.assign_monitor_player(None, None, player["id"])
+    pid = player["id"]
+    assert any(n == "draw_line" and kw.get("tag") == f"mon_arm_{pid}" for n, a, kw in dpg.calls)
+    assert any(
+        n == "draw_rectangle" and kw.get("tag") == f"mon_alpha_fill_{pid}" for n, a, kw in dpg.calls
+    )
+    assert any(
+        n == "draw_rectangle" and kw.get("tag") == f"mon_seek_fill_{pid}" for n, a, kw in dpg.calls
+    )
+    dpg.calls.clear()
+    viseq.refresh_monitor_display(pid)
+    assert any(n == "configure_item" and a == (f"mon_arm_{pid}",) for n, a, kw in dpg.calls), (
+        "turntable arm must spin"
+    )
+    alpha_cfg = [
+        kw for n, a, kw in dpg.calls if n == "configure_item" and a == (f"mon_alpha_fill_{pid}",)
+    ]
+    assert alpha_cfg and alpha_cfg[-1].get("pmin") == [0, 23.0], "alpha bar at 50%"
+    seek_cfg = [
+        kw for n, a, kw in dpg.calls if n == "configure_item" and a == (f"mon_seek_fill_{pid}",)
+    ]
+    assert seek_cfg and seek_cfg[-1].get("pmax") == [75.0, 10], "seek bar at 30%"
+    _monitor_cleanup(count)
