@@ -1,0 +1,15 @@
+story_id: e05s01
+title: Beat source selector (6 modes) + sequencer dispatch; remove boot sync
+status: pending
+bcps: 3
+tasks:
+- id: 1
+  description: "Constants/state (BEAT_SOURCE_*, beat_source, sync_event_beat, BEAT_SOURCE_LABELS) + beat_is_event_driven() helper + sequencer_tick dispatch branch; remove VIMIX_CURRENT_SYNC and its boot send"
+  verify: .venv/bin/python -m pytest tests/ -q -k "beat"
+  risk: P1
+  status: passing
+- id: 2
+  description: "Beat source combo right of RESYNC + on_beat_source (shows manual widgets only in manual mode); analysis stays the default so HIGH-2 tests remain green"
+  verify: .venv/bin/python -m pytest tests/ -q
+  risk: P1
+  status: passing

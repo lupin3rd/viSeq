@@ -208,6 +208,19 @@ band_rect_tags = {
 vu_meter_progress = any(
     n == "add_progress_bar" and kw.get("tag") == "vu_meter" for n, a, kw in dpg.calls
 )
+beat_source_combo = any(
+    n == "add_combo" and kw.get("tag") == "beat_source_combo" for n, a, kw in dpg.calls
+)
+manual_bpm_input_widget = any(
+    n == "add_drag_int" and kw.get("tag") == "manual_bpm_input" for n, a, kw in dpg.calls
+)
+tap_button_widget = any(n == "add_button" and kw.get("tag") == "btn_tap" for n, a, kw in dpg.calls)
+manual_bpm_hidden = all(
+    kw.get("show") is False
+    for n, a, kw in dpg.calls
+    if n in ("add_drag_int", "add_button") and kw.get("tag") in ("manual_bpm_input", "btn_tap")
+)
+tap_hidden = manual_bpm_hidden
 spec_bar_tags = [
     kw.get("tag")
     for n, a, kw in dpg.calls
@@ -884,15 +897,15 @@ def test_band_value_degenerate_level_window_plain_mean():
     )
 
 
-def test_autostart_osc_sends_vimix_current_sync():
+def test_autostart_osc_sends_no_boot_sync():
     viseq.osc_client.messages.clear()
     viseq.viosc_client = None
     viseq.is_server_running = False
     viseq.local_osc_server = None
     viseq.local_server_thread = None
     viseq.autostart_osc()
-    assert ("/vimix/current/sync", []) in viseq.osc_client.messages, (
-        "autostart must ask Vimix to re-emit its current source"
+    assert not any("current/sync" in str(m[0]) for m in viseq.osc_client.messages), (
+        "nothing must be sent at boot (no /vimix/current/sync)"
     )
 
 
@@ -900,3 +913,99 @@ def test_audio_window_band_level_sliders_wired():
     for i in (1, 2, 3):
         assert f"band{i}_min" in band_slider_tags, f"band{i} level Min slider missing"
         assert f"band{i}_max" in band_slider_tags, f"band{i} level Max slider missing"
+
+
+# ---------- e05: beat/clock source selection ----------
+def test_beat_is_event_driven():
+    for source, event_driven in [
+        (viseq.BEAT_SOURCE_ANALYSIS, False),
+        (viseq.BEAT_SOURCE_BAND1, True),
+        (viseq.BEAT_SOURCE_BAND2, True),
+        (viseq.BEAT_SOURCE_BAND3, True),
+        (viseq.BEAT_SOURCE_MIDI, True),
+        (viseq.BEAT_SOURCE_MANUAL, False),
+    ]:
+        viseq.beat_source = source
+        assert viseq.beat_is_event_driven() is event_driven, source
+    viseq.beat_source = viseq.BEAT_SOURCE_ANALYSIS
+
+
+def test_band_rising_edge_triggers_beat():
+    viseq.beat_source = viseq.BEAT_SOURCE_BAND1
+    viseq.bands_enabled[1] = True
+    viseq.band_prev_values[1] = 0.9
+    viseq.sync_event_beat.clear()
+    bars = np.full(16, 1.0)
+    viseq.refresh_band_value(bars, 1)
+    assert viseq.sync_event_beat.is_set(), "band reaching 1.0 must fire the beat"
+    # no re-fire while it stays at 1.0 (edge only)
+    viseq.sync_event_beat.clear()
+    viseq.refresh_band_value(bars, 1)
+    assert not viseq.sync_event_beat.is_set(), "no re-trigger on a sustained 1.0"
+    viseq.bands_enabled[1] = False
+    viseq.band_prev_values[1] = 0.0
+
+
+def test_band_beat_ignored_when_not_selected():
+    viseq.beat_source = viseq.BEAT_SOURCE_BAND2
+    viseq.bands_enabled[1] = True
+    viseq.band_prev_values[1] = 0.9
+    viseq.sync_event_beat.clear()
+    viseq.refresh_band_value(np.full(16, 1.0), 1)
+    assert not viseq.sync_event_beat.is_set(), "only the selected band drives the beat"
+    viseq.bands_enabled[1] = False
+    viseq.band_prev_values[1] = 0.0
+
+
+def test_tap_bpm_averages_intervals(monkeypatch):
+    clock = iter([0.0, 0.5, 1.0, 1.5])
+    monkeypatch.setattr(viseq.time, "time", lambda: next(clock))
+    viseq.tap_times.clear()
+    viseq.tap_bpm(None, None, None)  # single tap: no BPM yet
+    assert len(viseq.tap_times) == 1
+    for _ in range(3):
+        viseq.tap_bpm(None, None, None)
+    assert viseq.current_bpm == 120.0, "0.5s taps must give 120 BPM"
+    viseq.tap_times.clear()
+
+
+def test_tap_bpm_stale_resets(monkeypatch):
+    clock = iter([0.0, 3.0, 3.5])
+    monkeypatch.setattr(viseq.time, "time", lambda: next(clock))
+    viseq.tap_times.clear()
+    viseq.tap_bpm(None, None, None)
+    viseq.tap_bpm(None, None, None)  # 3s gap -> reset, not averaged with the first tap
+    viseq.tap_bpm(None, None, None)
+    assert viseq.current_bpm == 120.0, "stale taps must not skew the average"
+    viseq.tap_times.clear()
+
+
+def test_on_manual_bpm_sets_current_bpm():
+    viseq.on_manual_bpm(None, 140, None)
+    assert viseq.current_bpm == 140.0
+
+
+def test_on_beat_source_switches_mode_and_widgets():
+    dpg.values["manual_bpm_input"] = 128
+    viseq.on_beat_source(None, "BPM Manuale", None)
+    assert viseq.beat_source == viseq.BEAT_SOURCE_MANUAL
+    assert viseq.current_bpm == 128.0
+    shows = {a[0]: kw.get("show") for n, a, kw in dpg.calls if n == "configure_item"}
+    assert shows.get("manual_bpm_input") is True and shows.get("btn_tap") is True
+    viseq.on_beat_source(None, "Rilevazione BPM", None)
+    assert viseq.beat_source == viseq.BEAT_SOURCE_ANALYSIS
+    shows = {a[0]: kw.get("show") for n, a, kw in dpg.calls if n == "configure_item"}
+    assert shows.get("manual_bpm_input") is False and shows.get("btn_tap") is False
+
+
+def test_midi_beats_from_pulses():
+    assert viseq.midi_beats_from_pulses(0) == 0
+    assert viseq.midi_beats_from_pulses(23) == 0
+    assert viseq.midi_beats_from_pulses(24) == 1
+    assert viseq.midi_beats_from_pulses(48) == 2
+
+
+def test_beat_source_ui_wired():
+    assert beat_source_combo, "beat source combo must exist next to RESYNC"
+    assert manual_bpm_input_widget and tap_button_widget, "manual BPM widgets must exist"
+    assert manual_bpm_hidden and tap_hidden, "manual widgets hidden unless manual mode"

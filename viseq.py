@@ -58,7 +58,6 @@ SLOT_BUTTON_TOP_SPACER = (SLOT_HEIGHT - SLOT_BUTTON_HEIGHT) // 2 - SLOT_BUTTON_F
 VIOSC_IP = "127.0.0.1"
 VIOSC_PORT = 6666
 VIOSC_LISTEN_PORT = 6667  # the port viOSC sends replies to; viseq's own server listens here
-VIMIX_CURRENT_SYNC = "/vimix/current/sync"  # ask Vimix to re-emit its current source state
 osc_client = udp_client.SimpleUDPClient(VIOSC_IP, VIOSC_PORT)
 
 viosc_client: Any = None
@@ -160,6 +159,30 @@ is_playing: bool = False
 phase_nudge: float = 0.0
 sync_event_seq = threading.Event()
 sync_event_led = threading.Event()
+
+# Beat/clock source selection (e05): the sequencer can follow the analyzed BPM, a band
+# hitting 1.0, standard MIDI clock, or a manual BPM (numeric/TAP). Event-driven modes wake
+# the sequencer on sync_event_beat instead of sleeping a fixed interval.
+BEAT_SOURCE_ANALYSIS = "bpm_analysis"
+BEAT_SOURCE_BAND1 = "band1_beat"
+BEAT_SOURCE_BAND2 = "band2_beat"
+BEAT_SOURCE_BAND3 = "band3_beat"
+BEAT_SOURCE_MIDI = "midi_sync"
+BEAT_SOURCE_MANUAL = "manual_bpm"
+BEAT_SOURCE_LABELS = {
+    BEAT_SOURCE_ANALYSIS: "Rilevazione BPM",
+    BEAT_SOURCE_BAND1: "Battito Band 1",
+    BEAT_SOURCE_BAND2: "Battito Band 2",
+    BEAT_SOURCE_BAND3: "Battito Band 3",
+    BEAT_SOURCE_MIDI: "MIDI Sync",
+    BEAT_SOURCE_MANUAL: "BPM Manuale",
+}
+beat_source: str = BEAT_SOURCE_ANALYSIS  # default: current behavior (essentia BPM)
+sync_event_beat = threading.Event()  # fired once per beat in band/MIDI modes
+MIDI_CLOCK_PULSES_PER_BEAT = 24  # MIDI standard: 24 clock pulses (0xF8) per quarter note
+midi_pulses: int = 0  # running MIDI clock pulse count (worker thread)
+tap_times: list[float] = []  # TAP timestamps for the manual BPM mode
+band_prev_values: dict[int, float] = {1: 0.0, 2: 0.0, 3: 0.0}  # band rising-edge tracking
 
 # Sequencer data structure with the new "msgs" parameter
 tracks_data: list[dict[str, Any]] = []
@@ -1144,12 +1167,82 @@ def connect_to_viosc() -> None:
 
 
 def autostart_osc() -> None:
-    """Boot wiring: auto-connect the viOSC client, start the server, ask for current state."""
+    """Boot wiring: auto-connect the viOSC client and start the listening server."""
     connect_osc_client(VIOSC_IP, VIOSC_PORT)
     start_osc_server(VIOSC_IP, VIOSC_LISTEN_PORT)
-    if viosc_client:
-        osc_client.send_message(VIMIX_CURRENT_SYNC, [])
-        append_log("OUT", VIMIX_CURRENT_SYNC)
+
+
+def on_beat_source(sender: Any, app_data: Any, user_data: Any) -> None:
+    """Switch the sequencer beat source; reveal the manual widgets only in manual mode."""
+    global beat_source, current_bpm
+    label_to_source = {label: key for key, label in BEAT_SOURCE_LABELS.items()}
+    beat_source = label_to_source.get(app_data, BEAT_SOURCE_ANALYSIS)
+    is_manual = beat_source == BEAT_SOURCE_MANUAL
+    dpg.configure_item("manual_bpm_input", show=is_manual)
+    dpg.configure_item("btn_tap", show=is_manual)
+    if is_manual:
+        current_bpm = float(dpg.get_value("manual_bpm_input"))
+        dpg.set_value("testo_bpm", f"BPM: {current_bpm:.1f}")
+
+
+def on_manual_bpm(sender: Any, app_data: Any, user_data: Any) -> None:
+    """Set the sequencer BPM from the manual numeric input."""
+    global current_bpm
+    current_bpm = float(app_data)
+    dpg.set_value("testo_bpm", f"BPM: {current_bpm:.1f}")
+
+
+def tap_bpm(sender: Any, app_data: Any, user_data: Any) -> None:
+    """Set the BPM from the average interval of the last taps (manual mode)."""
+    global current_bpm
+    now = time.time()
+    if tap_times and now - tap_times[-1] > 2.0:
+        tap_times.clear()  # stale tap starts a new sequence
+    tap_times.append(now)
+    del tap_times[:-8]  # keep the most recent taps
+    if len(tap_times) >= 2:
+        intervals = [tap_times[i + 1] - tap_times[i] for i in range(len(tap_times) - 1)]
+        bpm = 60.0 / (sum(intervals) / len(intervals))
+        current_bpm = round(bpm, 2)
+        dpg.set_value("manual_bpm_input", round(current_bpm))
+        dpg.set_value("testo_bpm", f"BPM: {current_bpm:.1f}")
+
+
+def midi_beats_from_pulses(pulses: int) -> int:
+    """Whole quarter-note beats contained in a MIDI clock pulse count (24 pulses/beat)."""
+    return pulses // MIDI_CLOCK_PULSES_PER_BEAT
+
+
+def midi_clock_loop() -> None:
+    """Listen for MIDI clock (0xF8, 24 pulses/beat) and fire the sequencer beat in MIDI mode.
+
+    Opens the first available MIDI input; without any port (or backend) it logs once and
+    idles so the app keeps running.
+    """
+    global midi_pulses
+    try:
+        import mido
+
+        ports = mido.get_input_names()
+        if not ports:
+            log_error("MIDI", "no MIDI input port available")
+            while True:
+                time.sleep(10)
+        with mido.open_input(ports[0]) as port:
+            append_log("MIDI", f"Listening on {ports[0]}")
+            while True:
+                for msg in port.iter_pending():
+                    if msg.type == "clock":
+                        midi_pulses += 1
+                        if midi_pulses >= MIDI_CLOCK_PULSES_PER_BEAT:
+                            midi_pulses = 0
+                            if beat_source == BEAT_SOURCE_MIDI and is_playing:
+                                sync_event_beat.set()
+                time.sleep(0.001)
+    except Exception as e:
+        log_error("MIDI", str(e))
+        while True:
+            time.sleep(10)
 
 
 def show_settings_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -1285,6 +1378,11 @@ def refresh_band_value(bars: np.ndarray, band_id: int) -> None:
     l_max = float(dpg.get_value(f"band{band_id}_max"))
     value = band_value_from_bars(bars, f_start, f_end, l_min, l_max)
     _set_band_variable(band_id, value)
+    # Beat trigger: the selected band mode fires when the band rises to >= 1.0 (edge only)
+    band_source = {1: BEAT_SOURCE_BAND1, 2: BEAT_SOURCE_BAND2, 3: BEAT_SOURCE_BAND3}[band_id]
+    if beat_source == band_source and value >= 1.0 and band_prev_values[band_id] < 1.0:
+        sync_event_beat.set()
+    band_prev_values[band_id] = value
     dpg.set_value(f"band{band_id}_value_text", f"{value:.2f}")
     dpg.configure_item(
         f"band{band_id}_rect",
@@ -1350,7 +1448,7 @@ def essentia_analyzer_loop() -> None:
     global current_bpm, beat_confidence
     last_error = ""
     while True:
-        if is_beat_tracking:
+        if is_beat_tracking and beat_source == BEAT_SOURCE_ANALYSIS:
             try:
                 audio_slice = essentia.array(get_audio_snapshot())
                 if np.max(np.abs(audio_slice)) > 0.005:
@@ -1464,13 +1562,32 @@ def send_seekr_step(track: dict[str, Any], row: int, col: int) -> None:
     enqueue_set_value(tag_seek, f"{rand_val:.2f}")
 
 
+def beat_is_event_driven() -> bool:
+    """True when the beat comes from an event (band peak / MIDI clock), not a fixed interval."""
+    return beat_source in (
+        BEAT_SOURCE_BAND1,
+        BEAT_SOURCE_BAND2,
+        BEAT_SOURCE_BAND3,
+        BEAT_SOURCE_MIDI,
+    )
+
+
 def sequencer_tick() -> None:
     global current_step, phase_nudge
     while True:
         if is_playing:
-            base_sleep = 60.0 / current_bpm if current_bpm > 0 else 0.5
-            actual_sleep = max(0.0, base_sleep + phase_nudge)
-            phase_nudge = 0.0
+            if beat_is_event_driven():
+                # Band/MIDI modes: wait for the beat event instead of a fixed interval
+                sync_event_beat.wait()
+                sync_event_beat.clear()
+                phase_nudge = 0.0
+            else:
+                base_sleep = 60.0 / current_bpm if current_bpm > 0 else 0.5
+                actual_sleep = max(0.0, base_sleep + phase_nudge)
+                phase_nudge = 0.0
+                sync_event_seq.wait(actual_sleep)
+                if sync_event_seq.is_set():
+                    sync_event_seq.clear()
 
             prev_step = current_step
             current_step = (current_step + 1) % NUM_STEPS
@@ -1650,6 +1767,27 @@ with dpg.window(label="Step Sequencer", width=1050, height=800, pos=(10, 10), no
         dpg.add_button(label="<", callback=callback_nudge_backward, width=40, height=40)
         dpg.add_button(label="RESYNC", callback=callback_resync, width=80, height=40)
         dpg.add_button(label=">", callback=callback_nudge_forward, width=40, height=40)
+        dpg.add_spacer(width=16)
+        dpg.add_combo(
+            items=list(BEAT_SOURCE_LABELS.values()),
+            default_value=BEAT_SOURCE_LABELS[BEAT_SOURCE_ANALYSIS],
+            tag="beat_source_combo",
+            callback=on_beat_source,
+            width=150,
+        )
+        dpg.add_drag_int(
+            default_value=120,
+            min_value=30,
+            max_value=300,
+            width=64,
+            format="%.0f",
+            tag="manual_bpm_input",
+            callback=on_manual_bpm,
+            show=False,
+        )
+        dpg.add_button(
+            label="TAP", tag="btn_tap", callback=tap_bpm, width=44, height=40, show=False
+        )
 
     dpg.add_spacer(height=10)
 
@@ -1850,6 +1988,7 @@ with dpg.window(
 # NEW THREAD FOR HIGH-FREQUENCY FADES
 threading.Thread(target=fade_tick_loop, daemon=True).start()
 threading.Thread(target=spectrum_analyzer_loop, daemon=True).start()
+threading.Thread(target=midi_clock_loop, daemon=True).start()
 
 threading.Thread(target=sequencer_tick, daemon=True).start()
 threading.Thread(target=visual_metronome_loop, daemon=True).start()

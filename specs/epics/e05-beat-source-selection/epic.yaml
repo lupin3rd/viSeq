@@ -1,0 +1,30 @@
+# specs/epics/e05-beat-source-selection/epic.yaml — capsule manifest (slice-tasks)
+id: e05
+slug: beat-source-selection
+title: "Beat/clock source selection for the sequencer (6 modes)"
+status: in_progress
+delta: ENHANCED   # adds a timing-source selector; existing analysis mode stays the default
+context: >-
+  The sequencer always times itself from current_bpm (essentia analysis by default). The user
+  wants to choose the beat source among 6 modes, right of the RESYNC control: (1) BPM
+  detection (essentia, current behavior), (2/3/4) a beat fired when band1/band2/band3 reaches
+  1.0 (rising edge), (5) standard MIDI clock sync (24 pulses/beat, e.g. from Traktor or other
+  DJ software; mido + python-rtmidi), (6) manual BPM with a numeric input and a TAP button.
+  Event-driven modes (bands/MIDI) wake the sequencer on the beat instead of a fixed interval.
+  The wrongly-added boot sync message /vimix/current/sync is removed (nothing is sent at boot).
+stories:
+  - id: e05s01
+    title: "Beat source selector (6 modes) + sequencer dispatch; remove boot sync"
+    bcps: 3
+    delta: ENHANCED
+  - id: e05s02
+    title: "Manual BPM (numeric + TAP) and band-1.0 rising-edge beat triggers"
+    bcps: 2
+    delta: ENHANCED
+  - id: e05s03
+    title: "MIDI clock sync listener (mido/rtmidi, 24 pulses per beat)"
+    bcps: 3
+    delta: ENHANCED
+references:
+  - "specs/product/SCOPE_LATEST.yaml"
+  - "specs/planning-context.yaml"
