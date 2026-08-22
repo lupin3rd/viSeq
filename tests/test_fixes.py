@@ -1099,8 +1099,8 @@ def test_media_tile_shows_index_and_alpha():
         )
     )
     assert dpg.values.get("tile_title_clipA") == "clipA"
-    assert dpg.values.get("tile_index_clipA") == "Idx: 3", "tile must show the media index"
-    assert dpg.values.get("tile_alpha_clipA") == "Alpha: 0.42", "tile must show the alpha value"
+    assert dpg.values.get("tile_index_clipA") == "3", "badge must show the bare index"
+    assert dpg.values.get("tile_alpha_clipA") == "0.42", "tile must show the bare alpha value"
 
 
 def test_media_tile_alpha_missing_shows_dash():
@@ -1108,4 +1108,4 @@ def test_media_tile_alpha_missing_shows_dash():
     viseq.update_vimix_sources_ui(
         json.dumps({"current_source": 1, "sources": {"2": {"name": "clipB", "index": 5}}})
     )
-    assert dpg.values.get("tile_alpha_clipB") == "Alpha: ---", "missing alpha must show a dash"
+    assert dpg.values.get("tile_alpha_clipB") == "---", "missing alpha must show a dash"

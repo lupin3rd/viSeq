@@ -52,6 +52,10 @@ SLOT_BUTTON_FRAME_INSET = 4  # px: ImGui button rect offset below its widget box
 SLOT_BUTTON_INDENT = (SLOT_WIDTH - SLOT_BUTTON_WIDTH) // 2
 SLOT_BUTTON_TOP_SPACER = (SLOT_HEIGHT - SLOT_BUTTON_HEIGHT) // 2 - SLOT_BUTTON_FRAME_INSET
 
+# Mediagrid tile: index badge box + compact layout (audit L-6)
+MEDIA_BADGE_W = 26  # px width of the media-index badge box
+MEDIA_BADGE_H = 16  # px height of the media-index badge box
+
 # --- OSC CONFIGURATION ---
 # viseq talks exclusively to viOSC: /vimix/* messages are forwarded by viOSC
 # to Vimix (port 7000), replies come back on viOSC's output port 6667.
@@ -716,7 +720,7 @@ def update_vimix_sources_ui(json_string: str) -> None:
                     if dpg.does_item_exist(tile_tag):
                         dpg.delete_item(tile_tag)
                     cw = dpg.add_child_window(
-                        parent=r_id, width=135, height=152, border=True, tag=tile_tag
+                        parent=r_id, width=135, height=136, border=True, tag=tile_tag
                     )
 
                     title_tag = f"tile_title_{target_id}"
@@ -769,23 +773,25 @@ def update_vimix_sources_ui(json_string: str) -> None:
                                 user_data=target_id,
                             )
 
-                    # Compact per-media readout: index + alpha under the photo (e06)
+                    # Compact per-media readout: index in a badge + bare alpha value (e06)
                     index_tag = f"tile_index_{target_id}"
-                    if dpg.does_item_exist(index_tag):
-                        dpg.delete_item(index_tag)
-                    dpg.add_text(
-                        "Idx: ---", parent=cw, indent=6, color=(200, 200, 200, 255), tag=index_tag
-                    )
                     alpha_tag = f"tile_alpha_{target_id}"
-                    if dpg.does_item_exist(alpha_tag):
-                        dpg.delete_item(alpha_tag)
-                    dpg.add_text(
-                        "Alpha: ---",
-                        parent=cw,
-                        indent=6,
-                        color=(200, 230, 200, 255),
-                        tag=alpha_tag,
-                    )
+                    with dpg.group(horizontal=True, parent=cw):
+                        with dpg.drawlist(width=MEDIA_BADGE_W, height=MEDIA_BADGE_H):
+                            dpg.draw_rectangle(
+                                pmin=(0, 0),
+                                pmax=(MEDIA_BADGE_W, MEDIA_BADGE_H),
+                                color=(120, 140, 180, 255),
+                                fill=(45, 55, 75, 255),
+                            )
+                            dpg.draw_text(
+                                pos=(9, 1),
+                                text="-",
+                                color=(255, 255, 255, 255),
+                                size=14,
+                                tag=index_tag,
+                            )
+                        dpg.add_text("---", color=(200, 230, 200, 255), tag=alpha_tag)
 
                 for _ in range(num_cols - len(row_indices)):
                     dpg.add_text("", parent=r_id)
@@ -809,11 +815,16 @@ def update_vimix_sources_ui(json_string: str) -> None:
             if dpg.does_item_exist(f"tile_index_{target_id}"):
                 idx_val = props.get("index")
                 idx_str = str(idx_val) if idx_val is not None else str(idx)
-                dpg.set_value(f"tile_index_{target_id}", f"Idx: {idx_str}")
+                dpg.set_value(f"tile_index_{target_id}", idx_str)
+                # center the digits in the badge (approx 8px per digit)
+                dpg.configure_item(
+                    f"tile_index_{target_id}",
+                    pos=((MEDIA_BADGE_W - 8 * len(idx_str)) // 2 + 1, 1),
+                )
             if dpg.does_item_exist(f"tile_alpha_{target_id}"):
                 alpha_val = props.get("alpha")
                 alpha_str = f"{alpha_val:.2f}" if isinstance(alpha_val, float) else "---"
-                dpg.set_value(f"tile_alpha_{target_id}", f"Alpha: {alpha_str}")
+                dpg.set_value(f"tile_alpha_{target_id}", alpha_str)
 
             for prop in ALL_PROPERTIES:
                 val = props.get(prop)
