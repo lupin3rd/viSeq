@@ -1167,7 +1167,7 @@ def test_monitor_graphical_elements_and_refresh():
     alpha_cfg = [
         kw for n, a, kw in dpg.calls if n == "configure_item" and a == (f"mon_alpha_fill_{pid}",)
     ]
-    assert alpha_cfg and alpha_cfg[-1].get("pmin") == [0, 23.0], "alpha bar at 50%"
+    assert alpha_cfg and alpha_cfg[-1].get("pmin") == [0, 32.0], "alpha bar at 50% of the 64px disc"
     seek_cfg = [
         kw for n, a, kw in dpg.calls if n == "configure_item" and a == (f"mon_seek_fill_{pid}",)
     ]

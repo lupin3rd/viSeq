@@ -61,10 +61,12 @@ MEDIA_TILE_H = 146  # px height of a media tile (title + photo + badge row)
 # Monitor player: compact graphical readout (e07)
 MONITOR_THUMB_W = 115  # thumbnail width, same as the Mediagrid/sequencer
 MONITOR_THUMB_H = 65  # thumbnail height, same as the Mediagrid/sequencer
-MONITOR_DISC_SIZE = 46  # px side of the turntable disc
+MONITOR_DISC_SIZE = 64  # px side of the turntable disc
 MONITOR_ALPHA_W = 10  # px width of the vertical alpha bar
 MONITOR_SEEK_W = 250  # px width of the horizontal seek bar
-MONITOR_DISC_R = 17.0  # radius of the rotating turntable arm
+MONITOR_DISC_R = 26.0  # radius of the rotating turntable arm
+MONITOR_DISC_RPM = 33.0  # disc rotations per minute at speed 1.0 (vinyl standard)
+MONITOR_SPEED_TEXT_SIZE = 12  # px font size of the speed label inside the disc
 DEFAULT_MONITOR_PROPS = ["alpha", "seek", "speed"]  # requested when a monitor starts
 
 # --- OSC CONFIGURATION ---
@@ -999,25 +1001,24 @@ def update_monitor_player_ui(player_id: int) -> None:
                         dpg.add_text(
                             "Loading thumbnail...",
                             color=(150, 150, 150, 255),
-                            width=MONITOR_THUMB_W,
-                            height=MONITOR_THUMB_H,
+                            wrap=MONITOR_THUMB_W,
                         )
-                    # turntable disc: spins while playing, rate follows speed
+                    # turntable disc: spins while playing, rate follows speed (1.0 = normal)
                     with dpg.drawlist(width=MONITOR_DISC_SIZE, height=MONITOR_DISC_SIZE):
                         dpg.draw_circle(
                             center=[MONITOR_DISC_SIZE // 2, MONITOR_DISC_SIZE // 2],
-                            radius=20,
+                            radius=MONITOR_DISC_SIZE // 2 - 4,
                             color=(60, 60, 70, 255),
                             fill=(25, 25, 35, 255),
                         )
                         dpg.draw_circle(
                             center=[MONITOR_DISC_SIZE // 2, MONITOR_DISC_SIZE // 2],
-                            radius=13,
+                            radius=MONITOR_DISC_SIZE // 2 - 12,
                             color=(40, 40, 50, 255),
                         )
                         dpg.draw_line(
                             p1=[MONITOR_DISC_SIZE // 2, MONITOR_DISC_SIZE // 2],
-                            p2=[MONITOR_DISC_SIZE // 2, MONITOR_DISC_SIZE // 2 - 17],
+                            p2=[MONITOR_DISC_SIZE // 2, MONITOR_DISC_SIZE // 2 - MONITOR_DISC_R],
                             color=(180, 190, 200, 255),
                             thickness=2,
                             tag=f"mon_arm_{player_id}",
@@ -1028,6 +1029,17 @@ def update_monitor_player_ui(player_id: int) -> None:
                             color=(70, 70, 80, 255),
                             fill=(90, 90, 100, 255),
                         )
+                        dpg.draw_text(
+                            pos=(
+                                MONITOR_DISC_SIZE // 2 - 12,
+                                MONITOR_DISC_SIZE // 2 - MONITOR_SPEED_TEXT_SIZE // 2,
+                            ),
+                            text="1.00",
+                            color=(220, 230, 240, 255),
+                            size=MONITOR_SPEED_TEXT_SIZE,
+                            tag=f"mon_speed_{player_id}",
+                        )
+
                     # vertical alpha bar (filled from the bottom)
                     with dpg.drawlist(width=MONITOR_ALPHA_W, height=MONITOR_DISC_SIZE):
                         dpg.draw_rectangle(
@@ -1090,8 +1102,12 @@ def refresh_monitor_display(player_id: int) -> None:
     dt = now - player.get("disc_last", now)
     player["disc_last"] = now
     speed = float(props.get("speed") or 1.0)
+    if speed <= 0.0:
+        speed = 1.0
+    # 33 RPM at speed 1.0 (0.55 rev/s = 3.455 rad/s); the disc spins only while playing
+    disc_rate = MONITOR_DISC_RPM / 60.0 * 2.0 * math.pi
     if bool(props.get("play")):
-        player["disc_angle"] = player.get("disc_angle", 0.0) + 2.0 * speed * dt
+        player["disc_angle"] = player.get("disc_angle", 0.0) + disc_rate * speed * dt
     angle = player.get("disc_angle", 0.0)
     if dpg.does_item_exist(f"mon_arm_{player_id}"):
         dpg.configure_item(
@@ -1101,6 +1117,17 @@ def refresh_monitor_display(player_id: int) -> None:
                 MONITOR_DISC_SIZE / 2 - MONITOR_DISC_R * math.cos(angle),
             ],
         )
+    if dpg.does_item_exist(f"mon_speed_{player_id}"):
+        speed_str = f"{speed:.2f}"
+        dpg.configure_item(
+            f"mon_speed_{player_id}",
+            text=speed_str,
+            pos=(
+                MONITOR_DISC_SIZE // 2 - 6 * len(speed_str) + 2,
+                MONITOR_DISC_SIZE // 2 - MONITOR_SPEED_TEXT_SIZE // 2,
+            ),
+        )
+
     alpha = max(0.0, min(1.0, float(props.get("alpha") or 0.0)))
     if dpg.does_item_exist(f"mon_alpha_fill_{player_id}"):
         dpg.configure_item(
