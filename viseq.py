@@ -716,7 +716,7 @@ def update_vimix_sources_ui(json_string: str) -> None:
                     if dpg.does_item_exist(tile_tag):
                         dpg.delete_item(tile_tag)
                     cw = dpg.add_child_window(
-                        parent=r_id, width=135, height=160, border=True, tag=tile_tag
+                        parent=r_id, width=135, height=152, border=True, tag=tile_tag
                     )
 
                     title_tag = f"tile_title_{target_id}"
@@ -732,7 +732,7 @@ def update_vimix_sources_ui(json_string: str) -> None:
                             user_data=target_id,
                         )
 
-                    dpg.add_spacer(parent=cw, height=5)
+                    dpg.add_spacer(parent=cw, height=4)
                     container_tag = f"thumb_container_{target_id}"
                     if dpg.does_item_exist(container_tag):
                         dpg.delete_item(container_tag)
@@ -744,7 +744,7 @@ def update_vimix_sources_ui(json_string: str) -> None:
                         if dpg.does_item_exist(img_tag):
                             dpg.delete_item(img_tag)
                         dpg.add_image(
-                            texture_tag=tex_tag, parent=g_id, tag=img_tag, width=110, height=80
+                            texture_tag=tex_tag, parent=g_id, tag=img_tag, width=100, height=62
                         )
                         with dpg.popup(img_tag, mousebutton=dpg.mvMouseButton_Right):
                             dpg.add_menu_item(
@@ -769,6 +769,24 @@ def update_vimix_sources_ui(json_string: str) -> None:
                                 user_data=target_id,
                             )
 
+                    # Compact per-media readout: index + alpha under the photo (e06)
+                    index_tag = f"tile_index_{target_id}"
+                    if dpg.does_item_exist(index_tag):
+                        dpg.delete_item(index_tag)
+                    dpg.add_text(
+                        "Idx: ---", parent=cw, indent=6, color=(200, 200, 200, 255), tag=index_tag
+                    )
+                    alpha_tag = f"tile_alpha_{target_id}"
+                    if dpg.does_item_exist(alpha_tag):
+                        dpg.delete_item(alpha_tag)
+                    dpg.add_text(
+                        "Alpha: ---",
+                        parent=cw,
+                        indent=6,
+                        color=(200, 230, 200, 255),
+                        tag=alpha_tag,
+                    )
+
                 for _ in range(num_cols - len(row_indices)):
                     dpg.add_text("", parent=r_id)
 
@@ -788,6 +806,14 @@ def update_vimix_sources_ui(json_string: str) -> None:
                 )
             if dpg.does_item_exist(f"tile_title_{target_id}"):
                 dpg.set_value(f"tile_title_{target_id}", f"{display_name}")
+            if dpg.does_item_exist(f"tile_index_{target_id}"):
+                idx_val = props.get("index")
+                idx_str = str(idx_val) if idx_val is not None else str(idx)
+                dpg.set_value(f"tile_index_{target_id}", f"Idx: {idx_str}")
+            if dpg.does_item_exist(f"tile_alpha_{target_id}"):
+                alpha_val = props.get("alpha")
+                alpha_str = f"{alpha_val:.2f}" if isinstance(alpha_val, float) else "---"
+                dpg.set_value(f"tile_alpha_{target_id}", f"Alpha: {alpha_str}")
 
             for prop in ALL_PROPERTIES:
                 val = props.get(prop)
@@ -2040,18 +2066,18 @@ with dpg.window(
         pass
 
 # WINDOW 4: VIMIX MEDIA
-with dpg.window(
-    label="Vimix Media",
-    width=550,
-    height=690,
-    pos=(1100, 10),
-    no_close=True,
-    tag="vimix_media_window",
+with (
+    dpg.window(
+        label="Mediagrid",
+        width=550,
+        height=690,
+        pos=(1100, 10),
+        no_close=True,
+        tag="vimix_media_window",
+    ),
+    dpg.group(tag="vimix_media_group"),
 ):
-    dpg.add_text("Media Library:")
-    dpg.add_separator()
-    with dpg.group(tag="vimix_media_group"):
-        pass
+    pass
 
 # WINDOW 5: OSC LOGS (hidden; opened from the menubar "Show" > "Logs")
 with dpg.window(
@@ -2137,7 +2163,7 @@ try:
                 if dpg.does_item_exist(loading_tag):
                     dpg.delete_item(loading_tag)
                 dpg.add_image(
-                    texture_tag=tex_tag, tag=img_tag, width=110, height=80, parent=container_tag
+                    texture_tag=tex_tag, tag=img_tag, width=100, height=62, parent=container_tag
                 )
 
                 with dpg.popup(img_tag, mousebutton=dpg.mvMouseButton_Right):

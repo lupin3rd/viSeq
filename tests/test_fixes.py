@@ -233,6 +233,8 @@ spec_bar_tags = [
     for n, a, kw in dpg.calls
     if n == "draw_rectangle" and str(kw.get("tag", "")).startswith("spec_bar_")
 ]
+# e06: the media window header (must be removed)
+media_library_header = any(n == "add_text" and "Media Library" in str(a) for n, a, kw in dpg.calls)
 
 
 # ---------- MED-3: ColorR cell passes DPG-scale (0..255) RGBA value ----------
@@ -1080,3 +1082,30 @@ def test_manual_bpm_live_text_wired():
     viseq.on_manual_bpm(None, 140, None)
     assert dpg.values.get("manual_bpm_text") == "140 BPM", "live manual BPM readout"
     assert dpg.values.get("testo_bpm") == "BPM: 140.0"
+
+
+# ---------- e06: Mediagrid window polish ----------
+def test_mediagrid_window_renamed_and_header_removed():
+    w = import_time_windows.get("vimix_media_window")
+    assert w and w.get("label") == "Mediagrid", "window must be renamed 'Mediagrid'"
+    assert not media_library_header, "the 'Media Library:' header must be gone"
+
+
+def test_media_tile_shows_index_and_alpha():
+    viseq.thumbnails_data.clear()
+    viseq.update_vimix_sources_ui(
+        json.dumps(
+            {"current_source": 1, "sources": {"1": {"name": "clipA", "index": 3, "alpha": 0.42}}}
+        )
+    )
+    assert dpg.values.get("tile_title_clipA") == "clipA"
+    assert dpg.values.get("tile_index_clipA") == "Idx: 3", "tile must show the media index"
+    assert dpg.values.get("tile_alpha_clipA") == "Alpha: 0.42", "tile must show the alpha value"
+
+
+def test_media_tile_alpha_missing_shows_dash():
+    viseq.thumbnails_data.clear()
+    viseq.update_vimix_sources_ui(
+        json.dumps({"current_source": 1, "sources": {"2": {"name": "clipB", "index": 5}}})
+    )
+    assert dpg.values.get("tile_alpha_clipB") == "Alpha: ---", "missing alpha must show a dash"
