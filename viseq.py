@@ -202,6 +202,8 @@ midi_pulses: int = 0  # running MIDI clock pulse count (worker thread)
 tap_times: list[float] = []  # TAP timestamps for the manual BPM mode
 band_prev_values: dict[int, float] = {1: 0.0, 2: 0.0, 3: 0.0}  # band rising-edge tracking
 copied_step_data: dict[str, Any] | None = None  # step config copied for paste (e08)
+active_step: tuple[int, int] | None = None  # last touched step (keyboard shortcuts target)
+copied_step_pos: tuple[int, int] | None = None  # where the copied highlight is shown
 # Width of the transport row (PLAY + spacer + < + RESYNC + > + spacer). Measured on real
 # DPG 2.3.1: buttons render wider than their declared widths, so the alignment spacer is
 # 312px with the compact 28px-high transport (audit L-6).
@@ -390,16 +392,30 @@ def set_step_type(sender: Any, app_data: Any, user_data: Any) -> None:
     update_step_ui(row, col)
 
 
+def _highlight_copied_step(row: int, col: int) -> None:
+    """Show the copied-step highlight and clear any previous one."""
+    global copied_step_pos
+    if copied_step_pos is not None:
+        r, c = copied_step_pos
+        update_step_theme(r, c)  # restore the standard theme for the previous copy
+    copied_step_pos = (row, col)
+    dpg.bind_item_theme(f"seq_cell_{row}_{col}", theme_step_copied)
+
+
 def copy_step(sender: Any, app_data: Any, user_data: Any) -> None:
     """Remember the full configuration of a step for later paste (e08)."""
-    global copied_step_data
+    global copied_step_data, active_step
     row, col = user_data
+    active_step = (row, col)
     copied_step_data = copy.deepcopy(tracks_data[row]["steps"][col])
+    _highlight_copied_step(row, col)
 
 
 def paste_step(sender: Any, app_data: Any, user_data: Any) -> None:
     """Apply the copied step configuration to the given step (e08)."""
+    global active_step
     row, col = user_data
+    active_step = (row, col)
     if copied_step_data is None:
         return
     tracks_data[row]["steps"][col] = copy.deepcopy(copied_step_data)
@@ -408,7 +424,9 @@ def paste_step(sender: Any, app_data: Any, user_data: Any) -> None:
 
 def paste_step_to_row(sender: Any, app_data: Any, user_data: Any) -> None:
     """Apply the copied step configuration to every step of the sequencer row (e08)."""
+    global active_step
     row, _ = user_data
+    active_step = (row, 0)
     if copied_step_data is None:
         return
     for c in range(NUM_STEPS):
@@ -416,8 +434,44 @@ def paste_step_to_row(sender: Any, app_data: Any, user_data: Any) -> None:
         update_step_ui(row, c)
 
 
+def on_copy_shortcut(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Ctrl+C: copy the last touched step (ignored while typing in an input)."""
+    if _any_input_focused() or active_step is None:
+        return
+    copy_step(None, None, active_step)
+
+
+def on_paste_shortcut(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Ctrl+V: paste into the last touched step (ignored while typing in an input)."""
+    if _any_input_focused() or active_step is None:
+        return
+    paste_step(None, None, active_step)
+
+
+def _on_copy_key(sender: Any, app_data: Any, user_data: Any) -> None:
+    """Key handler wrapper: DPG 2.3.1 handlers ignore modifiers, so gate on Ctrl here."""
+    if dpg.is_key_down(dpg.mvKey_ModCtrl):
+        on_copy_shortcut(sender, app_data, user_data)
+
+
+def _on_paste_key(sender: Any, app_data: Any, user_data: Any) -> None:
+    """Key handler wrapper: only paste when Ctrl is held."""
+    if dpg.is_key_down(dpg.mvKey_ModCtrl):
+        on_paste_shortcut(sender, app_data, user_data)
+
+
+INPUT_WIDGET_TAGS = ("manual_bpm_input", "viosc_ip", "viosc_port", "listen_ip", "listen_port")
+
+
+def _any_input_focused() -> bool:
+    """True when a text/number input has focus, so Ctrl+C/V keeps working for typing."""
+    return any(dpg.does_item_exist(tag) and dpg.is_item_focused(tag) for tag in INPUT_WIDGET_TAGS)
+
+
 def toggle_step_active(sender: Any, app_data: Any, user_data: Any) -> None:
     row, col = user_data
+    global active_step
+    active_step = (row, col)  # clicking a step makes it the shortcut target
     tracks_data[row]["steps"][col]["active"] = app_data
     update_step_theme(row, col)
 
@@ -1909,6 +1963,11 @@ dpg.create_context()
 with dpg.texture_registry(tag="texture_registry"):
     pass
 
+with dpg.handler_registry():
+    # DPG 2.3.1 key handlers have no modifier support: the wrapper checks Ctrl itself
+    dpg.add_key_press_handler(dpg.mvKey_C, callback=_on_copy_key)
+    dpg.add_key_press_handler(dpg.mvKey_V, callback=_on_paste_key)
+
 with dpg.theme() as theme_selected_clip, dpg.theme_component(dpg.mvChildWindow):
     dpg.add_theme_color(dpg.mvThemeCol_Border, (50, 255, 50, 255))
     dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (30, 80, 30, 255))
@@ -1953,6 +2012,12 @@ with dpg.theme() as theme_media_badge, dpg.theme_component(dpg.mvButton):
     dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (45, 55, 75, 255))
     dpg.add_theme_color(dpg.mvThemeCol_Text, (255, 255, 255, 255))
     dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 2)
+
+with dpg.theme() as theme_step_copied, dpg.theme_component(dpg.mvChildWindow):
+    # copied-step highlight: warm border on the source cell (e08)
+    dpg.add_theme_color(dpg.mvThemeCol_Border, (255, 220, 80, 255))
+    dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (40, 40, 30, 255))
+    dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 5)
 
 
 # WINDOW 1: SEQUENCER

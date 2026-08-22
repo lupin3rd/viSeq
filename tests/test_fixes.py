@@ -58,6 +58,9 @@ class DpgStub:
     def does_item_exist(self, item):
         return True
 
+    def is_item_focused(self, item):
+        return False  # no input focused by default (keyboard shortcuts stay active)
+
     def does_alias_exist(self, item):
         return False
 
@@ -1233,3 +1236,57 @@ def test_step_popup_has_copy_paste_items():
     viseq.update_step_ui(0, 0)
     items = [kw.get("label") for n, a, kw in dpg.calls if n == "add_menu_item"]
     assert "Copy Step" in items and "Paste Step" in items and "Paste to Row" in items
+
+
+def test_copy_highlights_cell():
+    viseq.tracks_data[0]["steps"][2].update({"type": "ColorR", "v1": 0.5})
+    dpg.calls.clear()
+    viseq.copy_step(None, None, (0, 2))
+    binds = [a for n, a, kw in dpg.calls if n == "bind_item_theme" and a and a[0] == "seq_cell_0_2"]
+    assert binds and binds[-1][1] == viseq.theme_step_copied, "the copied cell must be highlighted"
+    assert viseq.active_step == (0, 2)
+    viseq.copied_step_data = None
+
+
+def test_copy_moves_highlight_to_new_cell():
+    viseq.copy_step(None, None, (0, 0))
+    dpg.calls.clear()
+    viseq.copy_step(None, None, (0, 1))
+    assert any(n == "bind_item_theme" and a and a[0] == "seq_cell_0_1" for n, a, kw in dpg.calls), (
+        "the new copy must be highlighted"
+    )
+    assert viseq.copied_step_pos == (0, 1)
+    viseq.copied_step_data = None
+
+
+def test_toggle_step_sets_active_step():
+    viseq.toggle_step_active(None, True, (1, 5))
+    assert viseq.active_step == (1, 5)
+    viseq.toggle_step_active(None, False, (1, 5))
+
+
+def test_shortcut_copy_paste_active_step():
+    viseq.copied_step_data = None
+    viseq.tracks_data[0]["steps"][0].update({"type": "AlphaV", "v1": 0.9, "active": True})
+    viseq.copy_step(None, None, (0, 0))
+    viseq.active_step = (0, 4)
+    viseq.on_paste_shortcut(None, None, None)
+    assert viseq.tracks_data[0]["steps"][4]["type"] == "AlphaV", (
+        "Ctrl+V must paste into the active step"
+    )
+    # Ctrl+C captures the active step, Ctrl+V restores it after a change
+    viseq.active_step = (0, 7)
+    orig_type = viseq.tracks_data[0]["steps"][7]["type"]
+    viseq.on_copy_shortcut(None, None, None)
+    viseq.tracks_data[0]["steps"][7]["type"] = "NONE"
+    viseq.on_paste_shortcut(None, None, None)
+    assert viseq.tracks_data[0]["steps"][7]["type"] == orig_type, "Ctrl+C then Ctrl+V round trip"
+    viseq.copied_step_data = None
+
+
+def test_shortcut_ignored_when_input_focused(monkeypatch):
+    monkeypatch.setattr(viseq, "_any_input_focused", lambda: True)
+    viseq.copied_step_data = None
+    viseq.active_step = (0, 2)
+    viseq.on_copy_shortcut(None, None, None)
+    assert viseq.copied_step_data is None, "Ctrl+C must not fire while typing in an input"
