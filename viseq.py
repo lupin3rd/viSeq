@@ -183,6 +183,10 @@ MIDI_CLOCK_PULSES_PER_BEAT = 24  # MIDI standard: 24 clock pulses (0xF8) per qua
 midi_pulses: int = 0  # running MIDI clock pulse count (worker thread)
 tap_times: list[float] = []  # TAP timestamps for the manual BPM mode
 band_prev_values: dict[int, float] = {1: 0.0, 2: 0.0, 3: 0.0}  # band rising-edge tracking
+# Width of the transport row (PLAY + spacer + < + RESYNC + > + spacer). Measured on real
+# DPG 2.3.1: buttons render ~40px wider than their declared widths, so the alignment spacer
+# is 336px, not the naive 296 (audit L-6).
+SEQ_TRANSPORT_WIDTH = 336
 
 # One LED per beat source, shown next to its checkbox on the sequencer (e05)
 BEAT_LED_TAGS = {
@@ -1196,6 +1200,7 @@ def on_beat_source(sender: Any, app_data: Any, user_data: Any) -> None:
     if is_manual:
         current_bpm = float(dpg.get_value("manual_bpm_input"))
         dpg.set_value("testo_bpm", f"BPM: {current_bpm:.1f}")
+        dpg.set_value("manual_bpm_text", f"{current_bpm:.0f} BPM")
 
 
 def on_manual_bpm(sender: Any, app_data: Any, user_data: Any) -> None:
@@ -1203,6 +1208,7 @@ def on_manual_bpm(sender: Any, app_data: Any, user_data: Any) -> None:
     global current_bpm
     current_bpm = float(app_data)
     dpg.set_value("testo_bpm", f"BPM: {current_bpm:.1f}")
+    dpg.set_value("manual_bpm_text", f"{current_bpm:.0f} BPM")
 
 
 def tap_bpm(sender: Any, app_data: Any, user_data: Any) -> None:
@@ -1219,6 +1225,7 @@ def tap_bpm(sender: Any, app_data: Any, user_data: Any) -> None:
         current_bpm = round(bpm, 2)
         dpg.set_value("manual_bpm_input", round(current_bpm))
         dpg.set_value("testo_bpm", f"BPM: {current_bpm:.1f}")
+        dpg.set_value("manual_bpm_text", f"{current_bpm:.0f} BPM")
 
 
 def midi_beats_from_pulses(pulses: int) -> int:
@@ -1816,8 +1823,10 @@ with dpg.window(label="Step Sequencer", width=1050, height=800, pos=(10, 10), no
                 )
             dpg.add_spacer(width=10)
 
-    # Beat source line 2: band 3 + MIDI + manual (with the numeric input and TAP)
+    # Beat source line 2: band 3 + MIDI + manual (with the numeric input and TAP).
+    # The leading spacer aligns it under line 1 (transport width: PLAY+sp+<+RESYNC+>+sp).
     with dpg.group(horizontal=True):
+        dpg.add_spacer(width=SEQ_TRANSPORT_WIDTH)
         for mode, label in ((BEAT_SOURCE_BAND3, "Band 3"), (BEAT_SOURCE_MIDI, "MIDI Sync")):
             dpg.add_checkbox(
                 label=label,
@@ -1861,6 +1870,7 @@ with dpg.window(label="Step Sequencer", width=1050, height=800, pos=(10, 10), no
         dpg.add_button(
             label="TAP", tag="btn_tap", callback=tap_bpm, width=44, height=40, show=False
         )
+        dpg.add_text("", tag="manual_bpm_text", color=(150, 255, 150, 255))
 
     dpg.add_spacer(height=10)
 

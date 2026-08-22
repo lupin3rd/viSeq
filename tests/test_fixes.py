@@ -1067,3 +1067,16 @@ def test_beat_source_ui_wired():
     }, "one LED per beat source"
     assert manual_bpm_input_widget and tap_button_widget, "manual BPM widgets must exist"
     assert manual_bpm_hidden and tap_hidden, "manual widgets hidden unless manual mode"
+
+
+def test_beat_lines_alignment_spacer():
+    # Measured on real DPG 2.3.1: the transport row renders 336px wide (buttons render
+    # wider than declared), so line 2 starts under line 1.
+    assert viseq.SEQ_TRANSPORT_WIDTH == 336, "line 2 must start under line 1"
+
+
+def test_manual_bpm_live_text_wired():
+    dpg.values.clear()
+    viseq.on_manual_bpm(None, 140, None)
+    assert dpg.values.get("manual_bpm_text") == "140 BPM", "live manual BPM readout"
+    assert dpg.values.get("testo_bpm") == "BPM: 140.0"
