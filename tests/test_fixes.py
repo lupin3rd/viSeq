@@ -1173,3 +1173,16 @@ def test_monitor_graphical_elements_and_refresh():
     ]
     assert seek_cfg and seek_cfg[-1].get("pmax") == [75.0, 10], "seek bar at 30%"
     _monitor_cleanup(count)
+
+
+def test_new_monitor_shows_assign_button():
+    count = viseq.monitor_player_counter
+    dpg.calls.clear()
+    viseq.new_monitor_player(None, None, None)
+    player = viseq.monitor_players[-1]
+    assigns = [
+        kw for n, a, kw in dpg.calls if n == "add_button" and "ASSIGN" in str(kw.get("label", ""))
+    ]
+    assert assigns, "a fresh monitor player must show the CLICK TO ASSIGN button"
+    assert not player["target_id"]
+    _monitor_cleanup(count)

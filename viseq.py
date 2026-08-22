@@ -963,6 +963,7 @@ def new_monitor_player(sender: Any = None, app_data: Any = None, user_data: Any 
                 callback=lambda s, a, u: remove_monitor_player(player_id),
                 user_data=player_id,
             )
+    update_monitor_player_ui(player_id)  # build the body: assign box or the readout
 
 
 def update_monitor_player_ui(player_id: int) -> None:
