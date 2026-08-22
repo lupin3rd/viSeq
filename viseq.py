@@ -58,6 +58,7 @@ SLOT_BUTTON_TOP_SPACER = (SLOT_HEIGHT - SLOT_BUTTON_HEIGHT) // 2 - SLOT_BUTTON_F
 VIOSC_IP = "127.0.0.1"
 VIOSC_PORT = 6666
 VIOSC_LISTEN_PORT = 6667  # the port viOSC sends replies to; viseq's own server listens here
+VIMIX_CURRENT_SYNC = "/vimix/current/sync"  # ask Vimix to re-emit its current source state
 osc_client = udp_client.SimpleUDPClient(VIOSC_IP, VIOSC_PORT)
 
 viosc_client: Any = None
@@ -210,7 +211,7 @@ NUM_BANDS = 3  # independent selectable bands (band1/band2/band3)
 SPECTRUM_FPS = 30.0  # spectrum redraw rate while analyzing
 SPECTRUM_DB_FLOOR = 60.0  # dB below full scale mapped to bar level 0
 SPEC_DRAWLIST_W = 330  # spectrum drawlist width (px)
-SPEC_DRAWLIST_H = 40  # spectrum drawlist height (px)
+SPEC_DRAWLIST_H = 66  # spectrum drawlist height (px) — tall enough to read the bars
 SPECTRUM_BAR_COLOR = (80, 255, 120, 255)  # green bars
 BAND_RECT_COLORS = {
     1: ((255, 255, 0, 40), (255, 255, 0, 200)),  # yellow overlay
@@ -1143,9 +1144,12 @@ def connect_to_viosc() -> None:
 
 
 def autostart_osc() -> None:
-    """Boot wiring: auto-connect the viOSC client and start the listening server."""
+    """Boot wiring: auto-connect the viOSC client, start the server, ask for current state."""
     connect_osc_client(VIOSC_IP, VIOSC_PORT)
     start_osc_server(VIOSC_IP, VIOSC_LISTEN_PORT)
+    if viosc_client:
+        osc_client.send_message(VIMIX_CURRENT_SYNC, [])
+        append_log("OUT", VIMIX_CURRENT_SYNC)
 
 
 def show_settings_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -1230,18 +1234,34 @@ def compute_spectrum_bars(samples: np.ndarray, n_bars: int = SPECTRUM_BARS) -> n
     return np.clip(levels, 0.0, 1.0)
 
 
-def band_value_from_bars(bars: np.ndarray, start: float, end: float) -> float:
-    """Mean level (0..1) of the bars in the selected band [start, end) (0..1 each)."""
+def band_value_from_bars(
+    bars: np.ndarray,
+    start: float,
+    end: float,
+    min_level: float = 0.0,
+    max_level: float = 1.0,
+) -> float:
+    """Mean fill (0..1) of the selection rectangle over the bars.
+
+    The horizontal window [start, end) picks the bars; the vertical window
+    [min_level, max_level] maps each bar's level so 0 = at/below min and
+    1 = at/above max. An inverted/empty level window falls back to the plain
+    bar mean (backward compatible with the frequency-only usage).
+    """
     if bars.size == 0:
         return 0.0
     n = bars.size
     lo = round(start * n)
     hi = round(end * n)
-    if hi <= lo:  # inverted/degenerate selection -> at least one bar
+    if hi <= lo:  # inverted/degenerate horizontal selection -> at least one bar
         hi = lo + 1
     lo = max(0, min(lo, n - 1))
     hi = max(lo + 1, min(hi, n))
-    return float(np.mean(bars[lo:hi]))
+    selected = bars[lo:hi]
+    if max_level <= min_level:
+        return float(np.mean(selected))
+    mapped = np.clip((selected - min_level) / (max_level - min_level), 0.0, 1.0)
+    return float(np.mean(mapped))
 
 
 def _set_band_variable(band_id: int, value: float) -> None:
@@ -1259,15 +1279,17 @@ def refresh_band_value(bars: np.ndarray, band_id: int) -> None:
     """Recompute one band's level from its sliders; update text and overlay (main thread)."""
     if not bands_enabled[band_id]:
         return
-    start = float(dpg.get_value(f"band{band_id}_start"))
-    end = float(dpg.get_value(f"band{band_id}_end"))
-    value = band_value_from_bars(bars, start, end)
+    f_start = float(dpg.get_value(f"band{band_id}_start"))
+    f_end = float(dpg.get_value(f"band{band_id}_end"))
+    l_min = float(dpg.get_value(f"band{band_id}_min"))
+    l_max = float(dpg.get_value(f"band{band_id}_max"))
+    value = band_value_from_bars(bars, f_start, f_end, l_min, l_max)
     _set_band_variable(band_id, value)
     dpg.set_value(f"band{band_id}_value_text", f"{value:.2f}")
     dpg.configure_item(
         f"band{band_id}_rect",
-        pmin=(start * SPEC_DRAWLIST_W, 2),
-        pmax=(end * SPEC_DRAWLIST_W, SPEC_DRAWLIST_H - 2),
+        pmin=(f_start * SPEC_DRAWLIST_W, (1 - l_max) * SPEC_DRAWLIST_H),
+        pmax=(f_end * SPEC_DRAWLIST_W, (1 - l_min) * SPEC_DRAWLIST_H),
         show=True,
     )
 
@@ -1674,12 +1696,10 @@ with dpg.window(label="Step Sequencer", width=1050, height=800, pos=(10, 10), no
 # WINDOW 2: AUDIO ANALYZER
 input_devices_list = get_input_devices()
 
-with dpg.window(label="Audio analyzer", width=350, height=268, pos=(10, 810), no_close=True):
-    dpg.add_text("Select Audio Source:")
+with dpg.window(label="Audio analyzer", width=350, height=272, pos=(10, 806), no_close=True):
     dpg.add_combo(
         items=input_devices_list, default_value=input_devices_list[0], tag="combo_devices", width=-1
     )
-    dpg.add_spacer(height=2)
     dpg.add_checkbox(
         label="Enable Level Analysis (Spectrum)",
         callback=toggle_audio_stream,
@@ -1712,53 +1732,74 @@ with dpg.window(label="Audio analyzer", width=350, height=268, pos=(10, 810), no
                 callback=on_band_enable,
                 user_data=band_id,
             )
+            dpg.add_text("F", color=(200, 200, 200, 255))
             dpg.add_drag_float(
-                label="Start",
                 default_value=start_default,
                 min_value=0.0,
                 max_value=0.99,
                 speed=0.005,
                 format="%.2f",
-                width=80,
+                width=44,
                 tag=f"band{band_id}_start",
                 callback=on_band_change,
                 user_data=band_id,
             )
             dpg.add_drag_float(
-                label="End",
                 default_value=end_default,
                 min_value=0.01,
                 max_value=1.0,
                 speed=0.005,
                 format="%.2f",
-                width=80,
+                width=44,
                 tag=f"band{band_id}_end",
                 callback=on_band_change,
                 user_data=band_id,
             )
+            dpg.add_text("L", color=(200, 200, 200, 255))
+            dpg.add_drag_float(
+                default_value=0.0,
+                min_value=0.0,
+                max_value=1.0,
+                speed=0.005,
+                format="%.2f",
+                width=44,
+                tag=f"band{band_id}_min",
+                callback=on_band_change,
+                user_data=band_id,
+            )
+            dpg.add_drag_float(
+                default_value=1.0,
+                min_value=0.0,
+                max_value=1.0,
+                speed=0.005,
+                format="%.2f",
+                width=44,
+                tag=f"band{band_id}_max",
+                callback=on_band_change,
+                user_data=band_id,
+            )
             dpg.add_text("—", tag=f"band{band_id}_value_text", color=(230, 230, 120, 255))
-    dpg.add_checkbox(
-        label="Enable BPM Analysis (Essentia)",
-        callback=toggle_audio_stream,
-        user_data="beat_tracking",
-    )
+    with dpg.group(horizontal=True):
+        dpg.add_checkbox(
+            label="Enable BPM Analysis (Essentia)",
+            callback=toggle_audio_stream,
+            user_data="beat_tracking",
+        )
+        dpg.add_text("BPM: ---", tag="testo_bpm")
+        with dpg.drawlist(width=26, height=26):
+            dpg.draw_circle(
+                center=[13, 13],
+                radius=9,
+                color=(0, 0, 0, 255),
+                fill=(50, 50, 50, 255),
+                tag="beat_led",
+            )
     dpg.add_checkbox(
         label="Use Low-Pass Filter (kick only)",
         default_value=True,
         tag="cb_lowpass",
         callback=on_lowpass_toggle,
     )
-
-    with dpg.group(horizontal=True):
-        dpg.add_text("BPM: ---", tag="testo_bpm")
-        with dpg.drawlist(width=30, height=30):
-            dpg.draw_circle(
-                center=[15, 15],
-                radius=10,
-                color=(0, 0, 0, 255),
-                fill=(50, 50, 50, 255),
-                tag="beat_led",
-            )
 
 # WINDOW 3: SETTINGS (hidden; opened from the menubar "Settings" entry)
 with dpg.window(

@@ -804,13 +804,13 @@ def test_band_value_full_range():
 
 
 def test_band_value_partial_range():
-    bars = np.arange(32, dtype=float)
-    assert viseq.band_value_from_bars(bars, 0.0, 0.25) == 3.5, "mean of the first 8 bars"
+    bars = np.arange(16, dtype=float) / 15.0
+    assert viseq.band_value_from_bars(bars, 0.0, 0.25) == 0.1, "mean of the first 4 bars"
 
 
 def test_band_value_inverted_range_clamps():
-    bars = np.arange(32, dtype=float)
-    assert viseq.band_value_from_bars(bars, 0.75, 0.25) == 24.0, "inverted range -> one bar"
+    bars = np.arange(16, dtype=float) / 15.0
+    assert viseq.band_value_from_bars(bars, 0.75, 0.25) == 0.8, "inverted range -> one bar"
 
 
 def test_band_value_empty():
@@ -868,3 +868,35 @@ def test_audio_window_spectrum_ui_wired():
     assert band_value_text_tags == {"band1_value_text", "band2_value_text", "band3_value_text"}
     assert band_rect_tags == {"band1_rect", "band2_rect", "band3_rect"}
     assert not vu_meter_progress, "VU progress bar must be replaced by the spectrum"
+
+
+def test_band_value_level_window_maps_fill():
+    bars = np.array([0.2, 0.5, 0.8])
+    assert viseq.band_value_from_bars(bars, 0.0, 1.0, 0.25, 0.75) == 0.5, (
+        "levels below min -> 0, at max -> 1, linear between"
+    )
+
+
+def test_band_value_degenerate_level_window_plain_mean():
+    bars = np.array([0.2, 0.5, 0.8])
+    assert viseq.band_value_from_bars(bars, 0.0, 1.0, 0.6, 0.4) == 0.5, (
+        "inverted level window falls back to the plain mean"
+    )
+
+
+def test_autostart_osc_sends_vimix_current_sync():
+    viseq.osc_client.messages.clear()
+    viseq.viosc_client = None
+    viseq.is_server_running = False
+    viseq.local_osc_server = None
+    viseq.local_server_thread = None
+    viseq.autostart_osc()
+    assert ("/vimix/current/sync", []) in viseq.osc_client.messages, (
+        "autostart must ask Vimix to re-emit its current source"
+    )
+
+
+def test_audio_window_band_level_sliders_wired():
+    for i in (1, 2, 3):
+        assert f"band{i}_min" in band_slider_tags, f"band{i} level Min slider missing"
+        assert f"band{i}_max" in band_slider_tags, f"band{i} level Max slider missing"

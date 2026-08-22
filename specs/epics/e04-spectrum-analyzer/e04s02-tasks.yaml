@@ -4,12 +4,12 @@ status: pending
 bcps: 3
 tasks:
 - id: 1
-  description: "Constants/state: NUM_BANDS=3, SPECTRUM_BARS=16 (benchmarked lighter), bands_enabled={1:False,2:False,3:False}, band1/band2/band3=0.0; per-band rect colors; pure band_value_from_bars unchanged"
+  description: "Constants/state: NUM_BANDS=3, SPECTRUM_BARS=16, SPEC_DRAWLIST_H=80 (taller bars), bands_enabled={1:False,2:False,3:False}, band1/band2/band3=0.0; band_value_from_bars gains min_level/max_level window (defaults preserve old behavior); VIMIX_CURRENT_SYNC constant"
   verify: .venv/bin/python -m pytest tests/ -q -k "bands"
   risk: P2
-  status: pending
+  status: passing
 - id: 2
-  description: "refresh_bands (enabled only) + on_band_enable + on_band_change(band_id); three band rows in the audio window (checkbox + Start/End + value) and three hidden overlays; remove the single-band UI and audio_band_value"
+  description: "refresh_band_value reads Min/Max level sliders and draws the 2D rectangle; band rows gain the Min/Max sliders; taller drawlist; autostart_osc sends /vimix/current/sync after connect"
   verify: .venv/bin/python -m pytest tests/ -q
   risk: P2
-  status: pending
+  status: passing
