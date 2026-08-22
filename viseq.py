@@ -53,8 +53,9 @@ SLOT_BUTTON_INDENT = (SLOT_WIDTH - SLOT_BUTTON_WIDTH) // 2
 SLOT_BUTTON_TOP_SPACER = (SLOT_HEIGHT - SLOT_BUTTON_HEIGHT) // 2 - SLOT_BUTTON_FRAME_INSET
 
 # Mediagrid tile: index badge box + compact layout (audit L-6)
-MEDIA_BADGE_W = 26  # px width of the media-index badge box
-MEDIA_BADGE_H = 16  # px height of the media-index badge box
+MEDIA_BADGE_W = 28  # px width of the media-index badge button
+MEDIA_BADGE_H = 20  # px height of the media-index badge button
+MEDIA_TILE_H = 146  # px height of a media tile (title + photo + badge row)
 
 # --- OSC CONFIGURATION ---
 # viseq talks exclusively to viOSC: /vimix/* messages are forwarded by viOSC
@@ -720,7 +721,12 @@ def update_vimix_sources_ui(json_string: str) -> None:
                     if dpg.does_item_exist(tile_tag):
                         dpg.delete_item(tile_tag)
                     cw = dpg.add_child_window(
-                        parent=r_id, width=135, height=136, border=True, tag=tile_tag
+                        parent=r_id,
+                        width=135,
+                        height=MEDIA_TILE_H,
+                        border=True,
+                        no_scrollbar=True,
+                        tag=tile_tag,
                     )
 
                     title_tag = f"tile_title_{target_id}"
@@ -748,7 +754,7 @@ def update_vimix_sources_ui(json_string: str) -> None:
                         if dpg.does_item_exist(img_tag):
                             dpg.delete_item(img_tag)
                         dpg.add_image(
-                            texture_tag=tex_tag, parent=g_id, tag=img_tag, width=100, height=62
+                            texture_tag=tex_tag, parent=g_id, tag=img_tag, width=115, height=65
                         )
                         with dpg.popup(img_tag, mousebutton=dpg.mvMouseButton_Right):
                             dpg.add_menu_item(
@@ -773,24 +779,17 @@ def update_vimix_sources_ui(json_string: str) -> None:
                                 user_data=target_id,
                             )
 
-                    # Compact per-media readout: index in a badge + bare alpha value (e06)
+                    # Compact per-media readout: index badge + bare alpha value (e06)
                     index_tag = f"tile_index_{target_id}"
                     alpha_tag = f"tile_alpha_{target_id}"
                     with dpg.group(horizontal=True, parent=cw):
-                        with dpg.drawlist(width=MEDIA_BADGE_W, height=MEDIA_BADGE_H):
-                            dpg.draw_rectangle(
-                                pmin=(0, 0),
-                                pmax=(MEDIA_BADGE_W, MEDIA_BADGE_H),
-                                color=(120, 140, 180, 255),
-                                fill=(45, 55, 75, 255),
-                            )
-                            dpg.draw_text(
-                                pos=(9, 1),
-                                text="-",
-                                color=(255, 255, 255, 255),
-                                size=14,
-                                tag=index_tag,
-                            )
+                        dpg.add_button(
+                            label="-",
+                            width=MEDIA_BADGE_W,
+                            height=MEDIA_BADGE_H,
+                            tag=index_tag,
+                        )
+                        dpg.bind_item_theme(index_tag, theme_media_badge)
                         dpg.add_text("---", color=(200, 230, 200, 255), tag=alpha_tag)
 
                 for _ in range(num_cols - len(row_indices)):
@@ -815,12 +814,7 @@ def update_vimix_sources_ui(json_string: str) -> None:
             if dpg.does_item_exist(f"tile_index_{target_id}"):
                 idx_val = props.get("index")
                 idx_str = str(idx_val) if idx_val is not None else str(idx)
-                dpg.set_value(f"tile_index_{target_id}", idx_str)
-                # center the digits in the badge (approx 8px per digit)
-                dpg.configure_item(
-                    f"tile_index_{target_id}",
-                    pos=((MEDIA_BADGE_W - 8 * len(idx_str)) // 2 + 1, 1),
-                )
+                dpg.configure_item(f"tile_index_{target_id}", label=idx_str)
             if dpg.does_item_exist(f"tile_alpha_{target_id}"):
                 alpha_val = props.get("alpha")
                 alpha_str = f"{alpha_val:.2f}" if isinstance(alpha_val, float) else "---"
@@ -1815,6 +1809,14 @@ with dpg.theme() as theme_slot_clear, dpg.theme_component(dpg.mvChildWindow):
     # borderless clip slot: no frame, no background (border=False + transparent ChildBg)
     dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (0, 0, 0, 0))
 
+with dpg.theme() as theme_media_badge, dpg.theme_component(dpg.mvButton):
+    # Mediagrid index badge: a slate box with a white digit (e06)
+    dpg.add_theme_color(dpg.mvThemeCol_Button, (45, 55, 75, 255))
+    dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (45, 55, 75, 255))
+    dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (45, 55, 75, 255))
+    dpg.add_theme_color(dpg.mvThemeCol_Text, (255, 255, 255, 255))
+    dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 2)
+
 
 # WINDOW 1: SEQUENCER
 with dpg.window(label="Step Sequencer", width=1050, height=800, pos=(10, 10), no_close=True):
@@ -2174,7 +2176,7 @@ try:
                 if dpg.does_item_exist(loading_tag):
                     dpg.delete_item(loading_tag)
                 dpg.add_image(
-                    texture_tag=tex_tag, tag=img_tag, width=100, height=62, parent=container_tag
+                    texture_tag=tex_tag, tag=img_tag, width=115, height=65, parent=container_tag
                 )
 
                 with dpg.popup(img_tag, mousebutton=dpg.mvMouseButton_Right):

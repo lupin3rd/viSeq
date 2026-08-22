@@ -1099,7 +1099,8 @@ def test_media_tile_shows_index_and_alpha():
         )
     )
     assert dpg.values.get("tile_title_clipA") == "clipA"
-    assert dpg.values.get("tile_index_clipA") == "3", "badge must show the bare index"
+    labels = {a[0]: kw.get("label") for n, a, kw in dpg.calls if n == "configure_item"}
+    assert labels.get("tile_index_clipA") == "3", "badge must show the bare index"
     assert dpg.values.get("tile_alpha_clipA") == "0.42", "tile must show the bare alpha value"
 
 
