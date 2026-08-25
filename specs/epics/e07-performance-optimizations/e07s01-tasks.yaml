@@ -1,0 +1,29 @@
+story_id: e07s01
+title: "P0 — Mediagrid per-push cost: signature-gated structural updates + per-cell value cache"
+status: passing
+bcps: 3
+tasks:
+- id: 1
+  description: "Add current_source to current_signature; move structural per-source updates (tile theme/title/index badge) inside the signature guard; clear the value cache on rebuild"
+  verify: ".venv/bin/python -m pytest tests/ -q -k mediagrid"
+  risk: P1
+  status: passing
+  allure:
+    severity: high
+    categories: ["perf", "mediagrid"]
+- id: 2
+  description: "Add _media_cell_cache + _set_media_cell() and route tile-alpha/raw-cell writes through it (skip set_value when unchanged)"
+  verify: ".venv/bin/python -m pytest tests/ -q -k mediagrid"
+  risk: P1
+  status: passing
+  allure:
+    severity: high
+    categories: ["perf", "mediagrid"]
+- id: 3
+  description: "Regression tests: identical second push performs no dpg value calls; alpha change updates exactly the alpha cells; current_source change still refreshes themes"
+  verify: ".venv/bin/python -m pytest tests/ -q -k 'mediagrid or steady_state'"
+  risk: P1
+  status: passing
+  allure:
+    severity: high
+    categories: ["perf", "mediagrid", "regression"]

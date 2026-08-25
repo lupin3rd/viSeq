@@ -1756,3 +1756,209 @@ def test_apply_layout_never_shows_settings(monkeypatch):
     assert not any(a == ("settings_window",) for n, a, kw in dpg.calls if n == "show_item"), (
         "Settings must never be shown by a layout restore"
     )
+
+
+# ---------- e07s01 (P0): Mediagrid per-push cost ----------
+def _media_payload(n=6, current="0"):
+    sources = {}
+    for i in range(n):
+        sources[str(i)] = {
+            "index": i,
+            "name": f"clip_{i}",
+            "lock": 0,
+            "failed": 0,
+            "play": 0,
+            "pause": 0,
+            "blending": 0,
+            "alpha": 0.5,
+            "transparency": 0.0,
+            "depth": 0,
+            "position": 0,
+            "size": 0,
+            "corner": 0,
+            "angle": 0.0,
+            "seek": 0.0,
+            "speed": 1.0,
+        }
+    return json.dumps({"current_source": current, "sources": sources})
+
+
+def test_mediagrid_identical_push_performs_no_dpg_value_calls():
+    payload = _media_payload()
+    viseq.update_vimix_sources_ui(payload)
+    dpg.calls.clear()
+    dpg.values.clear()
+    viseq.update_vimix_sources_ui(payload)
+    assert dpg.values == {}, "an identical push must not call set_value anywhere"
+    assert not any(n in ("bind_item_theme", "configure_item") for n, a, kw in dpg.calls), (
+        "an identical push must not bind themes or configure items"
+    )
+
+
+def test_mediagrid_value_change_updates_only_affected_cells():
+    payload = _media_payload()
+    viseq.update_vimix_sources_ui(payload)
+    p2 = json.loads(payload)
+    p2["sources"]["3"]["alpha"] = 0.9
+    dpg.calls.clear()
+    dpg.values.clear()
+    viseq.update_vimix_sources_ui(json.dumps(p2))
+    assert dpg.values.get("tile_alpha_clip_3") == "0.90", "the changed tile alpha must update"
+    assert dpg.values.get("raw_3_alpha") == "0.90", "the changed raw cell must update"
+    assert len(dpg.values) == 2, "only the affected cells may be written"
+    assert not any(n == "bind_item_theme" for n, a, kw in dpg.calls), (
+        "a value-only push must not touch tile themes"
+    )
+
+
+def test_mediagrid_selection_change_refreshes_themes():
+    payload = _media_payload(current="0")
+    viseq.update_vimix_sources_ui(payload)
+    p2 = json.loads(payload)
+    p2["current_source"] = "3"
+    dpg.calls.clear()
+    viseq.update_vimix_sources_ui(json.dumps(p2))
+    binds = [a for n, a, kw in dpg.calls if n == "bind_item_theme"]
+    assert binds, "a selection change must re-bind the tile themes"
+    assert any(a[0] == "tile_clip_3" for a in binds), "the newly selected tile must highlight"
+
+
+# ---------- e07s02 (P1): idle render throttle ----------
+def test_frame_sleep_idle_is_throttled():
+    saved = (viseq.is_playing, viseq.is_audio_analyzing, list(viseq.monitor_players))
+    viseq.is_playing = False
+    viseq.is_audio_analyzing = False
+    viseq.monitor_players.clear()
+    try:
+        assert viseq.frame_sleep() == viseq.FRAME_SLEEP_IDLE, "idle must use the throttled rate"
+    finally:
+        viseq.is_playing, viseq.is_audio_analyzing, viseq.monitor_players = (
+            saved[0],
+            saved[1],
+            saved[2],
+        )
+
+
+def test_frame_sleep_full_rate_while_animating():
+    saved = (viseq.is_playing, viseq.is_audio_analyzing, list(viseq.monitor_players))
+    viseq.monitor_players.clear()
+    try:
+        viseq.is_audio_analyzing = False
+        viseq.is_playing = True
+        assert viseq.frame_sleep() == viseq.FRAME_SLEEP_ANIMATED, "sequencer running -> full rate"
+        viseq.is_playing = False
+        viseq.is_audio_analyzing = True
+        assert viseq.frame_sleep() == viseq.FRAME_SLEEP_ANIMATED, "spectrum on -> full rate"
+        viseq.is_audio_analyzing = False
+        # a monitor whose video is playing keeps full rate; a paused one does not
+        viseq.global_vimix_state["sources"] = {
+            "0": {"name": "clip_0", "index": 0, "alpha": 0.5, "seek": 0.5, "speed": 1.0}
+        }
+        viseq.monitor_players.append(
+            {
+                "id": 99,
+                "tag": "monitor_player_99",
+                "target_id": "clip_0",
+                "props": ["alpha", "seek", "speed"],
+                "disc_angle": 0.0,
+                "disc_last": 0.0,
+                "prev_seek": 0.0,
+            }
+        )
+        assert viseq.frame_sleep() == viseq.FRAME_SLEEP_ANIMATED, "advancing seek -> full rate"
+        # pause: seek no longer advances past prev_seek -> idle
+        viseq.global_vimix_state["sources"]["0"]["seek"] = 0.0
+        assert viseq.frame_sleep() == viseq.FRAME_SLEEP_IDLE, "paused video -> throttled"
+    finally:
+        viseq.is_playing, viseq.is_audio_analyzing, viseq.monitor_players = (
+            saved[0],
+            saved[1],
+            saved[2],
+        )
+
+
+# ---------- e07s03 (P2): monitor refresh skip-unchanged ----------
+def _seed_monitor(player_id=7, seek=0.2, alpha=0.5, speed=1.0, play=1):
+    viseq.global_vimix_state["sources"] = {
+        "0": {
+            "name": "clip_0",
+            "index": 0,
+            "alpha": alpha,
+            "seek": seek,
+            "speed": speed,
+            "play": play,
+        }
+    }
+    player = {
+        "id": player_id,
+        "tag": f"monitor_player_{player_id}",
+        "target_id": "clip_0",
+        "props": ["alpha", "seek", "speed"],
+        "disc_angle": 0.0,
+        "disc_last": 0.0,
+        "prev_seek": 0.0,
+    }
+    viseq.monitor_players.append(player)
+    return player
+
+
+def test_monitor_refresh_skips_unchanged_configure():
+    saved_players = list(viseq.monitor_players)
+    saved_sources = dict(viseq.global_vimix_state["sources"])
+    viseq.monitor_players.clear()
+    try:
+        player = _seed_monitor(play=0)  # paused: the arm does not spin
+        dpg.calls.clear()
+        viseq.refresh_monitor_display(player["id"])  # first refresh: configure everything
+        first = [n for n, a, kw in dpg.calls if n == "configure_item"]
+        assert first, "first refresh must configure the widgets"
+        dpg.calls.clear()
+        viseq.refresh_monitor_display(player["id"])  # unchanged values
+        second = [n for n, a, kw in dpg.calls if n == "configure_item"]
+        assert second == [], "unchanged values must not re-configure anything"
+    finally:
+        viseq.monitor_players = saved_players
+        viseq.global_vimix_state["sources"] = saved_sources
+
+
+def test_monitor_refresh_updates_only_changed_seek():
+    saved_players = list(viseq.monitor_players)
+    saved_sources = dict(viseq.global_vimix_state["sources"])
+    viseq.monitor_players.clear()
+    try:
+        player = _seed_monitor(play=0)  # paused: only value changes may configure
+        dpg.calls.clear()
+        viseq.refresh_monitor_display(player["id"])  # prime caches
+        dpg.calls.clear()
+        viseq.global_vimix_state["sources"]["0"]["seek"] = 0.8
+        viseq.refresh_monitor_display(player["id"])
+        configs = [(a, kw) for n, a, kw in dpg.calls if n == "configure_item"]
+        assert configs, "the changed seek must be configured"
+        assert all("seek" in a[0] for a, kw in configs), "only the seek fill may update"
+    finally:
+        viseq.monitor_players = saved_players
+        viseq.global_vimix_state["sources"] = saved_sources
+
+
+def test_monitor_refresh_arm_only_while_playing():
+    saved_players = list(viseq.monitor_players)
+    saved_sources = dict(viseq.global_vimix_state["sources"])
+    viseq.monitor_players.clear()
+    try:
+        player = _seed_monitor(play=1)
+        dpg.calls.clear()
+        viseq.refresh_monitor_display(player["id"])
+        assert any("mon_arm" in a[0] for n, a, kw in dpg.calls if n == "configure_item"), (
+            "a playing video must spin the disc arm"
+        )
+        # paused: arm must not be configured again
+        viseq.global_vimix_state["sources"]["0"]["play"] = 0
+        player["prev_seek"] = 0.8  # mimic the just-updated seek so it reads as paused
+        dpg.calls.clear()
+        viseq.refresh_monitor_display(player["id"])
+        assert not any("mon_arm" in a[0] for n, a, kw in dpg.calls if n == "configure_item"), (
+            "a paused video must not re-configure the arm"
+        )
+    finally:
+        viseq.monitor_players = saved_players
+        viseq.global_vimix_state["sources"] = saved_sources

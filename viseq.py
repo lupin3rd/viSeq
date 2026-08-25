@@ -33,6 +33,12 @@ LOG_HISTORY_LIMIT = 25  # max entries kept in the OSC log window
 MONITOR_OFFSET = (280, 260)  # grid spacing between monitor player windows
 DPG_COLOR_SCALE = 255.0  # DPG ToColor divides color inputs by 255 -> its color API is 0..255
 
+# Main-loop render cadence (perf e07 P1): full rate while something animates, throttled
+# while idle (input stays responsive at ~30 fps; SPIKE-perf measured the idle render as
+# the biggest fixed cost).
+FRAME_SLEEP_ANIMATED = 0.016  # ~60 fps while sequencer/spectrum/monitor video animate
+FRAME_SLEEP_IDLE = 0.033  # ~30 fps at rest
+
 # Step-cell layout: a centered square leaves the checkbox/type row on top (audit L-6)
 STEP_CELL_SIZE = 90  # px side of each sequencer step cell
 STEP_COLOR_SQUARE_SIZE = 40  # px side of the centered color square inside a step cell
@@ -303,6 +309,19 @@ def themed_text(*args: Any, slot: str, **kwargs: Any) -> Any:
     tag = dpg.add_text(*args, color=palette_rgba(active_palette[slot]), **kwargs)
     _text_color_bindings[tag] = slot
     return tag
+
+
+# Per-cell cache for the Mediagrid value updates (perf e07 P0): a viOSC state push that
+# does not change a cell's displayed string skips the set_value entirely. Cleared whenever
+# the tables are rebuilt, so freshly created widgets are never wrongly skipped.
+_media_cell_cache: dict[str, str] = {}
+
+
+def _set_media_cell(tag: str, value: str) -> None:
+    """set_value for a media-grid cell, skipping writes whose displayed string is unchanged."""
+    if _media_cell_cache.get(tag) != value and dpg.does_item_exist(tag):
+        dpg.set_value(tag, value)
+    _media_cell_cache[tag] = value
 
 
 def themed_draw_rectangle(*args: Any, slot: str, color_kwarg: str = "fill", **kwargs: Any) -> Any:
@@ -781,6 +800,22 @@ def append_log(direction: str, address: str) -> None:
     log_queue.put(log_msg)
 
 
+def frame_sleep() -> float:
+    """Main-loop sleep: full rate while animating, throttled while idle (perf e07 P1)."""
+    if is_playing or is_audio_analyzing:
+        return FRAME_SLEEP_ANIMATED
+    for p in monitor_players:
+        if not p.get("target_id"):
+            continue
+        _, props = find_source_by_name(p["target_id"])
+        if props is None:
+            continue
+        seek = max(0.0, min(1.0, float(props.get("seek") or 0.0)))
+        if video_is_playing(props, p.get("prev_seek", 0.0), seek):
+            return FRAME_SLEEP_ANIMATED  # a spinning disc keeps full rate
+    return FRAME_SLEEP_IDLE
+
+
 # ==============================================================================
 # SEQUENCER UI & CLIP ASSIGNMENT
 # ==============================================================================
@@ -1219,11 +1254,16 @@ def update_vimix_sources_ui(json_string: str) -> None:
                 return 0
 
         sorted_keys = sorted(data_dict.keys(), key=get_sort_index)
-        current_signature = f"cols:{last_num_cols}_" + str(
+        # current_source joins the signature so a selection change re-runs the structural
+        # tile updates (theme/title/index) — the only per-source fields it affects (perf e07).
+        current_signature = f"cols:{last_num_cols}_src:{current_source}_" + str(
             [(k, data_dict[k].get("name"), data_dict[k].get("index")) for k in sorted_keys]
         )
 
         if current_signature != last_ui_signature:
+            # every rebuild recreates the widgets from scratch (defaults): the per-cell
+            # value cache must not skip writes for the freshly created cells (perf e07 P0)
+            _media_cell_cache.clear()
             if dpg.does_item_exist("vimix_table"):
                 dpg.delete_item("vimix_table")
             if dpg.does_item_exist("media_grid"):
@@ -1369,28 +1409,37 @@ def update_vimix_sources_ui(json_string: str) -> None:
 
             last_ui_signature = current_signature
 
+            # Structural per-source updates: theme/title/index depend only on signature
+            # fields (name/index/current_source/columns), so they run only on a real change
+            # (perf e07 P0: an unchanged push used to re-write them every time).
+            for idx in sorted_keys:
+                props = data_dict[idx]
+                name = props.get("name")
+                is_selected = str(idx) == str(current_source)
+                target_id = str(name) if name else str(idx)
+                display_name = str(name) if name else f"Idx: {idx}"
+                tile_tag = f"tile_{target_id}"
+
+                if dpg.does_item_exist(tile_tag):
+                    dpg.bind_item_theme(
+                        tile_tag, theme_selected_clip if is_selected else theme_normal_clip
+                    )
+                _set_media_cell(f"tile_title_{target_id}", f"{display_name}")
+                if dpg.does_item_exist(f"tile_index_{target_id}"):
+                    idx_val = props.get("index")
+                    idx_str = str(idx_val) if idx_val is not None else str(idx)
+                    dpg.configure_item(f"tile_index_{target_id}", label=idx_str)
+
+        # Value per-source updates: every cell write goes through the per-cell cache, so a
+        # push that changes nothing performs zero dpg calls (perf e07 P0; measured ~20
+        # calls/source/push before).
         for idx in sorted_keys:
             props = data_dict[idx]
             name = props.get("name")
-            is_selected = str(idx) == str(current_source)
             target_id = str(name) if name else str(idx)
-            display_name = str(name) if name else f"Idx: {idx}"
-            tile_tag = f"tile_{target_id}"
-
-            if dpg.does_item_exist(tile_tag):
-                dpg.bind_item_theme(
-                    tile_tag, theme_selected_clip if is_selected else theme_normal_clip
-                )
-            if dpg.does_item_exist(f"tile_title_{target_id}"):
-                dpg.set_value(f"tile_title_{target_id}", f"{display_name}")
-            if dpg.does_item_exist(f"tile_index_{target_id}"):
-                idx_val = props.get("index")
-                idx_str = str(idx_val) if idx_val is not None else str(idx)
-                dpg.configure_item(f"tile_index_{target_id}", label=idx_str)
-            if dpg.does_item_exist(f"tile_alpha_{target_id}"):
-                alpha_val = props.get("alpha")
-                alpha_str = f"{alpha_val:.2f}" if isinstance(alpha_val, float) else "---"
-                dpg.set_value(f"tile_alpha_{target_id}", alpha_str)
+            alpha_val = props.get("alpha")
+            alpha_str = f"{alpha_val:.2f}" if isinstance(alpha_val, float) else "---"
+            _set_media_cell(f"tile_alpha_{target_id}", alpha_str)
 
             for prop in ALL_PROPERTIES:
                 val = props.get(prop)
@@ -1402,9 +1451,7 @@ def update_vimix_sources_ui(json_string: str) -> None:
                     val_str = "---"
                 else:
                     val_str = str(val)
-                txt_tag = f"raw_{idx}_{prop}"
-                if dpg.does_item_exist(txt_tag):
-                    dpg.set_value(txt_tag, val_str)
+                _set_media_cell(f"raw_{idx}_{prop}", val_str)
 
     except Exception as e:
         log_error("UI update", str(e))
@@ -1663,7 +1710,9 @@ def refresh_monitor_display(player_id: int) -> None:
     """Spin the turntable and update the alpha/seek bars from the source props.
 
     Runs on the main thread every frame; the disc angle advances only while
-    the video plays, at a rate proportional to the speed.
+    the video plays, at a rate proportional to the speed. Configure calls are
+    skipped when nothing changed (perf e07 P2): the arm only moves while the
+    video plays, and speed/alpha/seek are re-written only on value changes.
     """
     idx = find_player_index(player_id)
     if idx is None:
@@ -1684,41 +1733,48 @@ def refresh_monitor_display(player_id: int) -> None:
     seek = max(0.0, min(1.0, float(props.get("seek") or 0.0)))
     # 33 RPM at speed 1.0 (0.55 rev/s = 3.455 rad/s); the disc spins only while moving
     disc_rate = MONITOR_DISC_RPM / 60.0 * 2.0 * math.pi
-    if video_is_playing(props, player.get("prev_seek", 0.0), seek):
+    playing = video_is_playing(props, player.get("prev_seek", 0.0), seek)
+    if playing:
         player["disc_angle"] = player.get("disc_angle", 0.0) + disc_rate * speed * dt
+        angle = player["disc_angle"]
+        if dpg.does_item_exist(f"mon_arm_{player_id}"):
+            dpg.configure_item(
+                f"mon_arm_{player_id}",
+                p2=[
+                    MONITOR_DISC_SIZE / 2 + MONITOR_DISC_R * math.sin(angle),
+                    MONITOR_DISC_SIZE / 2 - MONITOR_DISC_R * math.cos(angle),
+                ],
+            )
     player["prev_seek"] = seek
-    angle = player.get("disc_angle", 0.0)
-    if dpg.does_item_exist(f"mon_arm_{player_id}"):
-        dpg.configure_item(
-            f"mon_arm_{player_id}",
-            p2=[
-                MONITOR_DISC_SIZE / 2 + MONITOR_DISC_R * math.sin(angle),
-                MONITOR_DISC_SIZE / 2 - MONITOR_DISC_R * math.cos(angle),
-            ],
-        )
-    if dpg.does_item_exist(f"mon_speed_{player_id}"):
-        speed_str = f"{speed:.2f}"
-        dpg.configure_item(
-            f"mon_speed_{player_id}",
-            text=speed_str,
-            pos=(
-                MONITOR_DISC_SIZE // 2 - 6 * len(speed_str) + 2,
-                MONITOR_DISC_SIZE // 2 - MONITOR_SPEED_TEXT_SIZE // 2,
-            ),
-        )
+
+    if speed != player.get("last_speed", None):
+        player["last_speed"] = speed
+        if dpg.does_item_exist(f"mon_speed_{player_id}"):
+            speed_str = f"{speed:.2f}"
+            dpg.configure_item(
+                f"mon_speed_{player_id}",
+                text=speed_str,
+                pos=(
+                    MONITOR_DISC_SIZE // 2 - 6 * len(speed_str) + 2,
+                    MONITOR_DISC_SIZE // 2 - MONITOR_SPEED_TEXT_SIZE // 2,
+                ),
+            )
 
     alpha = max(0.0, min(1.0, float(props.get("alpha") or 0.0)))
-    if dpg.does_item_exist(f"mon_alpha_fill_{player_id}"):
-        dpg.configure_item(
-            f"mon_alpha_fill_{player_id}",
-            pmin=[0, MONITOR_DISC_SIZE - alpha * MONITOR_DISC_SIZE],
-        )
-    seek = max(0.0, min(1.0, float(props.get("seek") or 0.0)))
-    if dpg.does_item_exist(f"mon_seek_fill_{player_id}"):
-        dpg.configure_item(
-            f"mon_seek_fill_{player_id}",
-            pmax=[seek * MONITOR_SEEK_W, 10],
-        )
+    if alpha != player.get("last_alpha", None):
+        player["last_alpha"] = alpha
+        if dpg.does_item_exist(f"mon_alpha_fill_{player_id}"):
+            dpg.configure_item(
+                f"mon_alpha_fill_{player_id}",
+                pmin=[0, MONITOR_DISC_SIZE - alpha * MONITOR_DISC_SIZE],
+            )
+    if seek != player.get("last_seek", None):
+        player["last_seek"] = seek
+        if dpg.does_item_exist(f"mon_seek_fill_{player_id}"):
+            dpg.configure_item(
+                f"mon_seek_fill_{player_id}",
+                pmax=[seek * MONITOR_SEEK_W, 10],
+            )
 
 
 def assign_monitor_player(sender: Any, app_data: Any, user_data: Any) -> None:
@@ -2946,7 +3002,7 @@ try:
             refresh_monitor_display(p["id"])
 
         dpg.render_dearpygui_frame()
-        time.sleep(0.016)
+        time.sleep(frame_sleep())  # perf e07 P1: throttle the idle render cadence
 finally:
     # L-4 clean exit: stop audio, shut down the OSC server, destroy the context
     if audio_stream is not None:

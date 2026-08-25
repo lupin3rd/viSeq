@@ -80,3 +80,19 @@ epics:
       - id: e06s02
         title: "Simple theming: named palette + Scuro/Chiaro presets + 5 custom pickers + live apply + persistence"
         bcps: 4
+
+  - id: e07
+    slug: performance-optimizations
+    title: "Cut measured CPU waste: Mediagrid per-push gating (P0), idle render throttle (P1), monitor refresh skip (P2)"
+    wsjf: 30
+    baseline_bcps: 7
+    stories:
+      - id: e07s01
+        title: "P0 — Mediagrid per-push cost: signature-gated structural updates + per-cell value cache"
+        bcps: 3
+      - id: e07s02
+        title: "P1 — Idle render throttle: frame_sleep() full rate while animating, throttled while idle"
+        bcps: 2
+      - id: e07s03
+        title: "P2 — Monitor refresh: skip configure when arm static and values unchanged"
+        bcps: 2

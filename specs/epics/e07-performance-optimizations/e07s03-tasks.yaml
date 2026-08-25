@@ -1,0 +1,21 @@
+story_id: e07s03
+title: "P2 — Monitor refresh: skip configure when arm static and values unchanged"
+status: passing
+bcps: 2
+tasks:
+- id: 1
+  description: "Add per-player last_speed/last_alpha/last_seek caches + change guards in refresh_monitor_display; gate the disc-arm configure on the playing state"
+  verify: ".venv/bin/python -m pytest tests/ -q -k monitor_refresh"
+  risk: P2
+  status: passing
+  allure:
+    severity: normal
+    categories: ["perf", "monitor"]
+- id: 2
+  description: "Regression tests: unchanged props -> no configure_item on second refresh; seek change -> only seek fill configured; playing video -> arm configured"
+  verify: ".venv/bin/python -m pytest tests/ -q -k monitor_refresh"
+  risk: P2
+  status: passing
+  allure:
+    severity: normal
+    categories: ["perf", "monitor", "regression"]

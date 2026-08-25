@@ -2,70 +2,57 @@
 # Consumed by: slice-tasks, plan-work, develop-tdd, verify-work
 
 core_value: >-
-  Give the Settings window two user-facing conveniences: save/restore the current window
-  layout (which windows are open, where, and how big) and choose the app's colors (dark or
-  light background, text and line colors) through a simple theme picker.
+  Cut viseq's measurable CPU waste (measured in SPIKE-perf): stop re-setting unchanged
+  Mediagrid cells on every viOSC state push, render at full rate only while something
+  animates, and stop re-configuring unchanged monitor widgets every frame.
 
 summary: >-
-  viseq opens its windows at hard-coded positions and sizes, and every color (backgrounds,
-  borders, text, spectrum bars) is hard-coded in the single file. The user wants the Settings
-  window to host two new sections.
+  A headless profiling spike (specs/archive/spikes/SPIKE-perf.md) measured the app's hot
+  paths. Python-side work is mostly cheap (FFT 0.07 ms, essentia BPM 18 ms @1 Hz), but two
+  costs are real and removable: (1) update_vimix_sources_ui runs a per-source loop on every
+  viOSC state push — ~2 bind/configure + ~18 set_value per source per push (raw-table cells
+  and tile readouts) — even when nothing changed; (2) the main loop renders at 60 fps
+  unconditionally while the render cost scales with live widget count; (3) every monitor
+  player re-configures its arm/speed/alpha/seek widgets every frame even when static.
 
-  "Finestre" (Windows): a "Salva layout" button snapshots the current state of every window —
-  which are open (shown/hidden), position and size — into a JSON config file; a "Ripristina
-  layout" button re-applies the saved state to the open windows; a "Ripristina all'avvio"
-  checkbox (default on) re-applies the saved layout automatically at boot. The config file is
-  a JSON file (viseq_config.json) stored next to viseq.py; the storage mechanism was left to
-  the agent ("puoi decidere tu cosa utilizzare, se un file di testo o altro").
-
-  "Tema" (Theme): a palette of named color slots drives the global theme (window/panel
-  backgrounds, text, borders/lines), the existing per-item themes (step cells, clip slots,
-  media badge), explicit text colors and the main draw items (spectrum bars, LEDs). The user
-  picks a preset ("Scuro" = current look, "Chiaro" = light background) or custom colors via
-  five color pickers (sfondo, pannelli, testo, linee, accento); derived slots (dim text,
-  tinted panel, badge) are computed from the primaries. The chosen theme is persisted in the
-  same config file and applied at boot.
-
-  The OSC contract, sequencer logic, monitor players and all existing behavior stay
-  unchanged; the default "Scuro" preset reproduces the current look so first launch is
-  visually identical. Verification is headless (stub harness + pure-function tests for the
-  config round-trip, layout snapshot/apply, palette derivation) plus the user's manual
-  acceptance on the real rig.
+  This initiative fixes the three measured costs without any visible behavior change:
+  (P0) the Mediagrid's structural updates (tile theme/title/index badge) become
+  signature-gated (current_source joins the signature) and value updates (tile alpha, raw
+  table cells) become per-cell cached, so a push that changes nothing performs no dpg
+  calls; (P1) the main loop renders at ~60 fps while animating (sequencer running,
+  spectrum on, any monitor video playing) and ~30 fps while idle; (P2) monitor players
+  skip configure_item when the displayed value is unchanged and when the disc is not
+  spinning. Behavior, look, and the OSC contract are untouched.
 
 in_scope:
-  - e06s01: "Window layout save/restore: JSON config file (viseq_config.json next to viseq.py) with defensive load/save; snapshot_window_layout() records shown/pos/size for all fixed windows (sequencer, audio analyzer, settings, mediagrid, logs) and existing monitor-player windows; apply_window_layout() re-applies to existing windows; Settings section 'Finestre' with 'Salva layout' / 'Ripristina layout' buttons and the persisted 'Ripristina all'avvio' checkbox; boot-time restore when enabled."
-  - e06s02: "Simple theming: 14 named palette slots (window_bg, panel_bg, border, border_active, text, text_dim, text_bright, accent, accent_bg, badge_bg, warning, play_bg, play_on_bg, spectrum); 'Scuro' (current look) and 'Chiaro' presets plus 5 custom color pickers (sfondo, pannelli, testo, linee, accento) with derived slots; a global theme bound via bind_theme (only for non-Scuro, so Scuro keeps the exact DPG dark defaults) plus the existing per-item themes, explicit text colors and the spectrum bars all driven by the palette; live apply on change; theme persisted in the config file and applied at boot."
+  - e07s01: "P0 — Mediagrid per-push cost: add current_source to the rebuild signature and move the structural per-source updates (tile theme/title/index badge) inside the signature guard; introduce a per-cell value cache for tile_alpha and the raw vimix table cells so unchanged values skip set_value entirely. Measured target: an identical state push performs zero dpg calls (was ~20/source)."
+  - e07s02: "P1 — Idle render throttling: a frame_sleep() decision (full rate while is_playing or spectrum on or any monitor video playing; throttled rate otherwise) drives the main-loop sleep. No change to frame work, only cadence."
+  - e07s03: "P2 — Monitor refresh: refresh_monitor_display skips configure_item when the disc arm is not advancing (video paused), and caches last speed/alpha/seek per player so unchanged values are not re-configured every frame."
 
 out_of_scope:
-  - "Per-window 'remember' toggles (e.g. remember only the mediagrid) — the layout save is all-or-nothing via the buttons."
-  - "Window docking / tabbed layout persistence — DPG docking is not enabled in this app."
-  - "Restoring monitor-player windows across sessions — monitor players are created at runtime with incremental ids; the layout applies to whatever monitor windows currently exist. Documented, not deferred."
-  - "Per-slot custom colors beyond the five primaries — the 9 derived slots (border_active, text_dim, text_bright, accent_bg, badge_bg, warning, play_bg, play_on_bg, spectrum) are computed from the primaries."
-  - "A full visual theme editor (live preview swatches, undo, import/export of palettes) — a combo + five pickers satisfies the request."
-  - "Re-theming functional indicator colors (VU meter, band-selection overlay rectangles, beat LEDs, play-head cells, the monitor player's stylized turntable) — they stay as-is; the copied-step highlight keeps its fixed amber border."
-  - "Changes to the frozen OSC contract, sequencer behavior, monitor players, or BPM/band logic."
-  - "Module split of viseq.py — deferred decision from e01 still holds."
+  - "Reducing the Mediagrid's live widget count (7k widgets @200 sources) — structural, needs a real-rig frame-time measurement first (SPIKE-perf P3)."
+  - "Changing the OSC contract, the JSON payload handling, or the viOSC interaction."
+  - "Touching the spectrum FFT, essentia cadence, fade ticks, or thumbnail decoding (measured negligible)."
+  - "Module split of viseq.py — a maintainability refactor, zero performance benefit (deferred decision from e01 still holds)."
+  - "GPU-side tuning (vsync, multi-viewport) — not measurable headless."
 
 constraints:
   - "Runtime: Python 3.13, dearpygui 2.3.1, single-file viseq.py (no module split)."
-  - "OSC contract with viOSC is frozen (addresses/payloads in planning-context.yaml)."
-  - "All UI mutations from worker threads must go through ui_task_queue (HIGH-1); layout snapshot/apply and theme apply run only on the main thread."
-  - "No dpg API calls before create_context() (spike landmine)."
-  - "Config load/save must never crash the app (graceful degradation): malformed or missing config falls back to defaults; save failures are logged, not fatal."
-  - "The default 'Scuro' palette must reproduce the current hard-coded look (first launch visually identical)."
-  - "Verification is headless (stub harness) + user manual acceptance; real GUI rendering cannot be verified headless."
+  - "OSC contract with viOSC is frozen; payload shape and update cadence are inputs, not changed."
+  - "No visible behavior change: same look, same controls, same values shown; only the amount of redundant dpg work changes."
+  - "All UI mutations stay on the main thread (HIGH-1); the new caches are main-thread state."
+  - "Verification is headless (stub harness: call-count and value assertions) + the user's manual acceptance on the real rig (frame feel at idle, media grid with real viOSC sources)."
 
 success_criteria:
-  - "Settings window has a 'Finestre' section: 'Salva layout', 'Ripristina layout' and 'Ripristina all'avvio' (persisted, default on)."
-  - "After 'Salva layout', moving/resizing windows and closing some, 'Ripristina layout' returns every existing window to the saved shown/pos/size; at next boot the saved layout is applied when the checkbox is on."
-  - "Settings window has a 'Tema' section: preset combo (Scuro/Chiaro) + 5 color pickers; changes apply live and persist across sessions."
-  - "Choosing 'Scuro' reproduces today's look; 'Chiaro' yields a light background with dark text; custom colors change background, text and border/line colors app-wide (windows, panels, tables, step cells, badges, text, spectrum bars)."
-  - "A missing/corrupt config file never crashes boot; defaults are used and the app still runs."
-  - "Regression harness fully green (existing 87 tests + new ones)."
+  - "An identical viOSC state push triggers zero dpg calls in update_vimix_sources_ui (regression test asserts no bind_item_theme/configure_item/set_value on the second identical push)."
+  - "A value-only change (e.g. alpha) updates exactly the affected cells (tile alpha + raw cell), not the whole grid."
+  - "Selecting a different source (current_source change) still refreshes the tile themes (signature covers it)."
+  - "frame_sleep() returns the throttled rate while idle and the full rate while playing/spectrum/monitor-video-active (regression test)."
+  - "refresh_monitor_display with unchanged props performs no configure_item for the arm/speed/alpha/seek widgets; a changed seek updates only the seek fill."
+  - "Full regression suite green (115 tests + new ones); preflight green; manual acceptance on the real rig."
 
 references:
+  - "specs/archive/spikes/SPIKE-perf.md (measured hot paths and numbers)"
   - "specs/planning-context.yaml (frozen OSC contract)"
   - "specs/tech-architecture/tech-stack.md"
-  - "specs/archive/spikes/SPIKE-dpg2x-api.md (DPG 2.x API map)"
-  - "specs/epics/e03-window-manager-restructure/ (Settings window, window tags)"
-  - "DearPyGui 2.3.1 theming: bind_theme = global theme, re-bindable at runtime; set_value on add_theme_color items and configure_item(tag, color/fill) on text/draw items update colors live (verified headless against 2.3.1)."
+  - "specs/epics/e06-settings-window-features/ (prior e06 work, same file)"
