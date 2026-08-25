@@ -3,6 +3,7 @@ import copy
 import io
 import json
 import math
+import os
 import queue
 import random
 import threading
@@ -83,6 +84,143 @@ local_osc_server: Any = None
 local_server_thread: threading.Thread | None = None
 is_server_running: bool = False
 
+# --- USER CONFIG + THEMING (e06) ---
+# Single JSON file next to viseq.py stores the window layout and the theme. The storage
+# mechanism was delegated to the agent by the user ("puoi decidere tu cosa utilizzare").
+CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_PATH = os.path.join(CONFIG_DIR, "viseq_config.json")
+
+# Palette slots drive every chrome color: the global theme, the per-item themes, explicit
+# text colors and the main draw items. The five primaries are user-editable in the Settings
+# window; the rest derive from them (derive_palette). "Scuro" reproduces the legacy look
+# exactly, so first launch is visually identical (SCOPE_LATEST success criterion).
+PALETTE_SLOTS: list[str] = [
+    "window_bg",
+    "panel_bg",
+    "border",
+    "border_active",
+    "text",
+    "text_dim",
+    "text_bright",
+    "accent",
+    "accent_bg",
+    "badge_bg",
+    "warning",
+    "play_bg",
+    "play_on_bg",
+    "spectrum",
+]
+THEME_PRIMARY_SLOTS: list[str] = ["window_bg", "panel_bg", "text", "border", "accent"]
+THEME_PRIMARY_LABELS: dict[str, str] = {
+    "window_bg": "Sfondo",
+    "panel_bg": "Pannelli",
+    "text": "Testo",
+    "border": "Linee",
+    "accent": "Accento",
+}
+THEME_PRESET_LABELS: dict[str, str] = {
+    "scuro": "Scuro",
+    "chiaro": "Chiaro",
+    "custom": "Personalizzato",
+}
+
+DEFAULT_PALETTE: dict[str, list[int]] = {
+    # Scuro: the exact legacy look (e06s02 acceptance criterion 1)
+    "window_bg": [24, 24, 24],
+    "panel_bg": [40, 40, 40],
+    "border": [80, 80, 80],
+    "border_active": [50, 255, 50],
+    "text": [200, 200, 200],
+    "text_dim": [150, 150, 150],
+    "text_bright": [255, 255, 255],
+    "accent": [50, 255, 50],
+    "accent_bg": [30, 80, 30],
+    "badge_bg": [45, 55, 75],
+    "warning": [255, 220, 80],
+    "play_bg": [80, 80, 80],
+    "play_on_bg": [80, 220, 80],
+    "spectrum": [80, 255, 120],
+}
+
+LIGHT_PALETTE: dict[str, list[int]] = {
+    # Chiaro: light background, dark text (the user's "sfondo scuro" counterpart)
+    "window_bg": [235, 235, 235],
+    "panel_bg": [248, 248, 248],
+    "border": [130, 130, 130],
+    "border_active": [20, 140, 20],
+    "text": [30, 30, 30],
+    "text_dim": [105, 105, 105],
+    "text_bright": [25, 25, 25],
+    "accent": [20, 140, 20],
+    "accent_bg": [205, 235, 205],
+    "badge_bg": [210, 216, 226],
+    "warning": [190, 150, 20],
+    "play_bg": [185, 185, 185],
+    "play_on_bg": [140, 210, 140],
+    "spectrum": [30, 150, 60],
+}
+
+# Fixed windows tracked by the layout save/restore; monitor-player windows are added at
+# snapshot time (they exist only while the app runs, e06s01).
+LAYOUT_WINDOW_TAGS: list[str] = [
+    "sequencer_window",
+    "audio_window",
+    "settings_window",
+    "vimix_media_window",
+    "logs_window",
+]
+
+DEFAULT_CONFIG: dict[str, Any] = {
+    "layout": {"restore_on_boot": True, "windows": []},
+    "theme": {"preset": "scuro", "colors": copy.deepcopy(DEFAULT_PALETTE)},
+}
+
+# Runtime bindings (tag -> palette slot) recorded at widget creation so apply_palette() can
+# re-theme live. Theme color items are updated via set_value; text/draw items via
+# configure_item (verified against DPG 2.3.1 in the e06 spike probes).
+_theme_color_bindings: dict[Any, str] = {}
+_text_color_bindings: dict[Any, str] = {}
+_draw_color_bindings: dict[Any, tuple[str, str]] = {}
+
+active_palette: dict[str, list[int]] = copy.deepcopy(DEFAULT_PALETTE)
+theme_global: Any = None
+
+# Global chrome theme components (bind_theme) and their palette slots; only bound for
+# non-Scuro themes, so Scuro keeps the exact DPG dark defaults (legacy look).
+GLOBAL_THEME_COMPONENTS: list[tuple[int, str]] = [
+    (dpg.mvThemeCol_WindowBg, "window_bg"),
+    (dpg.mvThemeCol_ChildBg, "panel_bg"),
+    (dpg.mvThemeCol_Border, "border"),
+    (dpg.mvThemeCol_BorderShadow, "window_bg"),
+    (dpg.mvThemeCol_Text, "text"),
+    (dpg.mvThemeCol_TextDisabled, "text_dim"),
+    (dpg.mvThemeCol_FrameBg, "panel_bg"),
+    (dpg.mvThemeCol_FrameBgHovered, "panel_bg"),
+    (dpg.mvThemeCol_FrameBgActive, "panel_bg"),
+    (dpg.mvThemeCol_Button, "badge_bg"),
+    (dpg.mvThemeCol_ButtonHovered, "badge_bg"),
+    (dpg.mvThemeCol_ButtonActive, "badge_bg"),
+    (dpg.mvThemeCol_Header, "badge_bg"),
+    (dpg.mvThemeCol_HeaderHovered, "badge_bg"),
+    (dpg.mvThemeCol_HeaderActive, "badge_bg"),
+    (dpg.mvThemeCol_TitleBg, "window_bg"),
+    (dpg.mvThemeCol_TitleBgActive, "window_bg"),
+    (dpg.mvThemeCol_PopupBg, "window_bg"),
+    (dpg.mvThemeCol_ScrollbarBg, "window_bg"),
+    (dpg.mvThemeCol_ScrollbarGrab, "badge_bg"),
+    (dpg.mvThemeCol_ScrollbarGrabHovered, "badge_bg"),
+    (dpg.mvThemeCol_ScrollbarGrabActive, "badge_bg"),
+    (dpg.mvThemeCol_TableHeaderBg, "panel_bg"),
+    (dpg.mvThemeCol_TableBorderStrong, "border"),
+    (dpg.mvThemeCol_TableBorderLight, "border"),
+    (dpg.mvThemeCol_Separator, "border"),
+    (dpg.mvThemeCol_CheckMark, "accent"),
+    (dpg.mvThemeCol_SliderGrab, "accent"),
+    (dpg.mvThemeCol_SliderGrabActive, "accent"),
+    (dpg.mvThemeCol_InputTextCursor, "accent"),
+    (dpg.mvThemeCol_TextSelectedBg, "accent"),
+]
+
 # --- COMMUNICATION QUEUES ---
 ui_state_queue: queue.Queue[Any] = queue.Queue()
 blob_queue: queue.Queue[Any] = queue.Queue()
@@ -111,6 +249,282 @@ def dpg_color_value(rgb: list[float]) -> list[float]:
 def dpg_color_rgba(rgb: list[float]) -> list[float]:
     """DPG-scale RGB plus an opaque alpha (color_button needs 4 components)."""
     return [*dpg_color_value(rgb), DPG_COLOR_SCALE]
+
+
+# ==============================================================================
+# THEMING (e06s02)
+# ==============================================================================
+
+
+def palette_rgba(color: list[int]) -> list[int]:
+    """Palette RGB (0..255) plus an opaque alpha, the DPG color shape for themes/widgets."""
+    return [color[0], color[1], color[2], 255]
+
+
+def _blend(a: list[int], b: list[int], t: float) -> list[int]:
+    """Per-channel linear blend: t of a over (1 - t) of b."""
+    return [round(a[i] * t + b[i] * (1.0 - t)) for i in range(3)]
+
+
+def derive_palette(primaries: dict[str, list[int]]) -> dict[str, list[int]]:
+    """Complete a 5-slot primary palette with the derived slots (deterministic, no mutation)."""
+    pbg = primaries["panel_bg"]
+    border = primaries["border"]
+    text = primaries["text"]
+    accent = primaries["accent"]
+    return {
+        **primaries,
+        "border_active": accent,
+        "text_dim": _blend(text, [128, 128, 128], 0.55),
+        "text_bright": _blend(text, [255, 255, 255], 0.35),
+        "accent_bg": _blend(accent, pbg, 0.45),
+        "badge_bg": _blend(border, pbg, 0.55),
+        "warning": [255, 220, 80],
+        "play_bg": _blend(border, [255, 255, 255], 0.25),
+        "play_on_bg": _blend(accent, [255, 255, 255], 0.35),
+        "spectrum": _blend(accent, [255, 255, 255], 0.25),
+    }
+
+
+def theme_color(component: int, slot: str, category: int = dpg.mvThemeCat_Core) -> None:
+    """Add a palette-driven theme color; the (tag, slot) pair is recorded for re-theming."""
+    item_tag = dpg.add_theme_color(component, palette_rgba(active_palette[slot]), category=category)
+    _theme_color_bindings[item_tag] = slot
+
+
+def themed_text(*args: Any, slot: str, **kwargs: Any) -> Any:
+    """Add text colored from the active palette; the (tag, slot) pair is recorded for re-theming."""
+    kwargs.pop("color", None)
+    tag = dpg.add_text(*args, color=palette_rgba(active_palette[slot]), **kwargs)
+    _text_color_bindings[tag] = slot
+    return tag
+
+
+def themed_draw_rectangle(*args: Any, slot: str, color_kwarg: str = "fill", **kwargs: Any) -> Any:
+    """draw_rectangle with a palette-driven color; the (tag, slot) pair is recorded."""
+    kwargs[color_kwarg] = palette_rgba(active_palette[slot])
+    tag = dpg.draw_rectangle(*args, **kwargs)
+    _draw_color_bindings[tag] = (slot, color_kwarg)
+    return tag
+
+
+def ensure_global_theme() -> None:
+    """Build (once) and bind the global chrome theme from the active palette."""
+    global theme_global
+    if theme_global is None:
+        with dpg.theme() as t, dpg.theme_component(dpg.mvAll):
+            for component, slot in GLOBAL_THEME_COMPONENTS:
+                theme_color(component, slot)
+        theme_global = t
+    dpg.bind_theme(theme_global)
+
+
+def apply_palette(palette: dict[str, list[int]]) -> None:
+    """Push every recorded color binding; runs on the main thread only (boot + user changes)."""
+    global active_palette
+    for item_tag, slot in _theme_color_bindings.items():
+        dpg.set_value(item_tag, palette_rgba(palette[slot]))
+    for item_tag, slot in _text_color_bindings.items():
+        if dpg.does_item_exist(item_tag):
+            dpg.configure_item(item_tag, color=palette_rgba(palette[slot]))
+    for item_tag, (slot, kwarg) in _draw_color_bindings.items():
+        if dpg.does_item_exist(item_tag):
+            dpg.configure_item(item_tag, **{kwarg: palette_rgba(palette[slot])})
+    active_palette = palette
+
+
+def _to_palette_color(raw: Any) -> list[int]:
+    """Normalized 0..1 RGBA (color_edit payload) -> palette RGB on the 0..255 scale."""
+    return [round(float(c) * DPG_COLOR_SCALE) for c in raw[:3]]
+
+
+def _read_primary_colors_from_edits() -> dict[str, list[int]]:
+    """Read the five Settings color edits (0..1 RGBA) as palette RGB primaries."""
+    colors: dict[str, list[int]] = {}
+    for slot in THEME_PRIMARY_SLOTS:
+        colors[slot] = _to_palette_color(dpg.get_value(f"theme_color_{slot}"))
+    return colors
+
+
+def _preset_key(label: str) -> str:
+    """Combo label -> config key ('Personalizzato' -> 'custom')."""
+    for key, lbl in THEME_PRESET_LABELS.items():
+        if lbl == label:
+            return key
+    return "scuro"
+
+
+def _sync_theme_widgets(preset: str, palette: dict[str, list[int]]) -> None:
+    """Push a palette into the Settings theme widgets (combo + five color edits)."""
+    if dpg.does_item_exist("theme_preset"):
+        dpg.set_value("theme_preset", THEME_PRESET_LABELS[preset])
+    for slot in THEME_PRIMARY_SLOTS:
+        tag = f"theme_color_{slot}"
+        if dpg.does_item_exist(tag):
+            dpg.set_value(tag, palette_rgba(palette[slot]))
+
+
+def _apply_theme_config(theme: dict[str, Any]) -> None:
+    """Make a stored theme (preset + colors) the live look: palette, global theme, widgets."""
+    global active_palette
+    preset = str(theme.get("preset", "scuro"))
+    palette = theme["colors"]
+    active_palette = palette
+    if preset == "scuro":
+        dpg.bind_theme(0)  # unbind: DPG's dark defaults reproduce the legacy look
+    else:
+        ensure_global_theme()
+    apply_palette(palette)
+    _sync_theme_widgets(preset, palette)
+
+
+def on_theme_preset(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Settings Tema combo: load a preset palette (or re-derive custom), apply live, persist."""
+    label = str(app_data)
+    if label == THEME_PRESET_LABELS["custom"]:
+        palette = derive_palette(_read_primary_colors_from_edits())
+    elif label == THEME_PRESET_LABELS["chiaro"]:
+        palette = copy.deepcopy(LIGHT_PALETTE)
+    else:
+        palette = copy.deepcopy(DEFAULT_PALETTE)
+    cfg = load_config()
+    cfg["theme"] = {"preset": _preset_key(label), "colors": palette}
+    _apply_theme_config(cfg["theme"])
+    save_config(cfg)
+
+
+def on_theme_color(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Settings color edit: derive the palette from the five edits, apply live, persist."""
+    primaries = _read_primary_colors_from_edits()
+    primaries[user_data] = _to_palette_color(app_data)  # sender payload wins over get_value
+    palette = derive_palette(primaries)
+    cfg = load_config()
+    cfg["theme"] = {"preset": "custom", "colors": palette}
+    _apply_theme_config(cfg["theme"])
+    save_config(cfg)
+
+
+# ==============================================================================
+# USER CONFIG + WINDOW LAYOUT (e06s01)
+# ==============================================================================
+
+
+def load_config() -> dict[str, Any]:
+    """Read the user config; missing/corrupt file falls back to defaults (never crashes)."""
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            loaded = json.load(f)
+    except (OSError, ValueError):
+        return copy.deepcopy(DEFAULT_CONFIG)
+    if not isinstance(loaded, dict):
+        return copy.deepcopy(DEFAULT_CONFIG)
+    merged = copy.deepcopy(DEFAULT_CONFIG)
+
+    def _merge(base: Any, over: Any) -> Any:
+        if isinstance(base, dict) and isinstance(over, dict):
+            return {k: _merge(base.get(k), v) for k, v in over.items()}
+        return over
+
+    for key in merged:
+        if key in loaded:
+            merged[key] = _merge(merged[key], loaded[key])
+    return merged
+
+
+def save_config(cfg: dict[str, Any]) -> None:
+    """Atomically write the user config; failures are logged, never fatal."""
+    try:
+        tmp = f"{CONFIG_PATH}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+        os.replace(tmp, CONFIG_PATH)
+    except OSError as e:
+        log_error("Config", f"cannot write {CONFIG_PATH}: {e}")
+
+
+def _existing_layout_window_tags() -> list[str]:
+    """Tags of every layout-tracked window currently present in the UI."""
+    tags = [t for t in LAYOUT_WINDOW_TAGS if dpg.does_item_exist(t)]
+    tags += [p["tag"] for p in monitor_players if dpg.does_item_exist(p["tag"])]
+    return tags
+
+
+def snapshot_window_layout() -> list[dict[str, Any]]:
+    """Record shown/pos/size for every existing layout-tracked window (main thread only)."""
+    records: list[dict[str, Any]] = []
+    for tag in _existing_layout_window_tags():
+        try:
+            records.append(
+                {
+                    "tag": tag,
+                    "shown": bool(dpg.is_item_shown(tag)),
+                    "pos": list(dpg.get_item_pos(tag)),
+                    "size": [
+                        int(dpg.get_item_width(tag) or 0),
+                        int(dpg.get_item_height(tag) or 0),
+                    ],
+                }
+            )
+        except Exception as e:
+            log_error("Layout", f"skip {tag}: {e}")
+    return records
+
+
+def apply_window_layout(records: list[dict[str, Any]]) -> None:
+    """Re-apply a saved layout to currently existing windows; missing windows are skipped."""
+    for rec in records:
+        tag = rec.get("tag")
+        if not tag or not dpg.does_item_exist(tag):
+            continue
+        try:
+            dpg.set_item_pos(tag, rec["pos"])
+            dpg.set_item_width(tag, rec["size"][0])
+            dpg.set_item_height(tag, rec["size"][1])
+            if rec.get("shown"):
+                dpg.show_item(tag)
+            else:
+                dpg.hide_item(tag)
+        except Exception as e:
+            log_error("Layout", f"apply {tag}: {e}")
+
+
+def save_layout_to_config(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Settings 'Salva layout': snapshot the current layout and persist it."""
+    cfg = load_config()
+    cfg["layout"]["windows"] = snapshot_window_layout()
+    save_config(cfg)
+
+
+def restore_layout_from_config(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Settings 'Ripristina layout': re-apply the saved layout from the config."""
+    cfg = load_config()
+    apply_window_layout(cfg["layout"]["windows"])
+
+
+def should_restore_layout_on_boot(cfg: dict[str, Any]) -> bool:
+    """Whether boot should re-apply the saved layout (default True when unset)."""
+    return bool(cfg["layout"].get("restore_on_boot", True))
+
+
+def on_restore_layout_boot_toggle(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Settings 'Ripristina all'avvio' checkbox: persist the flag."""
+    cfg = load_config()
+    cfg["layout"]["restore_on_boot"] = bool(app_data)
+    save_config(cfg)
+
+
+def apply_boot_config() -> None:
+    """Boot: apply the persisted theme and (optionally) the saved window layout (e06)."""
+    cfg = load_config()
+    _apply_theme_config(cfg["theme"])
+    if dpg.does_item_exist("cb_restore_layout_boot"):
+        dpg.set_value("cb_restore_layout_boot", cfg["layout"]["restore_on_boot"])
+    if should_restore_layout_on_boot(cfg):
+        apply_window_layout(cfg["layout"]["windows"])
 
 
 def enqueue_set_value(tag: str, value: Any) -> None:
@@ -271,7 +685,6 @@ SPECTRUM_FPS = 30.0  # spectrum redraw rate while analyzing
 SPECTRUM_DB_FLOOR = 60.0  # dB below full scale mapped to bar level 0
 SPEC_DRAWLIST_W = 330  # spectrum drawlist width (px)
 SPEC_DRAWLIST_H = 66  # spectrum drawlist height (px) — tall enough to read the bars
-SPECTRUM_BAR_COLOR = (80, 255, 120, 255)  # green bars
 BAND_RECT_COLORS = {
     1: ((255, 255, 0, 40), (255, 255, 0, 200)),  # yellow overlay
     2: ((0, 255, 255, 40), (0, 255, 255, 200)),  # cyan overlay
@@ -518,8 +931,11 @@ def update_step_ui(row: int, col: int) -> None:
             default_value=step_data["active"], callback=toggle_step_active, user_data=(row, col)
         )
         dpg.add_text(
-            step_data["type"] if step_data["type"] != "NONE" else "", color=(200, 200, 200, 255)
+            step_data["type"] if step_data["type"] != "NONE" else "",
+            color=palette_rgba(active_palette["text"]),
+            tag=f"seq_type_{row}_{col}",
         )
+        _text_color_bindings[f"seq_type_{row}_{col}"] = "text"
 
         with dpg.popup(cb, mousebutton=dpg.mvMouseButton_Right):
             dpg.add_menu_item(label="Empty", callback=set_step_type, user_data=(row, col, "NONE"))
@@ -833,8 +1249,13 @@ def update_vimix_sources_ui(json_string: str) -> None:
                     if dpg.does_item_exist(title_tag):
                         dpg.delete_item(title_tag)
                     dpg.add_text(
-                        "---", parent=cw, wrap=125, color=(255, 255, 255, 255), tag=title_tag
+                        "---",
+                        parent=cw,
+                        wrap=125,
+                        color=palette_rgba(active_palette["text_bright"]),
+                        tag=title_tag,
                     )
+                    _text_color_bindings[title_tag] = "text_bright"
                     with dpg.popup(title_tag, mousebutton=dpg.mvMouseButton_Right):
                         dpg.add_menu_item(
                             label="Regenerate Thumbnail (Random)",
@@ -869,9 +1290,10 @@ def update_vimix_sources_ui(json_string: str) -> None:
                         dpg.add_text(
                             " [ Loading... ]",
                             parent=g_id,
-                            color=(150, 150, 150, 255),
+                            color=palette_rgba(active_palette["text_dim"]),
                             tag=loading_tag,
                         )
+                        _text_color_bindings[loading_tag] = "text_dim"
                         with dpg.popup(loading_tag, mousebutton=dpg.mvMouseButton_Right):
                             dpg.add_menu_item(
                                 label="Regenerate Thumbnail (Random)",
@@ -1025,7 +1447,12 @@ def new_monitor_player(sender: Any = None, app_data: Any = None, user_data: Any 
     )
     with dpg.window(label=f"Monitor Player {player_id}", tag=tag, width=270, height=150, pos=pos):
         head_tag = f"mon_head_{player_id}"
-        dpg.add_text("Click the box below to assign the current source.", tag=head_tag, wrap=250)
+        themed_text(
+            "Click the box below to assign the current source.",
+            slot="text_dim",
+            tag=head_tag,
+            wrap=250,
+        )
         with dpg.popup(head_tag, mousebutton=dpg.mvMouseButton_Right):
             dpg.add_menu_item(
                 label="Monitor Properties...",
@@ -1086,11 +1513,7 @@ def update_monitor_player_ui(player_id: int) -> None:
                             height=MONITOR_THUMB_H,
                         )
                     else:
-                        dpg.add_text(
-                            "Loading thumbnail...",
-                            color=(150, 150, 150, 255),
-                            wrap=MONITOR_THUMB_W,
-                        )
+                        themed_text("Loading thumbnail...", slot="text_dim", wrap=MONITOR_THUMB_W)
                     # turntable disc: spins while playing, rate follows speed (1.0 = normal)
                     with dpg.drawlist(width=MONITOR_DISC_SIZE, height=MONITOR_DISC_SIZE):
                         dpg.draw_circle(
@@ -1969,36 +2392,36 @@ with dpg.handler_registry():
     dpg.add_key_press_handler(dpg.mvKey_V, callback=_on_paste_key)
 
 with dpg.theme() as theme_selected_clip, dpg.theme_component(dpg.mvChildWindow):
-    dpg.add_theme_color(dpg.mvThemeCol_Border, (50, 255, 50, 255))
-    dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (30, 80, 30, 255))
+    theme_color(dpg.mvThemeCol_Border, "border_active")
+    theme_color(dpg.mvThemeCol_ChildBg, "accent_bg")
     dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 5)
 
 with dpg.theme() as theme_normal_clip, dpg.theme_component(dpg.mvChildWindow):
-    dpg.add_theme_color(dpg.mvThemeCol_Border, (80, 80, 80, 255))
-    dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (40, 40, 40, 255))
+    theme_color(dpg.mvThemeCol_Border, "border")
+    theme_color(dpg.mvThemeCol_ChildBg, "panel_bg")
     dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 5)
 
 with dpg.theme() as theme_compact_table, dpg.theme_component(dpg.mvTable):
     dpg.add_theme_style(dpg.mvStyleVar_CellPadding, 1, 1)
 
 with dpg.theme() as theme_cell_off, dpg.theme_component(dpg.mvChildWindow):
-    dpg.add_theme_color(dpg.mvThemeCol_Border, (80, 80, 80, 255))
-    dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (40, 40, 40, 255))
+    theme_color(dpg.mvThemeCol_Border, "border")
+    theme_color(dpg.mvThemeCol_ChildBg, "panel_bg")
     dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 5)
 
 with dpg.theme() as theme_cell_on, dpg.theme_component(dpg.mvChildWindow):
-    dpg.add_theme_color(dpg.mvThemeCol_Border, (50, 255, 50, 255))
-    dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (30, 80, 30, 255))
+    theme_color(dpg.mvThemeCol_Border, "border_active")
+    theme_color(dpg.mvThemeCol_ChildBg, "accent_bg")
     dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 5)
 
 with dpg.theme() as theme_cell_play_off, dpg.theme_component(dpg.mvChildWindow):
-    dpg.add_theme_color(dpg.mvThemeCol_Border, (255, 255, 255, 255))
-    dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (80, 80, 80, 255))
+    theme_color(dpg.mvThemeCol_Border, "text_bright")
+    theme_color(dpg.mvThemeCol_ChildBg, "play_bg")
     dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 5)
 
 with dpg.theme() as theme_cell_play_on, dpg.theme_component(dpg.mvChildWindow):
-    dpg.add_theme_color(dpg.mvThemeCol_Border, (255, 255, 255, 255))
-    dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (80, 220, 80, 255))
+    theme_color(dpg.mvThemeCol_Border, "text_bright")
+    theme_color(dpg.mvThemeCol_ChildBg, "play_on_bg")
     dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 5)
 
 with dpg.theme() as theme_slot_clear, dpg.theme_component(dpg.mvChildWindow):
@@ -2006,22 +2429,30 @@ with dpg.theme() as theme_slot_clear, dpg.theme_component(dpg.mvChildWindow):
     dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (0, 0, 0, 0))
 
 with dpg.theme() as theme_media_badge, dpg.theme_component(dpg.mvButton):
-    # Mediagrid index badge: a slate box with a white digit (e06)
-    dpg.add_theme_color(dpg.mvThemeCol_Button, (45, 55, 75, 255))
-    dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (45, 55, 75, 255))
-    dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (45, 55, 75, 255))
-    dpg.add_theme_color(dpg.mvThemeCol_Text, (255, 255, 255, 255))
+    # Mediagrid index badge: a slate box with a bright digit (e06 palette)
+    theme_color(dpg.mvThemeCol_Button, "badge_bg")
+    theme_color(dpg.mvThemeCol_ButtonHovered, "badge_bg")
+    theme_color(dpg.mvThemeCol_ButtonActive, "badge_bg")
+    theme_color(dpg.mvThemeCol_Text, "text_bright")
     dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 2)
 
 with dpg.theme() as theme_step_copied, dpg.theme_component(dpg.mvChildWindow):
-    # copied-step highlight: warm border on the source cell (e08)
-    dpg.add_theme_color(dpg.mvThemeCol_Border, (255, 220, 80, 255))
+    # copied-step highlight: warm border on the source cell (e08); the bg stays dark in
+    # every theme because the flash state must stand out on both light and dark panels
+    theme_color(dpg.mvThemeCol_Border, "warning")
     dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (40, 40, 30, 255))
     dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 5)
 
 
-# WINDOW 1: SEQUENCER
-with dpg.window(label="Step Sequencer", width=1050, height=800, pos=(10, 10), no_close=True):
+# WINDOW 1: SEQUENCER (explicit tag so the layout save/restore can address it, e06)
+with dpg.window(
+    label="Step Sequencer",
+    width=1050,
+    height=800,
+    pos=(10, 10),
+    no_close=True,
+    tag="sequencer_window",
+):
     with dpg.group(horizontal=True):
         dpg.add_button(label="PLAY", tag="btn_play", callback=toggle_play, width=100, height=28)
         dpg.add_spacer(width=14)
@@ -2158,7 +2589,14 @@ with dpg.window(label="Step Sequencer", width=1050, height=800, pos=(10, 10), no
 # WINDOW 2: AUDIO ANALYZER
 input_devices_list = get_input_devices()
 
-with dpg.window(label="Audio analyzer", width=350, height=272, pos=(10, 806), no_close=True):
+with dpg.window(
+    label="Audio analyzer",
+    width=350,
+    height=272,
+    pos=(10, 806),
+    no_close=True,
+    tag="audio_window",
+):
     dpg.add_combo(
         items=input_devices_list, default_value=input_devices_list[0], tag="combo_devices", width=-1
     )
@@ -2170,11 +2608,11 @@ with dpg.window(label="Audio analyzer", width=350, height=272, pos=(10, 806), no
     dpg.add_spacer(height=2)
     with dpg.drawlist(width=SPEC_DRAWLIST_W, height=SPEC_DRAWLIST_H, tag="spec_drawlist"):
         for i in range(SPECTRUM_BARS):
-            dpg.draw_rectangle(
+            themed_draw_rectangle(
                 pmin=(i * (SPEC_DRAWLIST_W / SPECTRUM_BARS) + 1, SPEC_DRAWLIST_H - 2),
                 pmax=((i + 1) * (SPEC_DRAWLIST_W / SPECTRUM_BARS) - 1, SPEC_DRAWLIST_H - 2),
                 color=(0, 0, 0, 0),
-                fill=SPECTRUM_BAR_COLOR,
+                slot="spectrum",
                 tag=f"spec_bar_{i}",
             )
         for band_id, (fill, edge) in BAND_RECT_COLORS.items():
@@ -2194,7 +2632,7 @@ with dpg.window(label="Audio analyzer", width=350, height=272, pos=(10, 806), no
                 callback=on_band_enable,
                 user_data=band_id,
             )
-            dpg.add_text("F", color=(200, 200, 200, 255))
+            themed_text("F", slot="text")
             dpg.add_drag_float(
                 default_value=start_default,
                 min_value=0.0,
@@ -2217,7 +2655,7 @@ with dpg.window(label="Audio analyzer", width=350, height=272, pos=(10, 806), no
                 callback=on_band_change,
                 user_data=band_id,
             )
-            dpg.add_text("L", color=(200, 200, 200, 255))
+            themed_text("L", slot="text")
             dpg.add_drag_float(
                 default_value=0.0,
                 min_value=0.0,
@@ -2258,14 +2696,14 @@ with dpg.window(label="Audio analyzer", width=350, height=272, pos=(10, 806), no
 with dpg.window(
     label="Settings", width=340, height=320, pos=(370, 820), tag="settings_window", show=False
 ):
-    dpg.add_text("OSC", color=(200, 200, 200, 255))
+    themed_text("OSC", slot="text")
     dpg.add_separator()
     dpg.add_text("1. Setup Client (to viOSC):")
     with dpg.group(horizontal=True):
         dpg.add_input_text(default_value="127.0.0.1", tag="viosc_ip", width=120)
         dpg.add_input_int(default_value=6666, tag="viosc_port", width=80, step=0)
         dpg.add_button(label="Connect Client", callback=connect_to_viosc)
-    dpg.add_text("Client Status: Waiting", tag="viosc_status", color=(150, 150, 150, 255))
+    themed_text("Client Status: Waiting", slot="text_dim", tag="viosc_status")
     dpg.add_separator()
     dpg.add_spacer(height=5)
     dpg.add_text("2. Setup Server (Listening):")
@@ -2273,12 +2711,47 @@ with dpg.window(
         dpg.add_input_text(default_value="127.0.0.1", tag="listen_ip", width=120)
         dpg.add_input_int(default_value=VIOSC_LISTEN_PORT, tag="listen_port", width=80, step=0)
         dpg.add_button(label="Start Server", tag="btn_server_toggle", callback=toggle_local_server)
-    dpg.add_text("Server Status: Stopped", tag="server_status", color=(150, 150, 150, 255))
+    themed_text("Server Status: Stopped", slot="text_dim", tag="server_status")
     dpg.add_separator()
     dpg.add_spacer(height=5)
 
     with dpg.group(tag="vimix_raw_group"):
         pass
+
+    # --- Finestre section (e06s01): window layout save/restore ---
+    dpg.add_spacer(height=8)
+    themed_text("Finestre", slot="text")
+    dpg.add_separator()
+    with dpg.group(horizontal=True):
+        dpg.add_button(label="Salva layout", callback=save_layout_to_config, width=110)
+        dpg.add_button(label="Ripristina layout", callback=restore_layout_from_config, width=130)
+    dpg.add_checkbox(
+        label="Ripristina all'avvio",
+        tag="cb_restore_layout_boot",
+        default_value=True,
+        callback=on_restore_layout_boot_toggle,
+    )
+    dpg.add_spacer(height=8)
+
+    # --- Tema section (e06s02): preset combo + five custom color pickers ---
+    themed_text("Tema", slot="text")
+    dpg.add_separator()
+    dpg.add_combo(
+        items=["Scuro", "Chiaro", "Personalizzato"],
+        default_value="Scuro",
+        tag="theme_preset",
+        width=150,
+        callback=on_theme_preset,
+    )
+    for slot in THEME_PRIMARY_SLOTS:
+        dpg.add_color_edit(
+            label=THEME_PRIMARY_LABELS[slot],
+            default_value=palette_rgba(active_palette[slot]),
+            tag=f"theme_color_{slot}",
+            width=170,
+            callback=on_theme_color,
+            user_data=slot,
+        )
 
 # WINDOW 4: VIMIX MEDIA
 with (
@@ -2311,6 +2784,7 @@ threading.Thread(target=essentia_analyzer_loop, daemon=True).start()
 threading.Thread(target=thumbnail_decoder_worker, daemon=True).start()
 
 dpg.create_viewport(title="viseq - Audio-Reactive VJ Controller", width=1700, height=1080)
+apply_boot_config()  # e06: apply the saved theme + (optionally) the saved window layout
 with dpg.viewport_menu_bar():
     with dpg.menu(label="Monitor"):
         dpg.add_menu_item(label="New Monitor Player", callback=new_monitor_player)

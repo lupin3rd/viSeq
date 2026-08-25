@@ -2,57 +2,70 @@
 # Consumed by: slice-tasks, plan-work, develop-tdd, verify-work
 
 core_value: >-
-  Add a simple selectable-band spectrum analyzer to the Audio analyzer window: vertical-bar
-  FFT spectrum, a modifiable band-selection rectangle, and the selected band's normalized
-  level (0..1) exposed as a program variable for future features.
+  Give the Settings window two user-facing conveniences: save/restore the current window
+  layout (which windows are open, where, and how big) and choose the app's colors (dark or
+  light background, text and line colors) through a simple theme picker.
 
 summary: >-
-  viseq's Audio analyzer window currently shows only a VU level bar when level analysis is
-  enabled. The user wants a simple spectrum analyzer: vertical bars over the audible range,
-  plus a modifiable selection box (band range) whose normalized average level (0..1) becomes
-  a live program variable for future use (e.g. audio-reactive features).
+  viseq opens its windows at hard-coded positions and sizes, and every color (backgrounds,
+  borders, text, spectrum bars) is hard-coded in the single file. The user wants the Settings
+  window to host two new sections.
 
-  This initiative adds a dedicated spectrum worker (~30 FPS, Hann-windowed 2048-sample FFT on
-  the existing ring buffer) that bins magnitudes into 32 bars (dB scale, -60 dBFS floor),
-  drawn in a drawlist in the audio window; two Start/End sliders (0..1 of the spectrum) plus
-  a translucent overlay rectangle define the selected band; the band's mean bar level is
-  shown as text and stored in the module variable `audio_band_value` (0..1). The frozen OSC
-  contract, sequencer, and monitor players are untouched. The existing VU level bar is
-  replaced by the spectrum; BPM analysis and low-pass flag stay unchanged.
+  "Finestre" (Windows): a "Salva layout" button snapshots the current state of every window —
+  which are open (shown/hidden), position and size — into a JSON config file; a "Ripristina
+  layout" button re-applies the saved state to the open windows; a "Ripristina all'avvio"
+  checkbox (default on) re-applies the saved layout automatically at boot. The config file is
+  a JSON file (viseq_config.json) stored next to viseq.py; the storage mechanism was left to
+  the agent ("puoi decidere tu cosa utilizzare, se un file di testo o altro").
 
-  Verification is headless (stub harness + pure-function tests for FFT/bin/band math) plus
-  the user's manual acceptance on the real rig.
+  "Tema" (Theme): a palette of named color slots drives the global theme (window/panel
+  backgrounds, text, borders/lines), the existing per-item themes (step cells, clip slots,
+  media badge), explicit text colors and the main draw items (spectrum bars, LEDs). The user
+  picks a preset ("Scuro" = current look, "Chiaro" = light background) or custom colors via
+  five color pickers (sfondo, pannelli, testo, linee, accento); derived slots (dim text,
+  tinted panel, badge) are computed from the primaries. The chosen theme is persisted in the
+  same config file and applied at boot.
+
+  The OSC contract, sequencer logic, monitor players and all existing behavior stay
+  unchanged; the default "Scuro" preset reproduces the current look so first launch is
+  visually identical. Verification is headless (stub harness + pure-function tests for the
+  config round-trip, layout snapshot/apply, palette derivation) plus the user's manual
+  acceptance on the real rig.
 
 in_scope:
-  - e04s01: "Spectrum engine: spectrum_analyzer_loop worker (Hann FFT -> 16 normalized bars 0..1, ~30 FPS) with pure compute_spectrum_bars()/band_value_from_bars() helpers; bars redrawn in the audio window drawlist via the main-thread task queue."
-  - e04s02: "Three selectable bands: band1/band2/band3, each individually enabled/disabled by a checkbox (disabled = not computed, overlay hidden); each band has its own Start/End range sliders and translucent rectangle; enabled bands' mean levels are displayed and stored in the band1/band2/band3 module variables (0..1) for future features."
+  - e06s01: "Window layout save/restore: JSON config file (viseq_config.json next to viseq.py) with defensive load/save; snapshot_window_layout() records shown/pos/size for all fixed windows (sequencer, audio analyzer, settings, mediagrid, logs) and existing monitor-player windows; apply_window_layout() re-applies to existing windows; Settings section 'Finestre' with 'Salva layout' / 'Ripristina layout' buttons and the persisted 'Ripristina all'avvio' checkbox; boot-time restore when enabled."
+  - e06s02: "Simple theming: 14 named palette slots (window_bg, panel_bg, border, border_active, text, text_dim, text_bright, accent, accent_bg, badge_bg, warning, play_bg, play_on_bg, spectrum); 'Scuro' (current look) and 'Chiaro' presets plus 5 custom color pickers (sfondo, pannelli, testo, linee, accento) with derived slots; a global theme bound via bind_theme (only for non-Scuro, so Scuro keeps the exact DPG dark defaults) plus the existing per-item themes, explicit text colors and the spectrum bars all driven by the palette; live apply on change; theme persisted in the config file and applied at boot."
 
 out_of_scope:
-  - "Directly draggable selection boxes (drag the rectangles on the spectrum with the mouse) — deferred: the per-band Start/End sliders + overlays satisfy the current need."
-  - "More than three bands — band1/band2/band3 cover the need; more bands would need the same pattern."
-  - "FFT display modes (log-frequency axis, peak-hold, smoothing) — deferred: simple linear bars."
-  - "Using band1/band2/band3 in any feature yet — they are exposed as variables for future work, nothing consumes them in this initiative."
-  - "Changes to BPM analysis, low-pass flag, the OSC contract, or monitor players."
+  - "Per-window 'remember' toggles (e.g. remember only the mediagrid) — the layout save is all-or-nothing via the buttons."
+  - "Window docking / tabbed layout persistence — DPG docking is not enabled in this app."
+  - "Restoring monitor-player windows across sessions — monitor players are created at runtime with incremental ids; the layout applies to whatever monitor windows currently exist. Documented, not deferred."
+  - "Per-slot custom colors beyond the five primaries — the 9 derived slots (border_active, text_dim, text_bright, accent_bg, badge_bg, warning, play_bg, play_on_bg, spectrum) are computed from the primaries."
+  - "A full visual theme editor (live preview swatches, undo, import/export of palettes) — a combo + five pickers satisfies the request."
+  - "Re-theming functional indicator colors (VU meter, band-selection overlay rectangles, beat LEDs, play-head cells, the monitor player's stylized turntable) — they stay as-is; the copied-step highlight keeps its fixed amber border."
+  - "Changes to the frozen OSC contract, sequencer behavior, monitor players, or BPM/band logic."
   - "Module split of viseq.py — deferred decision from e01 still holds."
 
 constraints:
-  - "Runtime: Python 3.13, dearpygui 2.3.1, numpy >=2,<3, single-file viseq.py (no module split)."
-  - "OSC contract with viOSC is frozen (addresses and payloads in planning-context.yaml)."
-  - "All UI mutations from worker threads must go through ui_task_queue (HIGH-1)."
+  - "Runtime: Python 3.13, dearpygui 2.3.1, single-file viseq.py (no module split)."
+  - "OSC contract with viOSC is frozen (addresses/payloads in planning-context.yaml)."
+  - "All UI mutations from worker threads must go through ui_task_queue (HIGH-1); layout snapshot/apply and theme apply run only on the main thread."
   - "No dpg API calls before create_context() (spike landmine)."
-  - "The spectrum worker must never die from an exception (graceful degradation, BLE001/S110 posture)."
-  - "audio_band_value is written on the main thread (inside the queued UI task) and read by future main-thread features."
+  - "Config load/save must never crash the app (graceful degradation): malformed or missing config falls back to defaults; save failures are logged, not fatal."
+  - "The default 'Scuro' palette must reproduce the current hard-coded look (first launch visually identical)."
   - "Verification is headless (stub harness) + user manual acceptance; real GUI rendering cannot be verified headless."
 
 success_criteria:
-  - "With level analysis on, the audio window shows a live 16-bar vertical spectrum responding to the source."
-  - "Bands 1-3 are individually enable/disable-able; disabled bands cost nothing (not computed, overlay hidden) and their variables stay 0."
-  - "Each enabled band's range (Start/End) selects a spectral region; its mean level is shown and stored in band1/band2/band3 (0..1)."
-  - "Silence yields near-zero bars and band values; a pure tone lights the bars around its frequency."
-  - "The VU level bar is replaced by the spectrum; BPM/low-pass controls unchanged."
-  - "Regression harness fully green (existing 50 tests + new ones)."
+  - "Settings window has a 'Finestre' section: 'Salva layout', 'Ripristina layout' and 'Ripristina all'avvio' (persisted, default on)."
+  - "After 'Salva layout', moving/resizing windows and closing some, 'Ripristina layout' returns every existing window to the saved shown/pos/size; at next boot the saved layout is applied when the checkbox is on."
+  - "Settings window has a 'Tema' section: preset combo (Scuro/Chiaro) + 5 color pickers; changes apply live and persist across sessions."
+  - "Choosing 'Scuro' reproduces today's look; 'Chiaro' yields a light background with dark text; custom colors change background, text and border/line colors app-wide (windows, panels, tables, step cells, badges, text, spectrum bars)."
+  - "A missing/corrupt config file never crashes boot; defaults are used and the app still runs."
+  - "Regression harness fully green (existing 87 tests + new ones)."
 
 references:
   - "specs/planning-context.yaml (frozen OSC contract)"
   - "specs/tech-architecture/tech-stack.md"
-  - "specs/epics/e02-step-ui-polish/ (prior UI polish: DPG color API 0..255, color_button swatch, WindowPadding-aware centering)"
+  - "specs/archive/spikes/SPIKE-dpg2x-api.md (DPG 2.x API map)"
+  - "specs/epics/e03-window-manager-restructure/ (Settings window, window tags)"
+  - "DearPyGui 2.3.1 theming: bind_theme = global theme, re-bindable at runtime; set_value on add_theme_color items and configure_item(tag, color/fill) on text/draw items update colors live (verified headless against 2.3.1)."

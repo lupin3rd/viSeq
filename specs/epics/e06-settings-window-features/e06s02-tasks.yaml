@@ -1,0 +1,45 @@
+story_id: e06s02
+title: "Simple theming: named palette + Scuro/Chiaro presets + 5 custom pickers + live apply + persistence"
+status: passing
+bcps: 4
+tasks:
+- id: 1
+  description: "Palette module: PALETTE_SLOTS, DEFAULT_PALETTE (current look), LIGHT_PALETTE, derive_palette(primaries) computing text_dim/accent_bg/badge_bg/spectrum"
+  verify: ".venv/bin/python -m pytest tests/ -q -k palette"
+  risk: P1
+  status: passing
+  allure:
+    severity: high
+    categories: ["theming"]
+- id: 2
+  description: "apply_palette(palette) + recorded-binding registry; set_value on theme colors, configure_item on text/draw items; active palette in module state"
+  verify: ".venv/bin/python -m pytest tests/ -q -k apply_palette"
+  risk: P1
+  status: passing
+  allure:
+    severity: high
+    categories: ["theming"]
+- id: 3
+  description: "theme_global built from palette + bind_theme; the 8 item themes' add_theme_color literals converted to palette reads via a recording helper"
+  verify: ".venv/bin/python -m pytest tests/ -q -k 'theme or import_time'"
+  risk: P1
+  status: passing
+  allure:
+    severity: high
+    categories: ["theming"]
+- id: 4
+  description: "Explicit text color= literals and main draw-item colors converted to palette reads (recording helper for text/draw items)"
+  verify: ".venv/bin/python -m pytest tests/ -q -k 'themed or import_time'"
+  risk: P2
+  status: passing
+  allure:
+    severity: normal
+    categories: ["theming"]
+- id: 5
+  description: "Settings 'Tema' section: preset combo (Scuro/Chiaro/Personalizzato) + 5 color edits (Sfondo, Pannelli, Testo, Linee, Accento), live-apply callbacks on_theme_preset/on_theme_color, persistence via save_config, boot apply"
+  verify: ".venv/bin/python -m pytest tests/ -q -k 'tema or theme'"
+  risk: P1
+  status: passing
+  allure:
+    severity: high
+    categories: ["theming", "ui"]

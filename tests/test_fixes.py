@@ -47,6 +47,16 @@ class DpgStub:
     def __init__(self):
         self.calls = []  # (name, args, kwargs)
         self.values = {}
+        self.positions = {}  # tag -> [x, y] (get_item_pos)
+        self.sizes = {}  # tag -> (width, height)
+        self.shown = {}  # tag -> bool (is_item_shown)
+        self._tag_counter = 0
+
+    def _tagged(self, name, *a, **kw):
+        """Record a call and return a stable fake tag (real DPG returns the item tag)."""
+        self.calls.append((name, a, kw))
+        self._tag_counter += 1
+        return f"{name}_{self._tag_counter}"
 
     def __getattr__(self, name):
         def fn(*a, **kw):
@@ -54,6 +64,54 @@ class DpgStub:
             return CM()
 
         return fn
+
+    # value-returning / stateful APIs the app code relies on (e06)
+    def add_text(self, *a, **kw):
+        return self._tagged("add_text", *a, **kw)
+
+    def add_button(self, *a, **kw):
+        return self._tagged("add_button", *a, **kw)
+
+    def add_checkbox(self, *a, **kw):
+        return self._tagged("add_checkbox", *a, **kw)
+
+    def add_combo(self, *a, **kw):
+        return self._tagged("add_combo", *a, **kw)
+
+    def add_color_edit(self, *a, **kw):
+        return self._tagged("add_color_edit", *a, **kw)
+
+    def add_theme_color(self, *a, **kw):
+        return self._tagged("add_theme_color", *a, **kw)
+
+    def draw_rectangle(self, *a, **kw):
+        return self._tagged("draw_rectangle", *a, **kw)
+
+    def draw_circle(self, *a, **kw):
+        return self._tagged("draw_circle", *a, **kw)
+
+    def draw_line(self, *a, **kw):
+        return self._tagged("draw_line", *a, **kw)
+
+    def configure_item(self, tag, **kw):
+        self.calls.append(("configure_item", (tag,), kw))
+        return CM()
+
+    def get_item_pos(self, item):
+        self.calls.append(("get_item_pos", (item,), {}))
+        return self.positions.get(item, [0, 0])
+
+    def get_item_width(self, item):
+        self.calls.append(("get_item_width", (item,), {}))
+        return self.sizes.get(item, (0, 0))[0]
+
+    def get_item_height(self, item):
+        self.calls.append(("get_item_height", (item,), {}))
+        return self.sizes.get(item, (0, 0))[1]
+
+    def is_item_shown(self, item):
+        self.calls.append(("is_item_shown", (item,), {}))
+        return self.shown.get(item, True)
 
     def does_item_exist(self, item):
         return True
@@ -208,6 +266,31 @@ band_rect_tags = {
     for n, a, kw in dpg.calls
     if n == "draw_rectangle" and str(kw.get("tag", "")).startswith("band")
 }
+
+# e06: settings-window layout/theme sections, captured before any calls-list clears
+import_time_settings_buttons = [
+    kw
+    for n, a, kw in dpg.calls
+    if n == "add_button" and kw.get("label") in ("Salva layout", "Ripristina layout")
+]
+import_time_restore_checkbox = [
+    kw
+    for n, a, kw in dpg.calls
+    if n == "add_checkbox" and kw.get("tag") == "cb_restore_layout_boot"
+]
+import_time_theme_combo = [
+    kw for n, a, kw in dpg.calls if n == "add_combo" and kw.get("tag") == "theme_preset"
+]
+import_time_theme_edits = {
+    kw.get("tag"): kw
+    for n, a, kw in dpg.calls
+    if n == "add_color_edit" and str(kw.get("tag", "")).startswith("theme_color_")
+}
+import_time_spectrum_bars = [
+    kw
+    for n, a, kw in dpg.calls
+    if n == "draw_rectangle" and str(kw.get("tag", "")).startswith("spec_bar_")
+]
 vu_meter_progress = any(
     n == "add_progress_bar" and kw.get("tag") == "vu_meter" for n, a, kw in dpg.calls
 )
@@ -1290,3 +1373,306 @@ def test_shortcut_ignored_when_input_focused(monkeypatch):
     viseq.active_step = (0, 2)
     viseq.on_copy_shortcut(None, None, None)
     assert viseq.copied_step_data is None, "Ctrl+C must not fire while typing in an input"
+
+
+# ---------- e06s01: window layout save/restore ----------
+def test_sequencer_and_audio_windows_have_explicit_tags():
+    assert import_time_windows.get("sequencer_window"), "sequencer must carry an explicit tag"
+    assert import_time_windows.get("audio_window"), "audio analyzer must carry an explicit tag"
+    assert import_time_windows["sequencer_window"].get("label") == "Step Sequencer"
+    assert import_time_windows["audio_window"].get("label") == "Audio analyzer"
+
+
+def test_layout_window_tags_cover_all_fixed_windows():
+    assert set(viseq.LAYOUT_WINDOW_TAGS) == {
+        "sequencer_window",
+        "audio_window",
+        "settings_window",
+        "vimix_media_window",
+        "logs_window",
+    }
+
+
+def test_snapshot_window_layout_records_shown_pos_size(monkeypatch):
+    positions = {"sequencer_window": [10, 10], "settings_window": [370, 820]}
+    sizes = {"sequencer_window": (1050, 800), "settings_window": (340, 320)}
+    shown = {"settings_window": False}
+    monkeypatch.setattr(dpg, "get_item_pos", lambda tag: positions.get(tag, [0, 0]))
+    monkeypatch.setattr(dpg, "get_item_width", lambda tag: sizes.get(tag, (0, 0))[0])
+    monkeypatch.setattr(dpg, "get_item_height", lambda tag: sizes.get(tag, (0, 0))[1])
+    monkeypatch.setattr(dpg, "is_item_shown", lambda tag: shown.get(tag, True))
+    records = viseq.snapshot_window_layout()
+    by_tag = {r["tag"]: r for r in records}
+    assert by_tag["sequencer_window"]["pos"] == [10, 10]
+    assert by_tag["sequencer_window"]["size"] == [1050, 800]
+    assert by_tag["sequencer_window"]["shown"] is True
+    assert by_tag["settings_window"]["shown"] is False
+
+
+def test_apply_window_layout_sets_geometry_and_visibility(monkeypatch):
+    monkeypatch.setattr(dpg, "does_item_exist", lambda tag: tag != "ghost_window")
+    dpg.calls.clear()
+    records = [
+        {"tag": "settings_window", "shown": True, "pos": [100, 200], "size": [400, 300]},
+        {"tag": "logs_window", "shown": False, "pos": [50, 60], "size": [900, 150]},
+        {"tag": "ghost_window", "shown": True, "pos": [1, 2], "size": [3, 4]},  # missing -> skipped
+    ]
+    viseq.apply_window_layout(records)
+    set_pos = [a for n, a, kw in dpg.calls if n == "set_item_pos"]
+    set_w = [a for n, a, kw in dpg.calls if n == "set_item_width"]
+    set_h = [a for n, a, kw in dpg.calls if n == "set_item_height"]
+    assert ("settings_window", [100, 200]) in set_pos
+    assert ("settings_window", 400) in set_w
+    assert ("settings_window", 300) in set_h
+    assert any(a == ("settings_window",) for n, a, kw in dpg.calls if n == "show_item")
+    assert any(a == ("logs_window",) for n, a, kw in dpg.calls if n == "hide_item")
+    assert not any("ghost_window" in a for n, a, kw in dpg.calls), "missing windows must be skipped"
+
+
+def test_load_config_missing_file_returns_defaults(monkeypatch):
+    monkeypatch.setattr(viseq, "CONFIG_PATH", "/nonexistent/viseq_config.json")
+    cfg = viseq.load_config()
+    assert cfg["layout"]["restore_on_boot"] is True
+    assert cfg["layout"]["windows"] == []
+    assert cfg["theme"]["preset"] == "scuro"
+    assert cfg["theme"]["colors"]["window_bg"] == list(viseq.DEFAULT_PALETTE["window_bg"])
+
+
+def test_load_config_corrupt_file_returns_defaults(monkeypatch, tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text("{ not valid json !!!")
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    cfg = viseq.load_config()
+    assert cfg["layout"]["restore_on_boot"] is True, "corrupt config must fall back to defaults"
+
+
+def test_save_then_load_config_round_trip(monkeypatch, tmp_path):
+    p = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    cfg = viseq.load_config()
+    cfg["layout"]["restore_on_boot"] = False
+    cfg["theme"]["preset"] = "chiaro"
+    viseq.save_config(cfg)
+    loaded = viseq.load_config()
+    assert loaded["layout"]["restore_on_boot"] is False
+    assert loaded["theme"]["preset"] == "chiaro"
+
+
+def test_should_restore_layout_on_boot_defaults_true(monkeypatch):
+    monkeypatch.setattr(viseq, "CONFIG_PATH", "/nonexistent/viseq_config.json")
+    cfg = viseq.load_config()
+    assert viseq.should_restore_layout_on_boot(cfg) is True
+    cfg["layout"]["restore_on_boot"] = False
+    assert viseq.should_restore_layout_on_boot(cfg) is False
+
+
+def test_save_layout_to_config_persists_snapshot(monkeypatch, tmp_path):
+    p = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    monkeypatch.setattr(dpg, "get_item_pos", lambda tag: [7, 7])
+    monkeypatch.setattr(dpg, "get_item_width", lambda tag: 111)
+    monkeypatch.setattr(dpg, "get_item_height", lambda tag: 222)
+    monkeypatch.setattr(dpg, "is_item_shown", lambda tag: True)
+    viseq.save_layout_to_config()
+    cfg = viseq.load_config()
+    assert cfg["layout"]["windows"], "the layout snapshot must persist"
+    for r in cfg["layout"]["windows"]:
+        assert set(r.keys()) == {"tag", "shown", "pos", "size"}
+
+
+def test_restore_layout_from_config_applies(monkeypatch, tmp_path):
+    p = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    cfg = {
+        "layout": {
+            "restore_on_boot": True,
+            "windows": [{"tag": "logs_window", "shown": True, "pos": [5, 6], "size": [700, 200]}],
+        },
+        "theme": {"preset": "scuro", "colors": viseq.DEFAULT_PALETTE},
+    }
+    p.write_text(json.dumps(cfg))
+    dpg.calls.clear()
+    viseq.restore_layout_from_config()
+    assert any(n == "show_item" and a == ("logs_window",) for n, a, kw in dpg.calls)
+    assert any(n == "set_item_pos" and a == ("logs_window", [5, 6]) for n, a, kw in dpg.calls)
+
+
+def test_restore_layout_boot_toggle_persists(monkeypatch, tmp_path):
+    p = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    viseq.on_restore_layout_boot_toggle(None, False)
+    cfg = viseq.load_config()
+    assert cfg["layout"]["restore_on_boot"] is False
+    viseq.on_restore_layout_boot_toggle(None, True)
+    cfg = viseq.load_config()
+    assert cfg["layout"]["restore_on_boot"] is True
+
+
+def test_settings_window_has_finestre_section():
+    labels = [kw.get("label") for kw in import_time_settings_buttons]
+    assert "Salva layout" in labels, "Salva layout button must exist"
+    assert "Ripristina layout" in labels, "Ripristina layout button must exist"
+    assert import_time_restore_checkbox, "Ripristina all'avvio checkbox must exist"
+    cb = import_time_restore_checkbox[0]
+    assert cb.get("default_value") is True, "restore-at-boot must default on"
+    assert cb.get("callback") == viseq.on_restore_layout_boot_toggle
+
+
+# ---------- e06s02: theming ----------
+def test_default_palette_reproduces_current_look():
+    pal = viseq.DEFAULT_PALETTE
+    assert pal["panel_bg"] == [40, 40, 40]
+    assert pal["border"] == [80, 80, 80]
+    assert pal["accent"] == [50, 255, 50]
+    assert pal["accent_bg"] == [30, 80, 30]
+    assert pal["text"] == [200, 200, 200]
+    assert pal["text_dim"] == [150, 150, 150]
+    assert pal["badge_bg"] == [45, 55, 75]
+    assert pal["warning"] == [255, 220, 80]
+
+
+def test_palettes_cover_all_slots():
+    assert set(viseq.DEFAULT_PALETTE.keys()) == set(viseq.PALETTE_SLOTS)
+    assert set(viseq.LIGHT_PALETTE.keys()) == set(viseq.PALETTE_SLOTS)
+    assert viseq.LIGHT_PALETTE["window_bg"] != viseq.DEFAULT_PALETTE["window_bg"]
+    assert viseq.LIGHT_PALETTE["text"] != viseq.DEFAULT_PALETTE["text"]
+
+
+def test_derive_palette_fills_all_slots_and_keeps_primaries():
+    primaries = {
+        "window_bg": [24, 24, 24],
+        "panel_bg": [40, 40, 40],
+        "border": [80, 80, 80],
+        "text": [200, 200, 200],
+        "accent": [50, 255, 50],
+    }
+    pal = viseq.derive_palette(primaries)
+    assert set(pal.keys()) == set(viseq.PALETTE_SLOTS)
+    assert pal["border_active"] == [50, 255, 50], "active border follows the accent"
+    for slot, color in pal.items():
+        assert len(color) == 3, f"{slot} must be RGB"
+        assert all(0 <= c <= 255 for c in color), f"{slot} channels out of range"
+    assert pal["text_dim"] != pal["text"], "dim text must differ from plain text"
+    assert pal["accent_bg"] != pal["panel_bg"], "accent-tinted panel must differ from panel"
+
+
+def test_derive_palette_does_not_mutate_input():
+    import copy as _copy
+
+    primaries = {
+        "window_bg": [24, 24, 24],
+        "panel_bg": [40, 40, 40],
+        "border": [80, 80, 80],
+        "text": [200, 200, 200],
+        "accent": [50, 255, 50],
+    }
+    before = _copy.deepcopy(primaries)
+    viseq.derive_palette(primaries)
+    assert primaries == before, "derive_palette must not mutate its input"
+
+
+def test_apply_palette_updates_recorded_bindings():
+    dpg.calls.clear()
+    viseq.apply_palette(viseq.LIGHT_PALETTE)
+    # theme color items are updated via set_value (stub stores them in values)
+    tc_sets = {k: v for k, v in dpg.values.items() if str(k).startswith("add_theme_color_")}
+    assert tc_sets, "theme color items must be updated via set_value"
+    for color in tc_sets.values():
+        assert len(color) == 4 and color[3] == 255, "theme colors must carry opaque alpha"
+    cfg_items = [kw for n, a, kw in dpg.calls if n == "configure_item"]
+    assert cfg_items, "text/draw items must be updated via configure_item"
+    assert viseq.active_palette == viseq.LIGHT_PALETTE
+    viseq.apply_palette(viseq.DEFAULT_PALETTE)  # restore the shared default for other tests
+
+
+def test_theme_color_creation_records_binding():
+    dpg.calls.clear()
+    viseq.theme_color(dpg.mvThemeCol_Border, "border")
+    assert dpg.calls and dpg.calls[-1][0] == "add_theme_color"
+    assert len(viseq._theme_color_bindings) >= 1
+
+
+def test_settings_theme_section_wired():
+    assert import_time_theme_combo, "Tema preset combo must exist"
+    assert import_time_theme_combo[0].get("items") == ["Scuro", "Chiaro", "Personalizzato"]
+    assert import_time_theme_combo[0].get("callback") == viseq.on_theme_preset
+    assert set(import_time_theme_edits.keys()) == {
+        "theme_color_window_bg",
+        "theme_color_panel_bg",
+        "theme_color_border",
+        "theme_color_text",
+        "theme_color_accent",
+    }
+    for tag, kw in import_time_theme_edits.items():
+        assert kw.get("callback") == viseq.on_theme_color, f"{tag} must use on_theme_color"
+        assert kw.get("user_data") in viseq.THEME_PRIMARY_SLOTS
+
+
+def test_spectrum_bars_are_palette_driven():
+    assert import_time_spectrum_bars, "spectrum bars must exist"
+    assert len(import_time_spectrum_bars) == viseq.SPECTRUM_BARS
+    for kw in import_time_spectrum_bars:
+        assert kw.get("fill") == [*viseq.DEFAULT_PALETTE["spectrum"], 255], (
+            "bar fill must come from the spectrum palette slot"
+        )
+
+
+def test_on_theme_preset_chiaro_applies_and_persists(monkeypatch, tmp_path):
+    p = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    dpg.calls.clear()
+    viseq.on_theme_preset(None, "Chiaro")
+    assert viseq.active_palette == viseq.LIGHT_PALETTE
+    cfg = viseq.load_config()
+    assert cfg["theme"]["preset"] == "chiaro"
+    assert cfg["theme"]["colors"] == viseq.LIGHT_PALETTE
+    synced = [v for k, v in dpg.values.items() if str(k).startswith("theme_color_")]
+    assert len(synced) == 5, "all five color edits must be synced to the new palette"
+    assert all(
+        v[:3] == viseq.LIGHT_PALETTE[slot]
+        for v, slot in zip(synced, viseq.THEME_PRIMARY_SLOTS, strict=True)
+    ), "edits must hold the preset colors"
+    viseq.apply_palette(viseq.DEFAULT_PALETTE)  # restore shared state
+
+
+def test_on_theme_color_derives_from_edits_and_persists(monkeypatch, tmp_path):
+    p = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    for i, slot in enumerate(viseq.THEME_PRIMARY_SLOTS):
+        dpg.values[f"theme_color_{slot}"] = [0.1 + i * 0.1, 0.5, 0.7, 1.0]
+    dpg.calls.clear()
+    viseq.on_theme_color("theme_color_accent", [0.9, 0.2, 0.3, 1.0], "accent")
+    pal = viseq.active_palette
+    assert set(pal.keys()) == set(viseq.PALETTE_SLOTS)
+    assert pal["accent"] == [230, 51, 76], "sender's new color must win over the stored value"
+    cfg = viseq.load_config()
+    assert cfg["theme"]["preset"] == "custom"
+    assert cfg["theme"]["colors"] == pal
+    assert dpg.values.get("theme_preset") == "Personalizzato", "editing a color switches to custom"
+    viseq.apply_palette(viseq.DEFAULT_PALETTE)
+
+
+def test_boot_applies_saved_theme_and_layout(monkeypatch, tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(
+        json.dumps(
+            {
+                "layout": {
+                    "restore_on_boot": True,
+                    "windows": [
+                        {"tag": "logs_window", "shown": True, "pos": [5, 6], "size": [700, 200]}
+                    ],
+                },
+                "theme": {"preset": "chiaro", "colors": viseq.LIGHT_PALETTE},
+            }
+        )
+    )
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    dpg.calls.clear()
+    viseq.apply_boot_config()
+    assert viseq.active_palette == viseq.LIGHT_PALETTE
+    assert any(n == "show_item" and a == ("logs_window",) for n, a, kw in dpg.calls), (
+        "boot must restore the saved layout"
+    )
+    assert dpg.values.get("cb_restore_layout_boot") is True
+    viseq.apply_palette(viseq.DEFAULT_PALETTE)

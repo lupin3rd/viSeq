@@ -67,3 +67,16 @@ epics:
       - id: e04s02
         title: "Band selection: Start/End sliders + rectangle overlay + audio_band_value variable"
         bcps: 3
+
+  - id: e06
+    slug: settings-window-features
+    title: "Settings window: window-layout save/restore + simple theming (Scuro/Chiaro presets and custom colors)"
+    wsjf: 35
+    baseline_bcps: 7
+    stories:
+      - id: e06s01
+        title: "Window layout save/restore: snapshot/apply + Settings 'Finestre' section + boot restore"
+        bcps: 3
+      - id: e06s02
+        title: "Simple theming: named palette + Scuro/Chiaro presets + 5 custom pickers + live apply + persistence"
+        bcps: 4
