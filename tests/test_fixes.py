@@ -1413,8 +1413,8 @@ def test_apply_window_layout_sets_geometry_and_visibility(monkeypatch):
     monkeypatch.setattr(dpg, "does_item_exist", lambda tag: tag != "ghost_window")
     dpg.calls.clear()
     records = [
-        {"tag": "settings_window", "shown": True, "pos": [100, 200], "size": [400, 300]},
-        {"tag": "logs_window", "shown": False, "pos": [50, 60], "size": [900, 150]},
+        {"tag": "settings_window", "shown": False, "pos": [100, 200], "size": [400, 300]},
+        {"tag": "logs_window", "shown": True, "pos": [50, 60], "size": [900, 150]},
         {"tag": "ghost_window", "shown": True, "pos": [1, 2], "size": [3, 4]},  # missing -> skipped
     ]
     viseq.apply_window_layout(records)
@@ -1424,8 +1424,8 @@ def test_apply_window_layout_sets_geometry_and_visibility(monkeypatch):
     assert ("settings_window", [100, 200]) in set_pos
     assert ("settings_window", 400) in set_w
     assert ("settings_window", 300) in set_h
-    assert any(a == ("settings_window",) for n, a, kw in dpg.calls if n == "show_item")
-    assert any(a == ("logs_window",) for n, a, kw in dpg.calls if n == "hide_item")
+    assert any(a == ("logs_window",) for n, a, kw in dpg.calls if n == "show_item")
+    assert any(a == ("settings_window",) for n, a, kw in dpg.calls if n == "hide_item")
     assert not any("ghost_window" in a for n, a, kw in dpg.calls), "missing windows must be skipped"
 
 
@@ -1729,3 +1729,30 @@ def test_theme_preset_custom_with_untouched_edits_stays_sane(monkeypatch, tmp_pa
     stored = cfg["theme"]["colors"]
     assert all(0 <= c <= 255 for slot in stored for c in stored[slot])
     viseq.apply_palette(viseq.DEFAULT_PALETTE)
+
+
+# ---------- e06s01 revision: saved layout never re-opens the Settings window ----------
+def test_snapshot_never_records_settings_as_open(monkeypatch):
+    monkeypatch.setattr(dpg, "is_item_shown", lambda tag: True)  # every window open
+    records = viseq.snapshot_window_layout()
+    by_tag = {r["tag"]: r for r in records}
+    assert by_tag["settings_window"]["shown"] is False, (
+        "the Settings window must always be saved as closed"
+    )
+    assert by_tag["logs_window"]["shown"] is True, "other windows keep their real state"
+    assert by_tag["settings_window"]["pos"] == [0, 0] or "pos" in by_tag["settings_window"], (
+        "position/size are still saved for Settings"
+    )
+
+
+def test_apply_layout_never_shows_settings(monkeypatch):
+    monkeypatch.setattr(dpg, "does_item_exist", lambda tag: True)
+    dpg.calls.clear()
+    records = [{"tag": "settings_window", "shown": True, "pos": [1, 2], "size": [3, 4]}]
+    viseq.apply_window_layout(records)
+    assert any(a == ("settings_window",) for n, a, kw in dpg.calls if n == "hide_item"), (
+        "a saved-open Settings window must be hidden on restore"
+    )
+    assert not any(a == ("settings_window",) for n, a, kw in dpg.calls if n == "show_item"), (
+        "Settings must never be shown by a layout restore"
+    )

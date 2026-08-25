@@ -18,11 +18,15 @@ recreation across sessions — documented in SCOPE_LATEST).
 
 #### ADDED: Window layout snapshot
 The app can record, for every currently existing window, its tag, whether it is shown, its
-position and its size, in a JSON-serializable structure (`snapshot_window_layout()`).
+position and its size, in a JSON-serializable structure (`snapshot_window_layout()`). The
+Settings window (`settings_window`) is always recorded as **closed** — it stays open while
+the user clicks "Salva layout" and must not come back at boot (user revision).
 
 #### ADDED: Window layout restore
 The app can re-apply a saved layout to the currently existing windows — position, size and
 shown/hidden — skipping records whose window no longer exists (`apply_window_layout()`).
+The Settings window is never shown by a restore, even if the saved record says otherwise
+(heals configs saved before the revision).
 
 #### ADDED: JSON config persistence
 A `viseq_config.json` file next to `viseq.py` stores the app config (layout + theme, see

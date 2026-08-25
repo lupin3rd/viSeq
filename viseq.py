@@ -170,6 +170,11 @@ LAYOUT_WINDOW_TAGS: list[str] = [
     "logs_window",
 ]
 
+# The Settings window is a config panel, not workspace: a saved layout must never re-open it
+# at boot (otherwise every start would pop it up, since it is open while clicking "Salva").
+# snapshot records it as closed and apply always hides it (e06s01 user revision).
+LAYOUT_ALWAYS_HIDDEN_TAGS: tuple[str, ...] = ("settings_window",)
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "layout": {"restore_on_boot": True, "windows": []},
     "theme": {"preset": "scuro", "colors": copy.deepcopy(DEFAULT_PALETTE)},
@@ -485,14 +490,19 @@ def _existing_layout_window_tags() -> list[str]:
 
 
 def snapshot_window_layout() -> list[dict[str, Any]]:
-    """Record shown/pos/size for every existing layout-tracked window (main thread only)."""
+    """Record shown/pos/size for every existing layout-tracked window (main thread only).
+
+    LAYOUT_ALWAYS_HIDDEN_TAGS (the Settings window) are always recorded as closed: they
+    stay open while the user clicks "Salva layout", and must not come back at boot.
+    """
     records: list[dict[str, Any]] = []
     for tag in _existing_layout_window_tags():
         try:
+            shown = bool(dpg.is_item_shown(tag)) and tag not in LAYOUT_ALWAYS_HIDDEN_TAGS
             records.append(
                 {
                     "tag": tag,
-                    "shown": bool(dpg.is_item_shown(tag)),
+                    "shown": shown,
                     "pos": list(dpg.get_item_pos(tag)),
                     "size": [
                         int(dpg.get_item_width(tag) or 0),
@@ -506,7 +516,11 @@ def snapshot_window_layout() -> list[dict[str, Any]]:
 
 
 def apply_window_layout(records: list[dict[str, Any]]) -> None:
-    """Re-apply a saved layout to currently existing windows; missing windows are skipped."""
+    """Re-apply a saved layout to currently existing windows; missing windows are skipped.
+
+    LAYOUT_ALWAYS_HIDDEN_TAGS are never shown by a restore, even if the record says
+    otherwise (heals configs saved before the e06s01 revision).
+    """
     for rec in records:
         tag = rec.get("tag")
         if not tag or not dpg.does_item_exist(tag):
@@ -515,7 +529,8 @@ def apply_window_layout(records: list[dict[str, Any]]) -> None:
             dpg.set_item_pos(tag, rec["pos"])
             dpg.set_item_width(tag, rec["size"][0])
             dpg.set_item_height(tag, rec["size"][1])
-            if rec.get("shown"):
+            shown = bool(rec.get("shown")) and tag not in LAYOUT_ALWAYS_HIDDEN_TAGS
+            if shown:
                 dpg.show_item(tag)
             else:
                 dpg.hide_item(tag)
