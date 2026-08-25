@@ -334,15 +334,33 @@ def apply_palette(palette: dict[str, list[int]]) -> None:
 
 
 def _to_palette_color(raw: Any) -> list[int]:
-    """Normalized 0..1 RGBA (color_edit payload) -> palette RGB on the 0..255 scale."""
+    """Normalized 0..1 RGBA (color_edit callback payload) -> palette RGB on the 0..255 scale."""
     return [round(float(c) * DPG_COLOR_SCALE) for c in raw[:3]]
 
 
+def _recover_channel(c: float) -> int:
+    """Coerce one color channel to the valid 0..255 range.
+
+    Channels above 255 are treated as legacy double-scaled values (the pre-fix color_edit
+    bug multiplied the 0..255 value by 255, e.g. 24 -> 6120) and divided back before
+    clamping, so a broken config self-heals to its intended color instead of pure white.
+    """
+    v = round(float(c))
+    if v > 255:
+        v = round(v / DPG_COLOR_SCALE)
+    return min(255, max(0, v))
+
+
 def _read_primary_colors_from_edits() -> dict[str, list[int]]:
-    """Read the five Settings color edits (0..1 RGBA) as palette RGB primaries."""
+    """Read the five Settings color edits as palette RGB.
+
+    DPG 2.3.1 color_edit get_value returns the stored 0..255 scale (verified headless),
+    unlike the callback payload which arrives normalized 0..1 (see _to_palette_color).
+    """
     colors: dict[str, list[int]] = {}
     for slot in THEME_PRIMARY_SLOTS:
-        colors[slot] = _to_palette_color(dpg.get_value(f"theme_color_{slot}"))
+        raw = dpg.get_value(f"theme_color_{slot}")
+        colors[slot] = [_recover_channel(c) for c in raw[:3]]
     return colors
 
 
@@ -409,6 +427,22 @@ def on_theme_color(sender: Any = None, app_data: Any = None, user_data: Any = No
 # ==============================================================================
 
 
+def _sanitize_palette(colors: Any) -> dict[str, list[int]]:
+    """Coerce a stored palette to valid 0..255 RGB slots.
+
+    Heals configs written by the pre-fix color_edit scale bug (e06 regression): channels
+    like 6120 (= 24 * 255) are divided back to 24 (see _recover_channel), so the intended
+    color is restored instead of blowing out to pure white after DPG's /255 normalization.
+    """
+    clean = {slot: list(DEFAULT_PALETTE[slot]) for slot in PALETTE_SLOTS}
+    if isinstance(colors, dict):
+        for slot in PALETTE_SLOTS:
+            raw = colors.get(slot)
+            if isinstance(raw, (list, tuple)) and len(raw) >= 3:
+                clean[slot] = [_recover_channel(c) for c in raw[:3]]
+    return clean
+
+
 def load_config() -> dict[str, Any]:
     """Read the user config; missing/corrupt file falls back to defaults (never crashes)."""
     try:
@@ -428,6 +462,7 @@ def load_config() -> dict[str, Any]:
     for key in merged:
         if key in loaded:
             merged[key] = _merge(merged[key], loaded[key])
+    merged["theme"]["colors"] = _sanitize_palette(merged["theme"].get("colors"))
     return merged
 
 

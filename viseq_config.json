@@ -1,0 +1,142 @@
+{
+  "layout": {
+    "restore_on_boot": true,
+    "windows": [
+      {
+        "tag": "sequencer_window",
+        "shown": true,
+        "pos": [
+          10,
+          19
+        ],
+        "size": [
+          1050,
+          800
+        ]
+      },
+      {
+        "tag": "audio_window",
+        "shown": true,
+        "pos": [
+          1100,
+          611
+        ],
+        "size": [
+          350,
+          272
+        ]
+      },
+      {
+        "tag": "settings_window",
+        "shown": true,
+        "pos": [
+          587,
+          348
+        ],
+        "size": [
+          424,
+          495
+        ]
+      },
+      {
+        "tag": "vimix_media_window",
+        "shown": true,
+        "pos": [
+          1100,
+          19
+        ],
+        "size": [
+          550,
+          580
+        ]
+      },
+      {
+        "tag": "logs_window",
+        "shown": false,
+        "pos": [
+          720,
+          820
+        ],
+        "size": [
+          950,
+          150
+        ]
+      }
+    ]
+  },
+  "theme": {
+    "preset": "custom",
+    "colors": {
+      "window_bg": [
+        6120,
+        6120,
+        6120
+      ],
+      "panel_bg": [
+        10200,
+        10200,
+        10200
+      ],
+      "text": [
+        51000,
+        51000,
+        51000
+      ],
+      "border": [
+        20400,
+        20400,
+        20400
+      ],
+      "accent": [
+        12750,
+        65025,
+        12750
+      ],
+      "border_active": [
+        12750,
+        65025,
+        12750
+      ],
+      "text_dim": [
+        28108,
+        28108,
+        28108
+      ],
+      "text_bright": [
+        18016,
+        18016,
+        18016
+      ],
+      "accent_bg": [
+        11348,
+        34871,
+        11348
+      ],
+      "badge_bg": [
+        15810,
+        15810,
+        15810
+      ],
+      "warning": [
+        255,
+        220,
+        80
+      ],
+      "play_bg": [
+        5291,
+        5291,
+        5291
+      ],
+      "play_on_bg": [
+        4628,
+        22924,
+        4628
+      ],
+      "spectrum": [
+        3379,
+        16448,
+        3379
+      ]
+    }
+  }
+}

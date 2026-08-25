@@ -1638,13 +1638,15 @@ def test_on_theme_preset_chiaro_applies_and_persists(monkeypatch, tmp_path):
 def test_on_theme_color_derives_from_edits_and_persists(monkeypatch, tmp_path):
     p = tmp_path / "config.json"
     monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    # edits hold 0..255 values (real DPG color_edit get_value scale)
     for i, slot in enumerate(viseq.THEME_PRIMARY_SLOTS):
-        dpg.values[f"theme_color_{slot}"] = [0.1 + i * 0.1, 0.5, 0.7, 1.0]
+        dpg.values[f"theme_color_{slot}"] = [30 + i * 20, 128, 178, 255]
     dpg.calls.clear()
     viseq.on_theme_color("theme_color_accent", [0.9, 0.2, 0.3, 1.0], "accent")
     pal = viseq.active_palette
     assert set(pal.keys()) == set(viseq.PALETTE_SLOTS)
-    assert pal["accent"] == [230, 51, 76], "sender's new color must win over the stored value"
+    assert pal["window_bg"] == [30, 128, 178], "other edits read on the 0..255 scale"
+    assert pal["accent"] == [230, 51, 76], "sender's callback payload (0..1) wins over get_value"
     cfg = viseq.load_config()
     assert cfg["theme"]["preset"] == "custom"
     assert cfg["theme"]["colors"] == pal
@@ -1675,4 +1677,55 @@ def test_boot_applies_saved_theme_and_layout(monkeypatch, tmp_path):
         "boot must restore the saved layout"
     )
     assert dpg.values.get("cb_restore_layout_boot") is True
+    viseq.apply_palette(viseq.DEFAULT_PALETTE)
+
+
+# ---------- e06 regression: color_edit get_value is 0..255, not 0..1 ----------
+def test_read_primary_colors_uses_dpg_0_255_scale():
+    for slot in viseq.THEME_PRIMARY_SLOTS:
+        dpg.values[f"theme_color_{slot}"] = [24, 60, 100, 255]  # 0..255 like real DPG
+    colors = viseq._read_primary_colors_from_edits()
+    assert colors["window_bg"] == [24, 60, 100], "0..255 must not be re-scaled"
+    assert colors["accent"] == [24, 60, 100]
+
+
+def test_load_config_sanitizes_out_of_range_palette(monkeypatch, tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(
+        json.dumps(
+            {
+                "theme": {
+                    "preset": "custom",
+                    "colors": {
+                        "window_bg": [6120, 6120, 6120],
+                        "text": [51000, 24, 12],
+                        "accent": [70000, 65025, 12750],
+                    },
+                }
+            }
+        )
+    )
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    cfg = viseq.load_config()
+    colors = cfg["theme"]["colors"]
+    assert colors["window_bg"] == [24, 24, 24], "6120 = 24*255 must recover to 24, not white"
+    assert colors["text"] == [200, 24, 12], "51000 = 200*255 recovers; in-range channels stay"
+    assert colors["accent"] == [255, 255, 50], "genuinely huge channels clamp to 255"
+    assert set(colors.keys()) == set(viseq.PALETTE_SLOTS), "missing slots must be refilled"
+
+
+def test_theme_preset_custom_with_untouched_edits_stays_sane(monkeypatch, tmp_path):
+    # untouched edits hold the Scuro defaults on the 0..255 scale (real DPG get_value)
+    for slot in viseq.THEME_PRIMARY_SLOTS:
+        dpg.values[f"theme_color_{slot}"] = [*viseq.DEFAULT_PALETTE[slot], 255]
+    p = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    viseq.on_theme_preset(None, "Personalizzato")
+    pal = viseq.active_palette
+    assert all(0 <= c <= 255 for slot in pal for c in pal[slot]), "no out-of-range channels"
+    assert pal["window_bg"] == viseq.DEFAULT_PALETTE["window_bg"]
+    cfg = viseq.load_config()
+    assert cfg["theme"]["preset"] == "custom"
+    stored = cfg["theme"]["colors"]
+    assert all(0 <= c <= 255 for slot in stored for c in stored[slot])
     viseq.apply_palette(viseq.DEFAULT_PALETTE)
