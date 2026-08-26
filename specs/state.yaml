@@ -5,11 +5,11 @@
 workflow_mode: solo-git
 
 handoff:
-  next_skill: plan-work
+  next_skill: kickoff-branch
   active_epic_id: e10
   active_story_id: e10s01
 
-active_flow: planning
+active_flow: build
 bug_cycle:
   current_step: 0
   completed_steps: [1, 2, 3, 4, 5]

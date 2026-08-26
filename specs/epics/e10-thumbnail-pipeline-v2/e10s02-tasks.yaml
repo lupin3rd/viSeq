@@ -1,15 +1,30 @@
 # specs/epics/e10-thumbnail-pipeline-v2/e10s02-tasks.yaml
 story_id: e10s02
 title: "viOSC generates up to 3 thumbs per media at distinct jittered times"
-status: planned
+status: failing
 bcps: 2
 tasks:
-  - id: e10s02t1
-    description: "viosc: extend the extraction entry point to accept count=3; pick distinct jittered target times (~15/50/85 % of duration, with a small random jitter, retry-away from collisions); images (duration<=0) return a single frame so the grid falls back to static"
-    verify: "cd ../viosc && .venv/bin/python -m pytest tests/ -q -k thumb && cd ../viseq"
-  - id: e10s02t2
-    description: "RED: test asserting extraction with count=3 requests 3 distinct timestamps and returns 3 frames; image/short-clip path returns 1-2"
-    verify: "cd ../viosc && .venv/bin/python -m pytest tests/ -q -k thumb && cd ../viseq"
-  - id: e10s02t3
-    description: "GREEN: implement distinct-time frame picking (3 subprocess calls, or one ffmpeg invocation yielding 3 frames — whichever the spike shows is cheaper); generation worker stores the list; reply path with 'all' already sends every index (contract unchanged)"
+  - id: 1
+    description: "RED: tests asserting (a) count=3 requests 3 distinct timestamps and returns 3 frames, (b) duration<=0 yields exactly 1 frame, (c) very short clips yield min(distinct frames, 3)"
+    verify: "cd ../viosc && .venv/bin/python -m pytest tests/ -q -k thumb"
+    risk: P2
+    status: failing
+    allure:
+      severity: normal
+      categories: ["unit", "viosc"]
+  - id: 2
+    description: "GREEN: implement distinct-time frame picking (~15/50/85 % with jitter, collision-safe) — 3 subprocess calls OR one multi-frame ffmpeg invocation, whichever e10s04's spike shows is cheaper; per-frame pixel/blob caps stay"
+    verify: "cd ../viosc && .venv/bin/python -m pytest tests/ -q -k thumb"
+    risk: P2
+    status: failing
+    allure:
+      severity: normal
+      categories: ["unit", "viosc"]
+  - id: 3
+    description: "Full-suite verification both repos (generation worker stores the list; reply path with 'all' sends every index, contract unchanged)"
     verify: "cd ../viosc && .venv/bin/python -m pytest tests/ -q && cd ../viseq && .venv/bin/python -m pytest tests/ -q"
+    risk: P2
+    status: failing
+    allure:
+      severity: normal
+      categories: ["integration", "viosc", "viseq"]
