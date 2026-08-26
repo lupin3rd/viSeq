@@ -2819,3 +2819,52 @@ def test_e10s03_l1_prune_drops_whole_texture_set():
     deleted = [c[1][0] for c in dpg.calls if c[0] == "delete_item"]
     assert "tex_ghost_0" in deleted, "all texture tags of the pruned source must be deleted"
     assert viseq.thumbnails_data["clipA"] == ["tex_clipA_0", "tex_clipA_1", "tex_clipA_2"]
+
+
+# ---------- e10s04: Mediagrid thumb cycling + failed-state UX ----------
+def test_e10s04_cycle_advances_on_cadence():
+    state = (0, 0.0)
+    # before the cadence: no advance
+    assert viseq.advance_thumb_cycle(3, 0.74, state) == (0, 0.0)
+    # at/after the cadence: advance, and the new timestamp becomes the anchor
+    assert viseq.advance_thumb_cycle(3, 0.75, state) == (1, 0.75)
+    assert viseq.advance_thumb_cycle(3, 0.76, (1, 0.75)) == (1, 0.75)
+    assert viseq.advance_thumb_cycle(3, 1.50, (1, 0.75)) == (2, 1.50)
+
+
+def test_e10s04_cycle_wraps_around_list():
+    assert viseq.advance_thumb_cycle(3, 0.75, (2, 0.0)) == (0, 0.75)
+
+
+def test_e10s04_cycle_static_below_two_frames():
+    # a single frame (image) never cycles and never moves the anchor
+    assert viseq.advance_thumb_cycle(1, 999.0, (0, 0.0)) == (0, 0.0)
+    assert viseq.advance_thumb_cycle(0, 999.0, (0, 0.0)) == (0, 0.0)
+
+
+def test_e10s04_tick_switches_texture_tag_on_cadence(monkeypatch):
+    monkeypatch.setattr(dpg, "does_item_exist", lambda item: item.startswith("img_"))
+    viseq.thumbnails_data["clipA"] = ["tex_clipA_0", "tex_clipA_1", "tex_clipA_2"]
+    viseq.thumb_cycle_state["clipA"] = (0, 0.0)
+    dpg.calls.clear()
+    viseq.tick_thumb_cycle(0.75)
+    switches = [c for c in dpg.calls if c[0] == "configure_item"]
+    assert switches and switches[0][2].get("texture_tag") == "tex_clipA_1", (
+        "the tile image must switch to the next stored frame at the cadence"
+    )
+    assert viseq.thumb_cycle_state["clipA"] == (1, 0.75)
+    del viseq.thumb_cycle_state["clipA"]
+    del viseq.thumbnails_data["clipA"]
+
+
+def test_e10s04_tick_gated_when_grid_hidden(monkeypatch):
+    monkeypatch.setattr(dpg, "is_item_shown", lambda item: False)  # Mediagrid hidden
+    viseq.thumbnails_data["clipA"] = ["tex_clipA_0", "tex_clipA_1", "tex_clipA_2"]
+    viseq.thumb_cycle_state["clipA"] = (0, 0.0)
+    dpg.calls.clear()
+    viseq.tick_thumb_cycle(999.0)  # far past the cadence
+    switches = [c for c in dpg.calls if c[0] == "configure_item"]
+    assert switches == [], "cycling must not advance while the grid is hidden"
+    assert viseq.thumb_cycle_state["clipA"] == (0, 0.0)
+    del viseq.thumb_cycle_state["clipA"]
+    del viseq.thumbnails_data["clipA"]
