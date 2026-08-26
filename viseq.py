@@ -235,8 +235,31 @@ DEFAULT_CONFIG: dict[str, Any] = {
 midi_enabled: bool = False
 midi_input_port: str | None = None
 midi_bindings: list[dict[str, Any]] = []
+midi_auto_bindings: list[dict[str, Any]] = []  # e09s03: Launchpad grid bindings (not persisted)
 midi_learn_mode: bool = False
 midi_learn_pending: tuple[str, dict[str, Any]] | None = None
+
+# --- e09s03: Novation Launchpad adapter constants ---
+# MK2-family (MK2/Mini MK2/Pro): grid buttons are notes row*10+col, LED color = note-on
+# velocity (manual: 0 off, 3 white, 5 red, 12 amber, 60 green). Launchpad X / Mini MK3 /
+# Pro MK3 need programmer mode first (SysEx setup) and then act as the same note grid.
+# MK3-family need programmer mode first (SysEx setup) and then act as the same note grid.
+# Payload WITHOUT the F0/F7 framing bytes — mido adds them when sending a sysex message
+# (verified: data must be 0-127; mido.bytes() yields F0 00 20 29 02 0C 03 01 F7).
+LAUNCHPAD_NOTE_MODE = "note"
+LAUNCHPAD_PROGRAMMER_MODE = "programmer"
+LAUNCHPAD_PROGRAMMER_SYSEX: list[int] = [0x00, 0x20, 0x29, 0x02, 0x0C, 0x03, 0x01]
+LAUNCHPAD_GRID_ROWS = 8
+LAUNCHPAD_GRID_COLS = 8
+LAUNCHPAD_LED_OFF = 0
+LAUNCHPAD_LED_WHITE = 3
+LAUNCHPAD_LED_RED = 5
+LAUNCHPAD_LED_AMBER = 12
+LAUNCHPAD_LED_GREEN = 60
+LAUNCHPAD_FLASH_SECONDS = 0.12  # beat flash pulse duration (timer restores the head color)
+
+launchpad_out: Any = None  # open mido output port; None = no Launchpad (all mirror calls no-op)
+_launchpad_lock = threading.Lock()
 
 # Runtime bindings (tag -> palette slot) recorded at widget creation so apply_palette() can
 # re-theme live. Theme color items are updated via set_value; text/draw items via
@@ -1063,6 +1086,7 @@ def update_step_theme(row: int, col: int, is_head: bool = False) -> None:
     # Runs on any thread: capture state here, apply the theme on the main thread.
     cell_tag = f"seq_cell_{row}_{col}"
     is_active = tracks_data[row]["steps"][col]["active"]
+    launchpad_mirror_step(row, col, is_active, is_head)  # e09s03: LED mirror (thread-safe)
     ui_task(lambda: _apply_step_theme(cell_tag, is_active, is_head))
 
 
@@ -2113,7 +2137,7 @@ def resolve_midi_message(msg: Any, port_name: str) -> list[tuple[str, dict[str, 
         return []
     channel = int(getattr(msg, "channel", 0))
     out: list[tuple[str, dict[str, Any], int]] = []
-    for binding in list(midi_bindings):
+    for binding in list(midi_bindings) + list(midi_auto_bindings):
         if not _binding_device_ok(binding, port_name):
             continue
         if binding_matches(binding, msg_type, number, channel):
@@ -2314,6 +2338,7 @@ def midi_control_loop() -> None:
         try:
             with mido.open_input(port_name) as port:
                 midi_input_port = port_name
+                launchpad_connect(port_name, mido)  # e09s03: LED output + grid bindings
                 append_log("MIDI", f"Control listening on {port_name}")
                 while midi_enabled:
                     for msg in port.iter_pending():
@@ -2323,6 +2348,130 @@ def midi_control_loop() -> None:
             log_error("MIDI", str(e))
             midi_input_port = None
             time.sleep(2.0)
+        finally:
+            launchpad_disconnect()
+
+
+# ---------- e09s03: Novation Launchpad adapter ----------
+def launchpad_model_from_name(port_name: str) -> str | None:
+    """Classify a MIDI port name into a Launchpad protocol class (None = not a Launchpad)."""
+    name = (port_name or "").lower()
+    if "launchpad" not in name:
+        return None
+    if "mk3" in name or " launchpad x" in name or name.startswith("launchpad x"):
+        return LAUNCHPAD_PROGRAMMER_MODE  # X / Mini MK3 / Pro MK3: SysEx first, then note grid
+    return LAUNCHPAD_NOTE_MODE  # MK2 / Mini MK2 / Pro: native note mode
+
+
+def launchpad_grid_note(row: int, col: int) -> int:
+    """MK2-family grid note for pad (row, col): row*10+col (0-79 for the 8x8 grid)."""
+    return row * 10 + col
+
+
+def launchpad_led(row: int, col: int, velocity: int) -> None:
+    """Set one Launchpad pad LED via note-on velocity (lock-guarded best-effort)."""
+    if launchpad_out is None:
+        return
+    try:
+        import mido
+
+        msg = mido.Message("note_on", note=launchpad_grid_note(row, col), velocity=velocity)
+        with _launchpad_lock:
+            launchpad_out.send(msg)
+    except Exception as e:
+        log_error("MIDI", f"Launchpad LED ({row},{col}): {e}")
+
+
+def launchpad_mirror_step(row: int, col: int, is_active: bool, is_head: bool) -> None:
+    """Mirror one step cell on the Launchpad grid (any thread; no-op without a device)."""
+    if launchpad_out is None:
+        return
+    if is_head:
+        launchpad_led(row, col, LAUNCHPAD_LED_AMBER)
+    elif is_active:
+        launchpad_led(row, col, LAUNCHPAD_LED_GREEN)
+    else:
+        launchpad_led(row, col, LAUNCHPAD_LED_OFF)
+
+
+def launchpad_flash_playhead() -> None:
+    """White pulse on the current playhead column, restored by a timer (beat flash, e09s03)."""
+    if launchpad_out is None or current_step < 0:
+        return
+    for r in range(LAUNCHPAD_GRID_ROWS):
+        launchpad_led(r, current_step, LAUNCHPAD_LED_WHITE)
+    threading.Timer(LAUNCHPAD_FLASH_SECONDS, _launchpad_restore_playhead).start()
+
+
+def _launchpad_restore_playhead() -> None:
+    """Timer thread: re-apply the playhead amber after a beat flash."""
+    if launchpad_out is None or current_step < 0:
+        return
+    for r in range(LAUNCHPAD_GRID_ROWS):
+        active = tracks_data[r]["steps"][current_step]["active"]
+        launchpad_mirror_step(r, current_step, active, True)
+
+
+def _launchpad_register_grid_bindings(port_name: str) -> None:
+    """Internal 8x8 grid bindings: pad (r,c) toggles step (r,c) — never persisted (e09s03)."""
+    midi_auto_bindings.clear()
+    for r in range(LAUNCHPAD_GRID_ROWS):
+        for c in range(LAUNCHPAD_GRID_COLS):
+            midi_auto_bindings.append(
+                {
+                    "device": port_name,
+                    "channel": 0,
+                    "type": "note",
+                    "number": launchpad_grid_note(r, c),
+                    "action": MIDI_ACTION_SEQ_TOGGLE,
+                    "params": {"row": r, "col": c},
+                    "auto": True,
+                }
+            )
+
+
+def launchpad_connect(input_port_name: str, mido: Any) -> None:
+    """Open the Launchpad output port and, for MK3-family, enable programmer mode."""
+    launchpad_disconnect()
+    if launchpad_model_from_name(input_port_name) is None:
+        return  # not a Launchpad: no LED output, no grid bindings
+    out_names = mido.get_output_names()
+    out_name = None
+    for cand in out_names:
+        if cand == input_port_name:
+            out_name = cand
+            break
+    if out_name is None:
+        for cand in out_names:
+            if "launchpad" in cand.lower():
+                out_name = cand
+                break
+    if out_name is None and out_names:
+        out_name = out_names[0]  # single MIDI device around: assume it is the same one
+    if out_name is None:
+        return
+    try:
+        global launchpad_out
+        with _launchpad_lock:
+            launchpad_out = mido.open_output(out_name)
+        if launchpad_model_from_name(input_port_name) == LAUNCHPAD_PROGRAMMER_MODE:
+            launchpad_out.send(mido.Message("sysex", data=LAUNCHPAD_PROGRAMMER_SYSEX))
+        _launchpad_register_grid_bindings(input_port_name)
+        append_log("MIDI", f"Launchpad output on {out_name}")
+    except Exception as e:
+        log_error("MIDI", f"Launchpad output {out_name}: {e}")
+        launchpad_disconnect()
+
+
+def launchpad_disconnect() -> None:
+    """Close the Launchpad output port and drop the grid bindings (idempotent)."""
+    global launchpad_out
+    with _launchpad_lock:
+        if launchpad_out is not None:
+            with contextlib.suppress(Exception):
+                launchpad_out.close()
+            launchpad_out = None
+    midi_auto_bindings.clear()
 
 
 def midi_clock_loop() -> None:
@@ -2734,6 +2883,7 @@ def sequencer_tick() -> None:
 
             prev_step = current_step
             current_step = (current_step + 1) % NUM_STEPS
+            launchpad_flash_playhead()  # e09s03: beat flash on the new playhead column
 
             for r, track in enumerate(tracks_data):
                 if prev_step != -1:
