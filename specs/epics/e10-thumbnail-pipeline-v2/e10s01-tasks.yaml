@@ -1,0 +1,24 @@
+# specs/epics/e10-thumbnail-pipeline-v2/e10s01-tasks.yaml
+story_id: e10s01
+title: "viOSC generation hardening — log failures, keep good cache, regenerate on demand (implements BUG-2026-08-26T230838)"
+status: planned
+bcps: 3
+tasks:
+  - id: e10s01t1
+    description: "viosc repo: add a minimal pytest setup (tests/test_thumbnails.py) that imports viosc.py and monkeypatches subprocess/os.path; write tests asserting the generation worker logs a reason-specific error when (a) the file is missing, (b) ffprobe/ffmpeg exits non-zero, (c) extraction yields empty output"
+    verify: "cd ../viosc && .venv/bin/python -m pytest tests/ -q -k thumb && cd ../viseq"
+  - id: e10s01t2
+    description: "GREEN: add reason-specific error logging (file missing / ffmpeg error / empty output) to the generation worker's failure paths; keep the existing successful-path print"
+    verify: "cd ../viosc && .venv/bin/python -m pytest tests/ -q -k thumb && cd ../viseq"
+  - id: e10s01t3
+    description: "RED: test asserting a FAILED regeneration leaves the previously cached thumbnail untouched (cache replaced only when extraction yields >=1 frame)"
+    verify: "cd ../viosc && .venv/bin/python -m pytest tests/ -q -k thumb && cd ../viseq"
+  - id: e10s01t4
+    description: "GREEN: only assign the new result to the thumbnail cache when non-empty; keep the old cache on failure (worker no longer overwrites with [])"
+    verify: "cd ../viosc && .venv/bin/python -m pytest tests/ -q -k thumb && cd ../viseq"
+  - id: e10s01t5
+    description: "RED: test asserting an on-demand thumb request for a source with an empty cache but a valid URI regenerates (bounded by the concurrency semaphore) and replies with the fresh frame instead of a silent no-op"
+    verify: "cd ../viosc && .venv/bin/python -m pytest tests/ -q -k thumb && cd ../viseq"
+  - id: e10s01t6
+    description: "GREEN: in the reply path, when the cache is empty and a URI exists, run generation then send the result; keep the silent no-op only for genuinely unloadable sources (no URI / file missing after retry)"
+    verify: "cd ../viosc && .venv/bin/python -m pytest tests/ -q && cd ../viseq && .venv/bin/python -m pytest tests/ -q"

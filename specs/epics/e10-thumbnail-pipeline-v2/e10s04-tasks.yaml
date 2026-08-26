@@ -1,0 +1,24 @@
+# specs/epics/e10-thumbnail-pipeline-v2/e10s04-tasks.yaml
+story_id: e10s04
+title: "Mediagrid thumb cycling (750 ms, configure_item, gated) + failed-state retry UX + measured spike"
+status: planned
+bcps: 3
+tasks:
+  - id: e10s04t1
+    description: "Spike (SPIKE-perf pattern): measure cycling cost before/after — 20-50 sources, 3 textures each, configure_item texture_tag swap at 750 ms; record frame-time delta and confirm the idle render throttle (30 fps) renders the cycle smoothly; write findings to specs/archive/spikes/SPIKE-thumb-cycle.md"
+    verify: "test -f specs/archive/spikes/SPIKE-thumb-cycle.md"
+  - id: e10s04t2
+    description: "RED: pure cycle-state helper test — per-source frame index advances on a wall-clock timer (750 ms), wraps across the stored list, and only advances while the Mediagrid window is visible"
+    verify: ".venv/bin/python -m pytest tests/ -q -k cycle"
+  - id: e10s04t3
+    description: "GREEN: implement the cycle helper + main-loop scheduling: for each visible source with >=2 textures, configure_item(img_<name>, texture_tag=tex_<name>_<i>) on the cadence; sources with 0-1 textures stay static"
+    verify: ".venv/bin/python -m pytest tests/ -q -k cycle"
+  - id: e10s04t4
+    description: "RED: failed-state test — after N consecutive unanswered thumb requests (N from the spike, default ~5 cycles ≈ 15 s) the tile shows a 'thumbnail failed' state with right-click retry; a later successful reply clears it"
+    verify: ".venv/bin/python -m pytest tests/ -q -k failed"
+  - id: e10s04t5
+    description: "GREEN: track unanswered-request count per source in the request loop; flip tile label/state at the threshold; reset on reply; retry re-requests and sends /viosc/regen_thumb/<id> once (contract unchanged)"
+    verify: ".venv/bin/python -m pytest tests/ -q && .venv/bin/ruff check . && .venv/bin/mypy"
+  - id: e10s04t6
+    description: "frame_sleep interplay: decide from the spike whether active grid cycling must drive the full render rate; add/adjust a frame_sleep() condition with a regression test (idle throttle stays the default)"
+    verify: ".venv/bin/python -m pytest tests/ -q -k frame_sleep"

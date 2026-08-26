@@ -2,62 +2,58 @@
 # Consumed by: slice-tasks, plan-work, develop-tdd, verify-work
 
 core_value: >-
-  Let the user drive viseq from any MIDI controller — first the Novation Launchpad as an
-  8x8 hardware view of the step sequencer (buttons toggle steps, the pads' LEDs mirror the
-  sequencer state) — through a configurable, user-learnable mapping engine that binds
-  arbitrary MIDI notes and CCs to viseq actions.
+  A source with valid media always gets a thumbnail — never lost silently, always
+  recoverable — and the Mediagrid shows up to three frames per media, cycling, so a
+  video is identifiable from its content at a glance.
 
 summary: >-
-  viseq already depends on mido + python-rtmidi for MIDI clock sync. This initiative adds a
-  full MIDI control layer on top of that single stack, in three layers: (1) a mapping
-  engine — a configurable list of bindings {device, channel, type (note/cc), number,
-  action, params} persisted in viseq_config.json, dispatched by a worker thread whose
-  action executions are routed to the main thread through the existing ui_task_queue
-  (HIGH-1 invariant); (2) MIDI Learn — the user first clicks the viseq control they want
-  to control, then presses the MIDI button (or moves the knob) that should trigger it, and
-  the binding is created; ALL MIDI features live in a single "MIDI" window opened from the
-  menubar (enable toggle, controller combo with Refresh, Learn button + status, Mappings
-  list with Delete and Save) — no scattered menu items (user revision); (3) a Novation Launchpad adapter — model
-  auto-detection from the port name (MK2 family: native note mode; Launchpad X / Mini MK3:
-  programmer-mode SysEx), the 8x8 pad grid maps 1:1 to the step sequencer (auto-generated
-  bindings, not stored in user config), and the pad LEDs mirror step state (active = green,
-  empty = off, current playhead = white/amber, beat flash).
+  The thumbnail pipeline (viOSC daemon -> OSC -> viseq Mediagrid) currently loses
+  thumbnails permanently: generation is one-shot, memory-only, silent on failure, and a
+  single failed extraction empties the cache with no recovery path, leaving the tile on
+  "Loading thumbnail..." forever (BUG-2026-08-26T230838, verified live). This initiative
+  hardens the daemon side first — log every failure with a reason, never overwrite a good
+  cache with an empty result, regenerate on demand when a request hits an empty cache with
+  a valid URI — and makes the UI resilient (a failed state with retry instead of an
+  endless spinner).
 
-  Scope for v1 is the sequencer window (user decision): step toggle, transport
-  (play/stop, resync, tap, nudge) and clip-assign buttons are learnable. The engine
-  supports CC bindings end-to-end (capture, store, dispatch with the controller value);
-  concrete CC-driven actions (e.g. monitor volume) come with the monitor-player scope later.
+  On top of that hardening, the daemon generates up to three thumbs per media at distinct
+  jittered times (~15/50/85 % of duration) and the Mediagrid cycles them (750 ms cadence)
+  by switching the image widget's texture reference between three pre-loaded static
+  textures — no per-cycle decode, no texture churn, no repeated OSC requests. Media with
+  fewer extractable frames (images, short clips) cycle what exists or stay static. The
+  frozen OSC contract already supports multiple thumbs per source (the <idx> segment and
+  the "all" request arg), so no contract change is needed.
 
 in_scope:
-  - e09s01: "MIDI mapping engine: binding schema in viseq_config.json (midi section: enabled, input_port, bindings), pure matching (binding_matches), resolve_midi_message -> actions, action vocabulary for the sequencer (seq_toggle, transport_play/resync/tap/nudge, beat_source, track_assign), midi_control_loop worker routing executions through ui_task_queue, enable/disable."
-  - e09s02: "MIDI Learn + single MIDI window: learn mode (click a learnable viseq control -> capture action -> press MIDI button -> create binding), learnable wrappers on sequencer widgets, one 'MIDI' menubar item opening a window with the Enable checkbox, Controller combo + Refresh, Learn button + status, Mappings list with per-binding Delete and Save to config. (User revision: all MIDI features live in the window, no scattered menu items.)"
-  - e09s03: "Novation Launchpad adapter: model detection (MK1/MK2-family/programmer-mode classes), 8x8 grid bindings, sequencer LED mirror — MK1 verified against the official Programmers Reference (grid 16*row+col, palette 16*Green+Red+12)"
+  - e10s01: "viOSC thumbnail generation hardening (implements BUG-2026-08-26T230838): reason-specific error logging for missing file / ffmpeg failure / empty output; failed regeneration never replaces a good cached thumbnail; an on-demand thumb request for a source with an empty cache but a valid URI regenerates and replies instead of silently returning."
+  - e10s02: "viOSC generates up to 3 thumbs per media: count=3 with distinct jittered times (~15/50/85 % of duration), fallback to fewer frames for images/short clips, reply path already sends all indices via the 'all' arg."
+  - e10s03: "viseq multi-thumb pipeline: propagate the reply index through the decoder, store up to 3 textures per source (tex_<name>_0/1/2), thumbnails_data becomes a list, L-1 pruning handles the 3-tag set, grid tile accepts the first texture immediately and the rest without churn."
+  - e10s04: "Mediagrid thumb cycling: wall-clock cycle (750 ms) switching the tile image's texture_tag among stored frames via configure_item, gated to visible grid + sources with >=2 frames, static fallback otherwise, frame_sleep interplay decided by a measured spike (SPIKE-perf pattern); optional failed-state tile label with right-click retry."
 
 out_of_scope:
-  - "Monitor-player / spectrum-analyzer MIDI control — deferred to a later epic (user: 'iniziare dalla finestra sequencer 8x8, poi vedremo')."
-  - "CC-driven continuous actions in v1 — the engine stores and dispatches CC bindings with their value, but no sequencer action consumes the value yet (deferred with the monitor scope)."
-  - "SysEx message bindings in the user mapping engine — v1 covers note + control_change only (Launchpad programmer-mode SysEx is handled internally by the adapter)."
-  - "Any change to the frozen OSC contract with viOSC/Vimix."
-  - "Multi-device parallel control (two controllers at once) — one input port at a time in v1."
-  - "i18n or a MIDI preset manager beyond Save/Delete of the current mapping list."
+  - "Changes to Vimix or to the frozen OSC contract (addresses and payloads)."  # contract frozen by convention; multi-thumb is already supported by <idx> + 'all'
+  - "Cycling in the sequencer clip slots or monitor players (grid only; the shared per-source texture list makes extension trivial later)."  # deferred to keep the slice vertical and cheap
+  - "Persisting thumbnails to disk between sessions."  # cache stays in-memory; disk cache is a later optimization
+  - "Generating more than 3 thumbs per media."  # bounded by the user's goal; raises transport/decode cost for no added value
 
 constraints:
-  - "Runtime: Python 3.13, dearpygui 2.3.1, mido 1.3.3 + python-rtmidi 1.5.8 (already in requirements.txt — NO new dependencies)."
-  - "HIGH-1: the MIDI worker thread never touches dpg directly; action executions and learn-capture UI updates are pushed to the main thread via ui_task_queue."
-  - "Config compatibility: existing viseq_config.json files (layout + theme only) must keep working — the midi section merges in with defaults (load_config deep-merge already provides this)."
-  - "Launchpad protocol knowledge comes from the official Programmers Reference (MK2 note mode: grid notes row*10+col, velocity = LED color; SysEx header F0 00 20 29 02 0C; MK3/X need programmer-mode SysEx) — exact per-model tables are finalized in the spike/implementation and validated on the user's real hardware."
-  - "Headless verification via the stub harness + mido being real (no ports on CI -> worker logs once and idles; all engine logic is pure and unit-tested)."
+  - "Runtime: Python 3.13, dearpygui 2.3.1 (viseq), python-osc (both); NO new dependencies."
+  - "HIGH-1: worker threads never call dpg — the decoder stays a background thread, texture upload and configure_item stay on the main thread."
+  - "Performance: cycling must NOT re-decode, re-upload, or re-request per cycle; Mediagrid gating (e07 P0) and idle render throttle (e07 P1) must keep working."
+  - "Memory: <=3 textures per source (~230 KB each); L-1 stale pruning extended to the 3-tag set."
+  - "The viOSC daemon repo (viosc) gains a minimal pytest test suite for the thumbnail paths."
+  - "Headless verification: pytest in both repos with the existing dpg-stub harness."
 
 success_criteria:
-  - "A user-learned binding {device, channel, type, number, action, params} persisted in the config round-trips load/save and dispatches the right action with the right params (unit tests)."
-  - "A CC binding dispatches with its controller value; a note binding dispatches on note-on edges (unit tests)."
-  - "The learn flow creates a binding from 'click GUI control -> press MIDI button' without manual JSON editing, and the Mappings window shows it with working Delete (stub tests + manual acceptance)."
-  - "With a Launchpad connected, pressing pad (r,c) toggles step (r,c), and the pad LEDs mirror the sequencer (step active/empty/playhead/beat) (manual acceptance on the user's real hardware; protocol tables unit-tested headless)."
-  - "Existing configs without a midi section load unchanged; full regression suite green; preflight green."
+  - "A source whose thumbnail generation fails once still gets a thumbnail on a later request or regen (no permanent 'Loading...')."
+  - "The daemon logs every thumbnail failure with a reason."
+  - "Each media with a valid video yields up to 3 distinct frames; images/short clips yield 1-2."
+  - "The Mediagrid tile cycles the 3 frames at ~750 ms while the grid is visible; it stays static when only one frame exists."
+  - "Cycling cost is measured (spike) and bounded: no measurable frame-rate impact with 20-50 sources."
+  - "All new tests pass in both repos; existing tests still pass; the OSC contract is unchanged."
 
 references:
-  - "Novation Launchpad MK2 Programmers Reference Manual v1.03 (grid notes row*10+col, velocity = color, SysEx header F0 00 20 29 02 0C)"
-  - "Novation Launchpad X user guide (programmer mode for MK3-family)"
-  - "specs/tech-architecture/tech-stack.md"
-  - "specs/epics/e06-settings-window-features/e06s01-window-layout.md (config merge pattern)"
-  - "specs/epics/e08-help-window/ (menubar + window patterns)"
+  - specs/bugs/BUG-2026-08-26T230838-thumbnail-cache-lost-silently.md
+  - specs/release-plan.yaml
+  - specs/archive/spikes/SPIKE-perf.md
+  - specs/epics/e07-performance-optimizations/

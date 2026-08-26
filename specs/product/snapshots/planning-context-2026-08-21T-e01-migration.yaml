@@ -1,0 +1,34 @@
+# specs/planning-context.yaml — written by elaborate-spec; consumed by scope-work and slice-tasks
+feature_name: "viseq DearPyGui 2.x migration (Python 3.13) with audit cleanup folded in"
+problem_statement: >-
+  viseq, the audio-reactive VJ controller for Vimix (via the viOSC daemon), is written against
+  the DearPyGui 1.x API and only runs on Python <= 3.11. The user's machine runs Python 3.13,
+  where neither dearpygui 1.x nor compatible essentia wheels install, so the tool cannot run at
+  all on the intended runtime. The work migrates the single-file app to DearPyGui 2.x on
+  Python 3.13 while preserving every existing feature, folding in the low-severity/style items
+  from AUDIT-viseq.md, and leaving the door open for future feature work afterwards.
+constraints:
+  - "Target runtime: Python 3.13 with dearpygui 2.3.1 (cp313 wheel) and essentia 2.1b6.dev1389 (cp313 wheel; newer dev1438 is cp314-only)."
+  - "Feature-preserving migration: all current behavior must remain identical (8x8 sequencer with 5 step types + async fades, monitor players, thumbnail grid, VU meter + essentia BPM, OSC client to viOSC + listening server, log window)."
+  - "OSC contract with viOSC is frozen: same addresses and payloads (/viosc/replydata, /viosc/replythumb/<name>/<idx>, /viosc/monitor/<id>, /viosc/thumb/<id>, /viosc/regen_thumb/<id>)."
+  - "DearPyGui 2.x is a from-scratch rewrite: the 1.x -> 2.x API delta (viewport flow, themes, tables, textures, callbacks, mutex) must be mapped before the port; a spike is expected."
+  - "viseq.py remains a single file for this work (no module split)."
+  - "Headless verification via the stub-based regression harness, updated to dpg 2.x stubs."
+out_of_scope:
+  - "New features of any kind (step types, OSC endpoints, UI layout, monitor-player features)."
+  - "Module split of viseq.py (deferred to future improvement)."
+  - "Any change to viOSC or Vimix."
+  - "Behavioral/visual changes to existing features."
+key_decisions:
+  - decision: "Sequence is migration-first; the audit LOW/style cleanup folds into the port."
+    rationale: "The 2.x port rewrites the same UI code the cleanup items target; doing cleanup first would be re-work."
+  - decision: "Target Python 3.13."
+    rationale: "User requirement; dearpygui 2.3.1 and essentia 2.1b6.dev1389 both ship cp313 wheels, so 3.13 is installable."
+  - decision: "Feature-preserving; no new functionality in this pass."
+    rationale: "User: 'keep current functionality, we will improve the software in the future.'"
+  - decision: "Keep viseq.py as one file; defer the module split."
+    rationale: "User: split postponed; keeps the migration diff smaller and easier to verify as behavior-identical."
+  - decision: "Fold in audit LOW items L-1 (stale thumbnail/state pruning), L-2 (audio ring buffer), L-4 (clean exit), L-5 (main-loop sleep), L-6 (named constants) plus type hints and English comments."
+    rationale: "Behavior-preserving internal hygiene; agreed during elaboration."
+  - decision: "Verification = ported regression harness (tests/test_fixes.py, dpg 2.x stubs) + manual smoke test by the user on the real rig, with the user reporting problems back."
+    rationale: "User chose to test manually on the real machine; GUI rendering cannot be verified headless."

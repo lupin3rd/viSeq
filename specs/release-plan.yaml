@@ -125,3 +125,22 @@ epics:
       - id: e09s03
         title: "Novation Launchpad adapter: model detection, 8x8 grid bindings, sequencer LED mirror"
         bcps: 4
+
+  - id: e10
+    slug: thumbnail-pipeline-v2
+    title: "Thumbnail pipeline v2 — never lose a thumbnail silently (BUG-2026-08-26T230838), 3 frames per media, Mediagrid cycling"
+    wsjf: 55
+    baseline_bcps: 11
+    stories:
+      - id: e10s01
+        title: "viOSC generation hardening — log failures, keep good cache, regenerate on demand (implements BUG-2026-08-26T230838)"
+        bcps: 3
+      - id: e10s02
+        title: "viOSC generates up to 3 thumbs per media at distinct jittered times"
+        bcps: 2
+      - id: e10s03
+        title: "viseq multi-thumb pipeline — idx propagation, 3 textures per source, L-1 pruning"
+        bcps: 3
+      - id: e10s04
+        title: "Mediagrid thumb cycling (750 ms, configure_item, gated) + failed-state retry UX + measured spike"
+        bcps: 3

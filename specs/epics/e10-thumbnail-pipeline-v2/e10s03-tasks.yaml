@@ -1,0 +1,24 @@
+# specs/epics/e10-thumbnail-pipeline-v2/e10s03-tasks.yaml
+story_id: e10s03
+title: "viseq multi-thumb pipeline — idx propagation, 3 textures per source, L-1 pruning"
+status: planned
+bcps: 3
+tasks:
+  - id: e10s03t1
+    description: "RED: decoder test asserting the reply index (idx from /viosc/replythumb/<name>/<idx>) is propagated into the texture tag, so tex_<name>_0/1/2 are distinct and thumbnails_data maps a source to a list of texture tags"
+    verify: ".venv/bin/python -m pytest tests/ -q -k thumb"
+  - id: e10s03t2
+    description: "GREEN: thread the idx through the decoder worker and the main-loop texture processing; build tex_<name>_<idx>; thumbnails_data[target_id] becomes a list (append per idx)"
+    verify: ".venv/bin/python -m pytest tests/ -q -k thumb"
+  - id: e10s03t3
+    description: "RED: grid tile test asserting the image is created as soon as the FIRST texture of a source arrives (index 0) and subsequent textures (idx 1/2) are added to the list without recreating or deleting the image or container"
+    verify: ".venv/bin/python -m pytest tests/ -q -k thumb"
+  - id: e10s03t4
+    description: "GREEN: main-loop texture path creates the tile image on first texture; later indices only append to the per-source list (no dpg churn); 'Loading...' text removed once the first texture lands"
+    verify: ".venv/bin/python -m pytest tests/ -q -k thumb"
+  - id: e10s03t5
+    description: "RED: L-1 pruning test asserting a removed source drops all 3 texture tags (tex_<name>_0/1/2) and the list entry"
+    verify: ".venv/bin/python -m pytest tests/ -q -k l1"
+  - id: e10s03t6
+    description: "GREEN: extend the L-1 prune to delete the whole per-source texture set; keep the existing signature-gated rebuild behavior intact (e07 P0 regression must stay green)"
+    verify: ".venv/bin/python -m pytest tests/ -q"

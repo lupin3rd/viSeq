@@ -1,0 +1,25 @@
+# specs/epics/e10-thumbnail-pipeline-v2/epic.yaml — epic capsule manifest
+epic_id: e10
+slug: thumbnail-pipeline-v2
+title: "Thumbnail pipeline v2 — never lose a thumbnail silently (BUG-2026-08-26T230838), 3 frames per media, Mediagrid cycling"
+wsjf: 55
+baseline_bcps: 11
+delta:
+  - MODIFIED: "viOSC thumbnail generation: silent one-shot failure (empty cache, no recovery) -> logged failures, cache never wiped by a failed regen, on-demand regeneration for empty cache + valid URI"
+  - MODIFIED: "viOSC generates 1 thumb per media -> up to 3 distinct frames at jittered times (~15/50/85 % of duration), fewer for images/short clips"
+  - MODIFIED: "viseq stores 1 texture per source -> up to 3 (thumbnails_data becomes a list, tex_<name>_0/1/2), L-1 pruning handles the 3-tag set"
+  - ADDED: "Mediagrid tile cycles stored frames (750 ms, configure_item texture_tag switch) while the grid is visible and >=2 frames exist; static fallback otherwise"
+  - ADDED: "viseq failed-thumbnail state (label + right-click retry) after N unanswered requests instead of 'Loading thumbnail...' forever"
+stories:
+  - id: e10s01
+    title: "viOSC generation hardening — log failures, keep good cache, regenerate on demand (implements BUG-2026-08-26T230838)"
+    bcps: 3
+  - id: e10s02
+    title: "viOSC generates up to 3 thumbs per media at distinct jittered times"
+    bcps: 2
+  - id: e10s03
+    title: "viseq multi-thumb pipeline — idx propagation, 3 textures per source, L-1 pruning"
+    bcps: 3
+  - id: e10s04
+    title: "Mediagrid thumb cycling (750 ms, configure_item, gated) + failed-state retry UX + measured spike"
+    bcps: 3
