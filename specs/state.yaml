@@ -5,9 +5,9 @@
 workflow_mode: solo-git
 
 handoff:
-  next_skill: kickoff-branch
+  next_skill: develop-tdd
   active_epic_id: e10
-  active_story_id: e10s01
+  active_story_id: e10s02
 
 active_flow: build
 bug_cycle:

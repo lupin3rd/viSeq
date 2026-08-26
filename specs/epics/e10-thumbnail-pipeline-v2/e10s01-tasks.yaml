@@ -1,14 +1,14 @@
 # specs/epics/e10-thumbnail-pipeline-v2/e10s01-tasks.yaml
 story_id: e10s01
 title: "viOSC generation hardening — log failures, keep good cache, regenerate on demand (implements BUG-2026-08-26T230838)"
-status: failing
+status: passing
 bcps: 3
 tasks:
   - id: 1
     description: "viosc repo: create .venv (python3 -m venv .venv), install -r requirements.txt + pytest; add tests/test_thumbnails.py importing viosc (python-osc only; subprocess/os.path monkeypatched)"
     verify: "cd ../viosc && test -f .venv/bin/python && .venv/bin/python -m pytest --version"
     risk: P3
-    status: failing
+    status: passing
     allure:
       severity: minor
       categories: ["unit", "viosc"]
@@ -16,7 +16,7 @@ tasks:
     description: "RED: tests asserting the generation worker logs a reason-specific error for (a) missing file, (b) ffmpeg non-zero exit, (c) empty output"
     verify: "cd ../viosc && .venv/bin/python -m pytest tests/ -q -k thumb"
     risk: P1
-    status: failing
+    status: passing
     allure:
       severity: high
       categories: ["unit", "viosc", "Bugfix"]
@@ -24,7 +24,7 @@ tasks:
     description: "GREEN: add the three reason-specific error branches to the generation worker's failure paths; keep the success print"
     verify: "cd ../viosc && .venv/bin/python -m pytest tests/ -q -k thumb"
     risk: P1
-    status: failing
+    status: passing
     allure:
       severity: high
       categories: ["unit", "viosc", "Bugfix"]
@@ -32,7 +32,7 @@ tasks:
     description: "RED: test asserting a FAILED regeneration leaves the previously cached thumbnail untouched (cache replaced only when extraction yields >=1 frame)"
     verify: "cd ../viosc && .venv/bin/python -m pytest tests/ -q -k thumb"
     risk: P1
-    status: failing
+    status: passing
     allure:
       severity: high
       categories: ["unit", "viosc", "Bugfix"]
@@ -40,7 +40,7 @@ tasks:
     description: "GREEN: only assign the new result to the thumbnail cache when non-empty; keep the old cache on failure"
     verify: "cd ../viosc && .venv/bin/python -m pytest tests/ -q -k thumb"
     risk: P1
-    status: failing
+    status: passing
     allure:
       severity: high
       categories: ["unit", "viosc", "Bugfix"]
@@ -48,7 +48,7 @@ tasks:
     description: "RED: test asserting an on-demand thumb request with empty cache + valid URI regenerates (bounded by the concurrency semaphore) and replies with the fresh frame"
     verify: "cd ../viosc && .venv/bin/python -m pytest tests/ -q -k thumb"
     risk: P1
-    status: failing
+    status: passing
     allure:
       severity: high
       categories: ["unit", "viosc", "Bugfix"]
@@ -56,7 +56,7 @@ tasks:
     description: "GREEN: reply path regenerates then sends when cache empty + URI valid; silent no-op only for unloadable sources (no URI / file missing after retry)"
     verify: "cd ../viosc && .venv/bin/python -m pytest tests/ -q && cd ../viseq && .venv/bin/python -m pytest tests/ -q"
     risk: P1
-    status: failing
+    status: passing
     allure:
       severity: high
       categories: ["integration", "viosc", "viseq", "Bugfix"]
