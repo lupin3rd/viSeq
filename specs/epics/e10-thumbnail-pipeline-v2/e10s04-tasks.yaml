@@ -1,14 +1,14 @@
 # specs/epics/e10-thumbnail-pipeline-v2/e10s04-tasks.yaml
 story_id: e10s04
 title: "Mediagrid thumb cycling (750 ms, configure_item, gated) + failed-state retry UX + measured spike"
-status: failing
+status: passing
 bcps: 3
 tasks:
   - id: 1
     description: "Spike (SPIKE-perf pattern): measure cycling cost — 20-50 sources x 3 textures at 750 ms, frame-time delta + smoothness at the 30 fps idle rate; also pick the cheapest e10s02 extraction strategy (3 calls vs 1 multi-frame); write specs/archive/spikes/SPIKE-thumb-cycle.md"
     verify: "test -f specs/archive/spikes/SPIKE-thumb-cycle.md"
     risk: P1
-    status: failing
+    status: passing
     allure:
       severity: high
       categories: ["spike", "performance"]
@@ -16,7 +16,7 @@ tasks:
     description: "RED: pure cycle-state helper tests — per-source frame index advances on the 750 ms wall-clock, wraps across the stored list, only advances while the Mediagrid is visible"
     verify: ".venv/bin/python -m pytest tests/ -q -k cycle"
     risk: P1
-    status: failing
+    status: passing
     allure:
       severity: high
       categories: ["unit", "viseq"]
@@ -24,7 +24,7 @@ tasks:
     description: "GREEN: cycle helper + main-loop scheduling — for visible sources with >=2 textures, configure_item(img_<name>, texture_tag=tex_<name>_<i>) on cadence; sources with 0-1 textures stay static"
     verify: ".venv/bin/python -m pytest tests/ -q -k cycle"
     risk: P1
-    status: failing
+    status: passing
     allure:
       severity: high
       categories: ["unit", "viseq"]
@@ -32,7 +32,7 @@ tasks:
     description: "RED: failed-state tests — after N consecutive unanswered thumb requests (N=5 cycles ≈ 15 s) the tile shows a failed state with right-click retry; a later successful reply clears it"
     verify: ".venv/bin/python -m pytest tests/ -q -k failed"
     risk: P1
-    status: failing
+    status: passing
     allure:
       severity: high
       categories: ["unit", "viseq", "Bugfix"]
@@ -40,7 +40,7 @@ tasks:
     description: "GREEN: unanswered-count bookkeeping in the request loop; tile state flip at threshold; reset on reply; retry re-requests + sends /viosc/regen_thumb/<id> once (contract unchanged)"
     verify: ".venv/bin/python -m pytest tests/ -q && .venv/bin/ruff check . && .venv/bin/mypy"
     risk: P1
-    status: failing
+    status: passing
     allure:
       severity: high
       categories: ["unit", "viseq", "Bugfix"]
@@ -48,7 +48,7 @@ tasks:
     description: "frame_sleep interplay: apply the spike decision — if 30 fps renders the cycle smoothly, no change (+ regression test asserting grid cycling does NOT force full rate); otherwise grid cycling joins the animated conditions driving the full rate (+ regression test)"
     verify: ".venv/bin/python -m pytest tests/ -q -k frame_sleep"
     risk: P2
-    status: failing
+    status: passing
     allure:
       severity: normal
       categories: ["unit", "viseq", "performance"]
