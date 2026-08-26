@@ -2,7 +2,7 @@
 id: e09
 slug: midi-control
 title: "MIDI control: configurable mapping engine (any device), MIDI Learn + menu, Novation Launchpad adapter with sequencer LED mirror"
-status: in_progress
+status: passing
 delta: ENHANCED   # additive control layer on mido (already a dependency); no behavior/contract change for OSC, sequencer internals or config keys
 context: >-
   viseq already ships mido 1.3.3 + python-rtmidi for MIDI clock sync. The user wants full
