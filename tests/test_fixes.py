@@ -2738,3 +2738,84 @@ def test_open_github_opens_browser(monkeypatch):
     monkeypatch.setattr("webbrowser.open", FakeBrowser().open)
     viseq.open_github()
     assert opened == ["https://github.com/lupin3rd"], "the callback must open the profile URL"
+
+
+# ---------- e10s03: multi-thumb pipeline (idx propagation, per-source texture list) ----------
+def decode_one_frame_into(idx: str) -> tuple:
+    """Run the decoder worker once on a tiny frame and return its texture-queue tuple."""
+    small = Image.new("RGB", (320, 180), "red")
+    buf = io.BytesIO()
+    small.save(buf, "PNG")
+    viseq.texture_queue = queue.Queue()  # fresh queue for the assertion
+    viseq.blob_queue.put(("clipA", idx, buf.getvalue()))
+    t = threading.Thread(target=viseq.thumbnail_decoder_worker, daemon=True)
+    t.start()
+    for _ in range(200):  # up to 2s for decode
+        if not viseq.texture_queue.empty():
+            break
+        time.sleep(0.01)
+    return viseq.texture_queue.get_nowait()
+
+
+def test_e10s03_decoder_propagates_reply_index():
+    item = decode_one_frame_into("2")
+    name, idx, _img_data, w, h = item
+    assert name == "clipA", f"decoder must keep the source name, got {name!r}"
+    assert idx == "2", f"decoder must keep the reply index, got {idx!r}"
+    assert w == 320 and h == 180
+
+
+def fake_thumb_exists(item):
+    """Tiles/containers exist; images/loading/textures do not (fresh state)."""
+    return item.startswith("thumb_container_")
+
+
+def test_e10s03_textures_build_per_index_list(monkeypatch):
+    monkeypatch.setattr(dpg, "does_item_exist", fake_thumb_exists)
+    viseq.thumbnails_data.clear()
+    fake_img = np.zeros((180, 320, 4), dtype=np.float32)
+    dpg.calls.clear()
+
+    viseq.apply_thumbnail_texture("clipA", "0", fake_img, 320, 180)
+    viseq.apply_thumbnail_texture("clipA", "1", fake_img, 320, 180)
+
+    assert viseq.thumbnails_data["clipA"] == ["tex_clipA_0", "tex_clipA_1"], (
+        "each decoded frame must append its own texture tag"
+    )
+    add_img = [c for c in dpg.calls if c[0] == "add_image"]
+    assert len(add_img) == 1, "only the first texture may create the tile image"
+    assert add_img[0][2].get("texture_tag") == "tex_clipA_0"
+    assert add_img[0][2].get("tag") == "img_clipA"
+    del viseq.thumbnails_data["clipA"]
+
+
+def test_e10s03_track_slot_uses_first_texture():
+    viseq.tracks_data[0]["target_id"] = "clipA"
+    viseq.thumbnails_data["clipA"] = ["tex_clipA_0", "tex_clipA_1", "tex_clipA_2"]
+    dpg.calls.clear()
+    viseq.update_track_slot_ui(0)
+    slot_imgs = [c for c in dpg.calls if c[0] == "add_image_button"]
+    assert slot_imgs, "the slot must render the assigned clip thumbnail"
+    assert slot_imgs[0][2].get("texture_tag") == "tex_clipA_0", (
+        "the slot must resolve the first texture of the per-source list"
+    )
+    viseq.tracks_data[0]["target_id"] = None
+    del viseq.thumbnails_data["clipA"]
+
+
+def test_e10s03_l1_prune_drops_whole_texture_set():
+    viseq.thumbnails_data.clear()
+    viseq.request_timestamps.clear()
+    viseq.thumbnails_data["clipA"] = ["tex_clipA_0", "tex_clipA_1", "tex_clipA_2"]
+    viseq.thumbnails_data["ghost"] = ["tex_ghost_0"]
+    viseq.request_timestamps["thumb_clipA"] = 1.0
+    viseq.request_timestamps["thumb_ghost"] = 2.0
+    dpg.calls.clear()
+    viseq.update_vimix_sources_ui(
+        json.dumps({"current_source": 1, "sources": {"1": {"name": "clipA", "index": 1}}})
+    )
+    assert "ghost" not in viseq.thumbnails_data, "stale source must be pruned"
+    assert "clipA" in viseq.thumbnails_data, "live source must survive the prune"
+    deleted = [c[1][0] for c in dpg.calls if c[0] == "delete_item"]
+    assert "tex_ghost_0" in deleted, "all texture tags of the pruned source must be deleted"
+    assert viseq.thumbnails_data["clipA"] == ["tex_clipA_0", "tex_clipA_1", "tex_clipA_2"]
