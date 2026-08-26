@@ -2200,6 +2200,8 @@ def midi_learn_complete(binding: dict[str, Any]) -> None:
     midi_bindings.append(binding)
     midi_learn_pending = None
     refresh_midi_mappings_ui()
+    if dpg.does_item_exist("midi_learn_btn"):
+        dpg.set_item_label("midi_learn_btn", "Learn mapping...")
     if dpg.does_item_exist("midi_learn_status"):
         dpg.set_value(
             "midi_learn_status",
@@ -2228,20 +2230,37 @@ def learnable(callback: Any, action_builder: Callable[[Any], tuple[str, dict[str
 
 
 def toggle_midi_learn(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Toggle MIDI Learn mode from the menu; updates the status hint (e09s02)."""
+    """Toggle MIDI Learn mode from the MIDI window; the button doubles as Cancel (e09s02)."""
     global midi_learn_mode, midi_learn_pending
-    midi_learn_mode = not midi_learn_mode
-    midi_learn_pending = None
-    if dpg.does_item_exist("midi_learn_status"):
-        if midi_learn_mode:
-            dpg.set_value("midi_learn_status", "MIDI Learn: click a viseq control")
-        else:
+    if midi_learn_mode:
+        midi_learn_mode = False
+        midi_learn_pending = None
+        if dpg.does_item_exist("midi_learn_btn"):
+            dpg.set_item_label("midi_learn_btn", "Learn mapping...")
+        if dpg.does_item_exist("midi_learn_status"):
             dpg.set_value("midi_learn_status", "MIDI Learn off")
+        return
+    if not midi_enabled:
+        if dpg.does_item_exist("midi_learn_status"):
+            dpg.set_value("midi_learn_status", "Enable MIDI first (tick Enable MIDI above)")
+        return
+    midi_learn_mode = True
+    midi_learn_pending = None
+    if dpg.does_item_exist("midi_learn_btn"):
+        dpg.set_item_label("midi_learn_btn", "Cancel learn")
+    if dpg.does_item_exist("midi_learn_status"):
+        dpg.set_value("midi_learn_status", "MIDI Learn: click a viseq control")
 
 
 def on_midi_enable(sender: Any, app_data: Any, user_data: Any) -> None:
-    """MIDI menu Enable checkbox: persist and apply the engine toggle (e09s02)."""
+    """MIDI window Enable checkbox: persist and apply the engine toggle (e09s02)."""
+    global midi_learn_mode, midi_learn_pending
     set_midi_enabled(bool(app_data))
+    if not app_data and midi_learn_mode:  # disabling cancels an in-flight learn
+        midi_learn_mode = False
+        midi_learn_pending = None
+        if dpg.does_item_exist("midi_learn_btn"):
+            dpg.set_item_label("midi_learn_btn", "Learn mapping...")
 
 
 def on_midi_input_port(sender: Any, app_data: Any, user_data: Any) -> None:
@@ -2289,12 +2308,26 @@ def save_midi_bindings(sender: Any = None, app_data: Any = None, user_data: Any 
     save_config(cfg)
 
 
-def show_midi_mappings_window(
-    sender: Any = None, app_data: Any = None, user_data: Any = None
-) -> None:
-    """Open the MIDI Mappings window from the menu (e09s02)."""
+def refresh_midi_devices(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Re-scan MIDI inputs and update the Controller combo (keeps the selection)."""
+    global _midi_input_devices
+    try:
+        import mido
+
+        _midi_input_devices = list(mido.get_input_names())
+    except Exception:
+        _midi_input_devices = []
+    if dpg.does_item_exist("midi_input_combo"):
+        dpg.configure_item("midi_input_combo", items=_midi_input_devices)
+        if midi_input_port in _midi_input_devices:
+            dpg.set_value("midi_input_combo", midi_input_port)
+
+
+def show_midi_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Open the MIDI window from the menubar, with a fresh device list and mappings."""
+    refresh_midi_devices()
     refresh_midi_mappings_ui()
-    dpg.show_item("midi_mappings_window")
+    dpg.show_item("midi_window")
 
 
 def midi_init_from_config(cfg: dict[str, Any]) -> None:
@@ -2341,6 +2374,8 @@ def midi_control_loop() -> None:
                 launchpad_connect(port_name, mido)  # e09s03: LED output + grid bindings
                 append_log("MIDI", f"Control listening on {port_name}")
                 while midi_enabled:
+                    if midi_input_port != port_name:
+                        break  # the user switched the controller: reconnect on next loop
                     for msg in port.iter_pending():
                         handle_midi_message(msg, port_name)
                     time.sleep(0.002)
@@ -3458,7 +3493,9 @@ with dpg.window(
     themed_text("License: GPL-3.0", slot="text")
     themed_text("Created by: Luca Franceschini aka Lupin3rd", slot="text")
 
-# WINDOW 7: MIDI MAPPINGS (hidden; opened from the menubar "MIDI" > "Mappings", e09s02)
+# WINDOW 7: MIDI (hidden; opened from the menubar "MIDI"). ALL MIDI features live here:
+# enable toggle, controller selection, MIDI Learn and the mappings list (e09s02, user
+# revision — no scattered menu items).
 try:
     import mido as _mido
 
@@ -3466,27 +3503,44 @@ try:
 except Exception:
     _midi_input_devices = []
 
-with dpg.window(
-    label="MIDI Mappings",
-    width=580,
-    height=300,
-    pos=(560, 380),
-    tag="midi_mappings_window",
-    show=False,
-):
-    themed_text("Input device", slot="text")
-    dpg.add_combo(
-        items=_midi_input_devices,
-        default_value=midi_input_port or (_midi_input_devices[0] if _midi_input_devices else ""),
-        tag="midi_input_combo",
-        width=360,
-        callback=on_midi_input_port,
+with dpg.window(label="MIDI", width=460, height=470, pos=(560, 320), tag="midi_window", show=False):
+    dpg.add_checkbox(
+        label="Enable MIDI",
+        tag="midi_enable_cb",
+        default_value=midi_enabled,
+        callback=on_midi_enable,
     )
-    dpg.add_spacer(height=6)
     dpg.add_separator()
     dpg.add_spacer(height=4)
-    with dpg.group(tag="midi_mappings_group"):
+    themed_text("Controller", slot="text")
+    with dpg.group(horizontal=True):
+        dpg.add_combo(
+            items=_midi_input_devices,
+            default_value=(
+                midi_input_port or (_midi_input_devices[0] if _midi_input_devices else "")
+            ),
+            tag="midi_input_combo",
+            width=320,
+            callback=on_midi_input_port,
+        )
+        dpg.add_button(label="Refresh", callback=refresh_midi_devices, width=80)
+    dpg.add_separator()
+    dpg.add_spacer(height=4)
+    themed_text("MIDI Learn", slot="text")
+    dpg.add_button(
+        label="Learn mapping...", tag="midi_learn_btn", callback=toggle_midi_learn, width=150
+    )
+    dpg.add_text("", tag="midi_learn_status")
+    dpg.add_separator()
+    dpg.add_spacer(height=4)
+    themed_text("Mappings", slot="text")
+    with (
+        dpg.child_window(height=180, tag="midi_mappings_scroll"),
+        dpg.group(tag="midi_mappings_group"),
+    ):
         pass
+    dpg.add_spacer(height=4)
+    dpg.add_button(label="Save", callback=save_midi_bindings, width=80)
 
 # NEW THREAD FOR HIGH-FREQUENCY FADES
 threading.Thread(target=fade_tick_loop, daemon=True).start()
@@ -3507,19 +3561,8 @@ with dpg.viewport_menu_bar():
     with dpg.menu(label="Show"):
         dpg.add_menu_item(label="Logs", callback=show_logs_window)
     dpg.add_menu_item(label="Settings", callback=show_settings_window)
+    dpg.add_menu_item(label="MIDI", callback=show_midi_window)
     dpg.add_menu_item(label="Help", callback=show_help_window)
-    with dpg.menu(label="MIDI"):
-        dpg.add_checkbox(
-            label="Enable MIDI",
-            tag="midi_enable_cb",
-            default_value=midi_enabled,
-            callback=on_midi_enable,
-        )
-        dpg.add_menu_item(label="Learn mapping...", callback=toggle_midi_learn)
-        dpg.add_menu_item(label="Mappings...", callback=show_midi_mappings_window)
-        dpg.add_menu_item(label="Save", callback=save_midi_bindings)
-        dpg.add_separator()
-        dpg.add_text("", tag="midi_learn_status")
 dpg.setup_dearpygui()
 dpg.show_viewport()
 autostart_osc()  # boot: auto-connect OSC client + start listening server (no manual clicks)

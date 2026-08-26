@@ -257,6 +257,21 @@ import_time_ui_labels = [
 import_time_midi_enable_cb = [
     kw for n, a, kw in dpg.calls if n == "add_checkbox" and kw.get("tag") == "midi_enable_cb"
 ]
+import_time_midi_learn_btn = [
+    kw for n, a, kw in dpg.calls if n == "add_button" and kw.get("tag") == "midi_learn_btn"
+]
+import_time_midi_save_btn = [
+    kw for n, a, kw in dpg.calls if n == "add_button" and kw.get("label") == "Save"
+]
+import_time_midi_refresh_btn = [
+    kw for n, a, kw in dpg.calls if n == "add_button" and kw.get("label") == "Refresh"
+]
+import_time_midi_group = [
+    kw for n, a, kw in dpg.calls if n == "group" and kw.get("tag") == "midi_mappings_group"
+]
+import_time_midi_status = [
+    kw for n, a, kw in dpg.calls if n == "add_text" and kw.get("tag") == "midi_learn_status"
+]
 import_time_seq_cb_0_0 = [
     kw for n, a, kw in dpg.calls if n == "add_checkbox" and kw.get("tag") == "seq_cb_0_0"
 ]
@@ -2287,21 +2302,38 @@ def test_midi_first_input_discovery(monkeypatch):
 
 
 # ---------- e09s02: MIDI Learn + menu + Mappings window ----------
-def test_midi_menu_structure():
-    assert any(kw.get("label") == "MIDI" for kw in import_time_menus), "MIDI menu must exist"
+def test_midi_menubar_item_opens_window():
     items = {kw.get("label"): kw.get("callback") for kw in import_time_menu_items}
-    assert items.get("Learn mapping...") == viseq.toggle_midi_learn
-    assert items.get("Mappings...") == viseq.show_midi_mappings_window
-    assert items.get("Save") == viseq.save_midi_bindings
-    assert import_time_midi_enable_cb, "Enable MIDI checkbox must exist"
+    assert items.get("MIDI") == viseq.show_midi_window, (
+        "a single MIDI menubar item opens the window"
+    )
+    assert "Learn mapping..." not in items, "no scattered learn item in the menubar"
+    assert "Mappings..." not in items, "no scattered mappings item in the menubar"
+    assert "Save" not in items, "no scattered save item in the menubar"
+    assert not any(kw.get("label") == "MIDI" for kw in import_time_menus), (
+        "the MIDI features are not a menu anymore"
+    )
+
+
+def test_midi_window_hidden_with_all_controls():
+    w = import_time_windows.get("midi_window")
+    assert w, "the MIDI window must exist"
+    assert w.get("show") is False, "the MIDI window must be hidden by default"
+    assert import_time_midi_enable_cb, "Enable MIDI checkbox must live in the window"
     assert import_time_midi_enable_cb[0].get("callback") == viseq.on_midi_enable
     assert import_time_midi_enable_cb[0].get("default_value") is False, "MIDI starts disabled"
+    assert import_time_midi_learn_btn, "Learn mapping... button must live in the window"
+    assert import_time_midi_learn_btn[0].get("callback") == viseq.toggle_midi_learn
+    assert import_time_midi_save_btn, "Save button must live in the window"
+    assert import_time_midi_refresh_btn, "Refresh button must live in the window"
+    assert import_time_midi_group, "the mappings list group must live in the window"
+    assert import_time_midi_status, "the learn status text must live in the window"
 
 
-def test_midi_mappings_window_hidden():
-    w = import_time_windows.get("midi_mappings_window")
-    assert w, "the MIDI Mappings window must exist"
-    assert w.get("show") is False, "the Mappings window must be hidden by default"
+def test_midi_window_hidden():
+    w = import_time_windows.get("midi_window")
+    assert w, "the MIDI window must exist"
+    assert w.get("show") is False, "the MIDI window must be hidden by default"
 
 
 def test_learnable_delegates_when_off_and_captures_when_on():
@@ -2339,16 +2371,24 @@ def test_learnable_wired_on_step_cell_and_transport():
         viseq.midi_learn_mode, viseq.midi_learn_pending = saved_mode, saved_pending
 
 
-def test_toggle_midi_learn_cycles_mode():
-    saved = viseq.midi_learn_mode
+def test_toggle_midi_learn_requires_enabled_and_cycles():
+    saved_mode, saved_enabled = viseq.midi_learn_mode, viseq.midi_enabled
     viseq.midi_learn_mode = False
-    viseq.midi_learn_pending = ("seq_toggle", {})
+    viseq.midi_enabled = False
+    dpg.calls.clear()
+    dpg.values.pop("midi_learn_status", None)
+    viseq.toggle_midi_learn()
+    assert viseq.midi_learn_mode is False, "learn must be refused while MIDI is disabled"
+    assert "Enable MIDI first" in dpg.values.get("midi_learn_status", ""), (
+        "the status must explain why learn was refused"
+    )
+    viseq.midi_enabled = True
     viseq.toggle_midi_learn()
     assert viseq.midi_learn_mode is True
     assert viseq.midi_learn_pending is None, "entering learn mode clears any stale pending"
     viseq.toggle_midi_learn()
-    assert viseq.midi_learn_mode is False
-    viseq.midi_learn_mode = saved
+    assert viseq.midi_learn_mode is False, "the button doubles as Cancel"
+    viseq.midi_learn_mode, viseq.midi_enabled = saved_mode, saved_enabled
 
 
 def test_midi_learn_end_to_end():

@@ -38,6 +38,21 @@ Menubar "MIDI" menu: "Enable MIDI" checkbox (persisted in the config `midi.enabl
 binding (device, type, number, action, params) with a per-row "Delete" button, and "Save"
 persists the list via the atomic `save_config`. All labels are English.
 
+#### ADDED: All MIDI features live in one MIDI window (user revision)
+The menubar has a single "MIDI" item that opens one `midi_window` (hidden by default, like
+Settings) containing everything: the "Enable MIDI" checkbox, the Controller combo with a
+Refresh button (live device re-scan), the MIDI Learn button (doubles as Cancel; the status
+line explains each step and refuses to learn while MIDI is disabled — "Enable MIDI
+first"), and the Mappings list with per-row Delete and a Save button. No scattered
+menubar items remain. Switching the Controller combo while listening reconnects the
+worker to the new port live.
+
+#### MODIFIED: MIDI menu vs window
+**Before:** a menubar "MIDI" menu with Enable/Learn/Mappings/Save items plus a separate
+Mappings window; learn had no guard and no visible feedback outside the closed menu.
+**After:** a single menubar "MIDI" item opens the consolidated window; learn is guarded by
+"Enable MIDI first" and the status line is always visible in the window.
+
 ## Steps
 
 1. Learn plumbing (flag, pending slot, worker capture, binding creation, cancel)
