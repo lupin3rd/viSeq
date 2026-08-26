@@ -5,7 +5,7 @@
 workflow_mode: solo-git
 
 handoff:
-  next_skill: develop-tdd
+  next_skill: verify-work
   active_epic_id: e08
   active_story_id: e08s01
 

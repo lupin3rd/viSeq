@@ -2,7 +2,7 @@
 id: e08
 slug: help-window
 title: "Help menu entry + centered About window (ASCII logo, GPL-3.0, author)"
-status: in_progress
+status: passing
 delta: ENHANCED   # purely additive: one menubar entry + one hidden dialog window; no existing behavior changes
 context: >-
   viseq has no About/help surface. The user wants a "Help" entry in the top menubar that
