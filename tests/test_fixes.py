@@ -253,6 +253,14 @@ import_time_ui_labels = [
     and isinstance(kw.get("label"), str)
 ]
 
+# e09s02: MIDI learn/menu wiring, captured before any calls-list clears
+import_time_midi_enable_cb = [
+    kw for n, a, kw in dpg.calls if n == "add_checkbox" and kw.get("tag") == "midi_enable_cb"
+]
+import_time_seq_cb_0_0 = [
+    kw for n, a, kw in dpg.calls if n == "add_checkbox" and kw.get("tag") == "seq_cb_0_0"
+]
+
 # e04: audio-window spectrum structure, captured before any calls-list clears
 spec_drawlist_tag = any(
     n == "drawlist" and kw.get("tag") == "spec_drawlist" for n, a, kw in dpg.calls
@@ -2276,3 +2284,159 @@ def test_midi_first_input_discovery(monkeypatch):
 
     monkeypatch.setattr(mido, "get_input_names", lambda: ["Launchpad X MIDI 1"])
     assert mido.get_input_names() == ["Launchpad X MIDI 1"], "discovery must list devices"
+
+
+# ---------- e09s02: MIDI Learn + menu + Mappings window ----------
+def test_midi_menu_structure():
+    assert any(kw.get("label") == "MIDI" for kw in import_time_menus), "MIDI menu must exist"
+    items = {kw.get("label"): kw.get("callback") for kw in import_time_menu_items}
+    assert items.get("Learn mapping...") == viseq.toggle_midi_learn
+    assert items.get("Mappings...") == viseq.show_midi_mappings_window
+    assert items.get("Save") == viseq.save_midi_bindings
+    assert import_time_midi_enable_cb, "Enable MIDI checkbox must exist"
+    assert import_time_midi_enable_cb[0].get("callback") == viseq.on_midi_enable
+    assert import_time_midi_enable_cb[0].get("default_value") is False, "MIDI starts disabled"
+
+
+def test_midi_mappings_window_hidden():
+    w = import_time_windows.get("midi_mappings_window")
+    assert w, "the MIDI Mappings window must exist"
+    assert w.get("show") is False, "the Mappings window must be hidden by default"
+
+
+def test_learnable_delegates_when_off_and_captures_when_on():
+    executed = []
+
+    def fake_cb(sender, app_data, user_data):
+        executed.append(user_data)
+
+    wrapped = viseq.learnable(fake_cb, lambda ud: ("seq_toggle", {"row": ud[0], "col": ud[1]}))
+    saved_mode, saved_pending = viseq.midi_learn_mode, viseq.midi_learn_pending
+    try:
+        viseq.midi_learn_mode = False
+        wrapped(None, True, (1, 2))
+        assert executed == [(1, 2)], "learn off must delegate to the real callback"
+
+        viseq.midi_learn_mode = True
+        wrapped(None, True, (3, 4))
+        assert viseq.midi_learn_pending == ("seq_toggle", {"row": 3, "col": 4}), (
+            "learn on must capture the action instead of executing"
+        )
+        assert executed == [(1, 2)], "the real callback must not run in learn mode"
+    finally:
+        viseq.midi_learn_mode, viseq.midi_learn_pending = saved_mode, saved_pending
+
+
+def test_learnable_wired_on_step_cell_and_transport():
+    saved_mode, saved_pending = viseq.midi_learn_mode, viseq.midi_learn_pending
+    try:
+        assert import_time_seq_cb_0_0, "step cell checkbox must be captured at import"
+        cb = import_time_seq_cb_0_0[0].get("callback")
+        viseq.midi_learn_mode = True
+        cb(None, True, (0, 0))
+        assert viseq.midi_learn_pending == ("seq_toggle", {"row": 0, "col": 0})
+    finally:
+        viseq.midi_learn_mode, viseq.midi_learn_pending = saved_mode, saved_pending
+
+
+def test_toggle_midi_learn_cycles_mode():
+    saved = viseq.midi_learn_mode
+    viseq.midi_learn_mode = False
+    viseq.midi_learn_pending = ("seq_toggle", {})
+    viseq.toggle_midi_learn()
+    assert viseq.midi_learn_mode is True
+    assert viseq.midi_learn_pending is None, "entering learn mode clears any stale pending"
+    viseq.toggle_midi_learn()
+    assert viseq.midi_learn_mode is False
+    viseq.midi_learn_mode = saved
+
+
+def test_midi_learn_end_to_end():
+    import mido
+
+    saved_mode, saved_pending = viseq.midi_learn_mode, viseq.midi_learn_pending
+    saved_bindings = list(viseq.midi_bindings)
+    viseq.midi_bindings.clear()
+    try:
+        viseq.midi_learn_mode = True
+        # 1) click a viseq control -> pending action
+        import_time_seq_cb_0_0[0]["callback"](None, True, (0, 0))
+        assert viseq.midi_learn_pending == ("seq_toggle", {"row": 0, "col": 0})
+        # 2) press a MIDI button -> worker captures, main thread stores the binding
+        viseq.handle_midi_message(
+            mido.Message("note_on", note=36, velocity=100, channel=0), "Launchpad"
+        )
+        while not viseq.ui_task_queue.empty():
+            viseq.ui_task_queue.get()()
+        assert len(viseq.midi_bindings) == 1
+        b = viseq.midi_bindings[0]
+        assert b["action"] == "seq_toggle" and b["params"] == {"row": 0, "col": 0}
+        assert b["device"] == "Launchpad" and b["number"] == 36 and b["channel"] == 0
+        assert viseq.midi_learn_pending is None
+    finally:
+        viseq.midi_learn_mode, viseq.midi_learn_pending = saved_mode, saved_pending
+        viseq.midi_bindings[:] = saved_bindings
+
+
+def test_midi_binding_label_readable():
+    b = _mk_binding(device="Launchpad", number=36, action="seq_toggle", params={"row": 1, "col": 2})
+    assert viseq._midi_binding_label(b) == "Launchpad note 36 -> seq_toggle {'row': 1, 'col': 2}"
+
+
+def test_midi_mappings_list_and_delete():
+    saved = list(viseq.midi_bindings)
+    viseq.midi_bindings[:] = [
+        _mk_binding(device="D", number=1, action="seq_toggle", params={"row": 0, "col": 0}),
+        _mk_binding(device="D", type_="cc", number=7, action="volume"),
+    ]
+    try:
+        dpg.calls.clear()
+        viseq.refresh_midi_mappings_ui()
+        texts = [a[0] for n, a, kw in dpg.calls if n == "add_text" and a]
+        dels = [kw for n, a, kw in dpg.calls if n == "add_button" and kw.get("label") == "Delete"]
+        assert any("seq_toggle" in str(t) for t in texts), "each binding must get a row label"
+        assert len(dels) == 2, "each binding must get a Delete button"
+        dpg.calls.clear()
+        viseq.delete_midi_binding(None, None, 0)
+        assert len(viseq.midi_bindings) == 1
+        assert viseq.midi_bindings[0]["action"] == "volume", "Delete must remove the right row"
+    finally:
+        viseq.midi_bindings[:] = saved
+
+
+def test_save_midi_bindings_persists(monkeypatch, tmp_path):
+    p = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    saved = list(viseq.midi_bindings)
+    viseq.midi_bindings[:] = [_mk_binding(device="D", number=5)]
+    try:
+        viseq.save_midi_bindings()
+        assert viseq.load_config()["midi"]["bindings"][0]["number"] == 5
+    finally:
+        viseq.midi_bindings[:] = saved
+
+
+def test_midi_enable_callback_persists(monkeypatch, tmp_path):
+    p = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    saved = viseq.midi_enabled
+    try:
+        viseq.on_midi_enable(None, True, None)
+        assert viseq.midi_enabled is True
+        assert viseq.load_config()["midi"]["enabled"] is True
+        viseq.on_midi_enable(None, False, None)
+        assert viseq.midi_enabled is False
+    finally:
+        viseq.midi_enabled = saved
+
+
+def test_midi_input_port_callback_persists(monkeypatch, tmp_path):
+    p = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    saved = viseq.midi_input_port
+    try:
+        viseq.on_midi_input_port(None, "Launchpad MK2 MIDI 1", None)
+        assert viseq.midi_input_port == "Launchpad MK2 MIDI 1"
+        assert viseq.load_config()["midi"]["input_port"] == "Launchpad MK2 MIDI 1"
+    finally:
+        viseq.midi_input_port = saved

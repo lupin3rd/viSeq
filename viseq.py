@@ -913,7 +913,9 @@ def update_track_slot_ui(row: int) -> None:
                 width=SLOT_BUTTON_WIDTH,
                 height=SLOT_BUTTON_HEIGHT,
                 indent=SLOT_BUTTON_INDENT,
-                callback=assign_clip_to_track,
+                callback=learnable(
+                    assign_clip_to_track, lambda ud: (MIDI_ACTION_TRACK_ASSIGN, {"row": ud})
+                ),
                 user_data=row,
                 parent=slot_tag,
             )
@@ -923,7 +925,9 @@ def update_track_slot_ui(row: int) -> None:
                 width=SLOT_BUTTON_WIDTH,
                 height=SLOT_BUTTON_HEIGHT,
                 indent=SLOT_BUTTON_INDENT,
-                callback=assign_clip_to_track,
+                callback=learnable(
+                    assign_clip_to_track, lambda ud: (MIDI_ACTION_TRACK_ASSIGN, {"row": ud})
+                ),
                 user_data=row,
                 parent=slot_tag,
             )
@@ -933,7 +937,9 @@ def update_track_slot_ui(row: int) -> None:
             width=SLOT_BUTTON_WIDTH,
             height=SLOT_BUTTON_HEIGHT,
             indent=SLOT_BUTTON_INDENT,
-            callback=assign_clip_to_track,
+            callback=learnable(
+                assign_clip_to_track, lambda ud: (MIDI_ACTION_TRACK_ASSIGN, {"row": ud})
+            ),
             user_data=row,
             parent=slot_tag,
         )
@@ -1082,7 +1088,10 @@ def update_step_ui(row: int, col: int) -> None:
         cb = dpg.add_checkbox(
             default_value=step_data["active"],
             tag=f"seq_cb_{row}_{col}",
-            callback=toggle_step_active,
+            callback=learnable(
+                toggle_step_active,
+                lambda ud: (MIDI_ACTION_SEQ_TOGGLE, {"row": ud[0], "col": ud[1]}),
+            ),
             user_data=(row, col),
         )
         dpg.add_text(
@@ -2166,11 +2175,102 @@ def midi_learn_complete(binding: dict[str, Any]) -> None:
     binding["params"] = params
     midi_bindings.append(binding)
     midi_learn_pending = None
+    refresh_midi_mappings_ui()
     if dpg.does_item_exist("midi_learn_status"):
         dpg.set_value(
             "midi_learn_status",
             f"Bound: {action} <- {binding['device']} {binding['type']} {binding['number']}",
         )
+
+
+def learnable(callback: Any, action_builder: Callable[[Any], tuple[str, dict[str, Any]]]) -> Any:
+    """Wrap a widget callback so MIDI Learn captures its action instead of executing it.
+
+    In learn mode the wrapper stores (action, params) from action_builder(user_data) into
+    midi_learn_pending and skips the real callback; otherwise it delegates unchanged, so a
+    mouse click and a MIDI trigger share the exact same callback path (e09s02).
+    """
+
+    def wrapper(sender: Any, app_data: Any, user_data: Any) -> None:
+        global midi_learn_pending
+        if midi_learn_mode:
+            midi_learn_pending = action_builder(user_data)
+            if dpg.does_item_exist("midi_learn_status"):
+                dpg.set_value("midi_learn_status", "Now press your MIDI button")
+            return
+        callback(sender, app_data, user_data)
+
+    return wrapper
+
+
+def toggle_midi_learn(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Toggle MIDI Learn mode from the menu; updates the status hint (e09s02)."""
+    global midi_learn_mode, midi_learn_pending
+    midi_learn_mode = not midi_learn_mode
+    midi_learn_pending = None
+    if dpg.does_item_exist("midi_learn_status"):
+        if midi_learn_mode:
+            dpg.set_value("midi_learn_status", "MIDI Learn: click a viseq control")
+        else:
+            dpg.set_value("midi_learn_status", "MIDI Learn off")
+
+
+def on_midi_enable(sender: Any, app_data: Any, user_data: Any) -> None:
+    """MIDI menu Enable checkbox: persist and apply the engine toggle (e09s02)."""
+    set_midi_enabled(bool(app_data))
+
+
+def on_midi_input_port(sender: Any, app_data: Any, user_data: Any) -> None:
+    """MIDI device combo: remember the chosen input port (e09s02)."""
+    global midi_input_port
+    midi_input_port = app_data or None
+    cfg = load_config()
+    cfg["midi"]["input_port"] = midi_input_port
+    save_config(cfg)
+
+
+def _midi_binding_label(binding: dict[str, Any]) -> str:
+    """Human-readable row label for one mapping (e09s02)."""
+    params = binding.get("params") or {}
+    suffix = f" {params}" if params else ""
+    return (
+        f"{binding.get('device', '?')} {binding.get('type', '?')} "
+        f"{binding.get('number', '?')} -> {binding.get('action', '?')}{suffix}"
+    )
+
+
+def refresh_midi_mappings_ui() -> None:
+    """Rebuild the MIDI Mappings window list (main thread; call after any change)."""
+    if not dpg.does_item_exist("midi_mappings_group"):
+        return
+    dpg.delete_item("midi_mappings_group", children_only=True)
+    for idx, binding in enumerate(midi_bindings):
+        with dpg.group(horizontal=True, parent="midi_mappings_group"):
+            dpg.add_text(_midi_binding_label(binding))
+            dpg.add_button(label="Delete", callback=delete_midi_binding, user_data=idx)
+
+
+def delete_midi_binding(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Remove a binding by list index and refresh the Mappings window (e09s02)."""
+    idx = int(user_data)
+    if 0 <= idx < len(midi_bindings):
+        del midi_bindings[idx]
+    refresh_midi_mappings_ui()
+
+
+def save_midi_bindings(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Persist the current MIDI bindings to the config (e09s02)."""
+    cfg = load_config()
+    cfg["midi"]["bindings"] = midi_bindings
+    save_config(cfg)
+
+
+def show_midi_mappings_window(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Open the MIDI Mappings window from the menu (e09s02)."""
+    refresh_midi_mappings_ui()
+    dpg.show_item("midi_mappings_window")
 
 
 def midi_init_from_config(cfg: dict[str, Any]) -> None:
@@ -2293,7 +2393,7 @@ def show_help_window(sender: Any = None, app_data: Any = None, user_data: Any = 
     dpg.show_item("help_window")
 
 
-def callback_resync() -> None:
+def callback_resync(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     global current_step
     current_step = -1
     for r in range(NUM_TRACKS):
@@ -2302,12 +2402,14 @@ def callback_resync() -> None:
     sync_event_led.set()
 
 
-def callback_nudge_backward() -> None:
+def callback_nudge_backward(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
     global phase_nudge
     phase_nudge += 0.05
 
 
-def callback_nudge_forward() -> None:
+def callback_nudge_forward(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     global phase_nudge
     phase_nudge -= 0.05
 
@@ -2738,7 +2840,7 @@ def toggle_audio_stream(sender: Any, app_data: Any, user_data: Any) -> None:
         dpg.set_value("testo_bpm", "BPM: ---")
 
 
-def toggle_play() -> None:
+def toggle_play(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     global is_playing, current_step
     is_playing = not is_playing
     if not is_playing:
@@ -2834,18 +2936,39 @@ with dpg.window(
     tag="sequencer_window",
 ):
     with dpg.group(horizontal=True):
-        dpg.add_button(label="PLAY", tag="btn_play", callback=toggle_play, width=100, height=28)
+        dpg.add_button(
+            label="PLAY",
+            tag="btn_play",
+            callback=learnable(toggle_play, lambda ud: (MIDI_ACTION_TRANSPORT_PLAY, {})),
+            width=100,
+            height=28,
+        )
         dpg.add_spacer(width=14)
-        dpg.add_button(label="<", callback=callback_nudge_backward, width=36, height=28)
-        dpg.add_button(label="RESYNC", callback=callback_resync, width=72, height=28)
-        dpg.add_button(label=">", callback=callback_nudge_forward, width=36, height=28)
+        dpg.add_button(
+            label="<",
+            callback=learnable(callback_nudge_backward, lambda ud: (MIDI_ACTION_NUDGE_BACK, {})),
+            width=36,
+            height=28,
+        )
+        dpg.add_button(
+            label="RESYNC",
+            callback=learnable(callback_resync, lambda ud: (MIDI_ACTION_TRANSPORT_RESYNC, {})),
+            width=72,
+            height=28,
+        )
+        dpg.add_button(
+            label=">",
+            callback=learnable(callback_nudge_forward, lambda ud: (MIDI_ACTION_NUDGE_FORWARD, {})),
+            width=36,
+            height=28,
+        )
         dpg.add_spacer(width=14)
         # Beat source line 1: BPM detection (with its BPM readout) + bands 1-2
         dpg.add_checkbox(
             label=BEAT_SOURCE_LABELS[BEAT_SOURCE_ANALYSIS],
             tag="cb_beat_bpm_analysis",
             default_value=True,
-            callback=on_beat_source,
+            callback=learnable(on_beat_source, lambda ud: (MIDI_ACTION_BEAT_SOURCE, {"mode": ud})),
             user_data=BEAT_SOURCE_ANALYSIS,
         )
         with dpg.drawlist(width=14, height=14):
@@ -2862,7 +2985,9 @@ with dpg.window(
             dpg.add_checkbox(
                 label=label,
                 tag=f"cb_beat_{mode}",
-                callback=on_beat_source,
+                callback=learnable(
+                    on_beat_source, lambda ud: (MIDI_ACTION_BEAT_SOURCE, {"mode": ud})
+                ),
                 user_data=mode,
             )
             with dpg.drawlist(width=14, height=14):
@@ -2883,7 +3008,9 @@ with dpg.window(
             dpg.add_checkbox(
                 label=label,
                 tag=f"cb_beat_{mode}",
-                callback=on_beat_source,
+                callback=learnable(
+                    on_beat_source, lambda ud: (MIDI_ACTION_BEAT_SOURCE, {"mode": ud})
+                ),
                 user_data=mode,
             )
             with dpg.drawlist(width=14, height=14):
@@ -2898,7 +3025,7 @@ with dpg.window(
         dpg.add_checkbox(
             label=BEAT_SOURCE_LABELS[BEAT_SOURCE_MANUAL],
             tag="cb_beat_manual_bpm",
-            callback=on_beat_source,
+            callback=learnable(on_beat_source, lambda ud: (MIDI_ACTION_BEAT_SOURCE, {"mode": ud})),
             user_data=BEAT_SOURCE_MANUAL,
         )
         with dpg.drawlist(width=14, height=14):
@@ -2920,7 +3047,12 @@ with dpg.window(
             show=False,
         )
         dpg.add_button(
-            label="TAP", tag="btn_tap", callback=tap_bpm, width=36, height=22, show=False
+            label="TAP",
+            tag="btn_tap",
+            callback=learnable(tap_bpm, lambda ud: (MIDI_ACTION_TRANSPORT_TAP, {})),
+            width=36,
+            height=22,
+            show=False,
         )
         dpg.add_text("", tag="manual_bpm_text", color=(150, 255, 150, 255))
 
@@ -3176,6 +3308,36 @@ with dpg.window(
     themed_text("License: GPL-3.0", slot="text")
     themed_text("Created by: Luca Franceschini aka Lupin3rd", slot="text")
 
+# WINDOW 7: MIDI MAPPINGS (hidden; opened from the menubar "MIDI" > "Mappings", e09s02)
+try:
+    import mido as _mido
+
+    _midi_input_devices: list[str] = list(_mido.get_input_names())
+except Exception:
+    _midi_input_devices = []
+
+with dpg.window(
+    label="MIDI Mappings",
+    width=580,
+    height=300,
+    pos=(560, 380),
+    tag="midi_mappings_window",
+    show=False,
+):
+    themed_text("Input device", slot="text")
+    dpg.add_combo(
+        items=_midi_input_devices,
+        default_value=midi_input_port or (_midi_input_devices[0] if _midi_input_devices else ""),
+        tag="midi_input_combo",
+        width=360,
+        callback=on_midi_input_port,
+    )
+    dpg.add_spacer(height=6)
+    dpg.add_separator()
+    dpg.add_spacer(height=4)
+    with dpg.group(tag="midi_mappings_group"):
+        pass
+
 # NEW THREAD FOR HIGH-FREQUENCY FADES
 threading.Thread(target=fade_tick_loop, daemon=True).start()
 threading.Thread(target=spectrum_analyzer_loop, daemon=True).start()
@@ -3196,6 +3358,18 @@ with dpg.viewport_menu_bar():
         dpg.add_menu_item(label="Logs", callback=show_logs_window)
     dpg.add_menu_item(label="Settings", callback=show_settings_window)
     dpg.add_menu_item(label="Help", callback=show_help_window)
+    with dpg.menu(label="MIDI"):
+        dpg.add_checkbox(
+            label="Enable MIDI",
+            tag="midi_enable_cb",
+            default_value=midi_enabled,
+            callback=on_midi_enable,
+        )
+        dpg.add_menu_item(label="Learn mapping...", callback=toggle_midi_learn)
+        dpg.add_menu_item(label="Mappings...", callback=show_midi_mappings_window)
+        dpg.add_menu_item(label="Save", callback=save_midi_bindings)
+        dpg.add_separator()
+        dpg.add_text("", tag="midi_learn_status")
 dpg.setup_dearpygui()
 dpg.show_viewport()
 autostart_osc()  # boot: auto-connect OSC client + start listening server (no manual clicks)
