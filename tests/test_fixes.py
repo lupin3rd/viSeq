@@ -2872,3 +2872,66 @@ def test_e10s04_tick_gated_when_grid_hidden(monkeypatch):
     assert viseq.thumb_cycle_state["clipA"] == (0, 0.0)
     del viseq.thumb_cycle_state["clipA"]
     del viseq.thumbnails_data["clipA"]
+
+
+class FakeVioscClient:
+    def __init__(self):
+        self.sent = []
+
+    def send_message(self, addr, payload):
+        self.sent.append((addr, payload))
+
+
+def test_e10s04_fail_count_increments_and_sends_one_regen_at_threshold(monkeypatch):
+    fake = FakeVioscClient()
+    monkeypatch.setattr(viseq, "viosc_client", fake)
+    monkeypatch.setattr(viseq, "request_timestamps", {})
+    monkeypatch.setattr(viseq, "thumb_fail_count", {})
+    viseq.global_vimix_state = {"sources": {"0": {"name": "clipA", "uri": "file:///x.mp4"}}}
+    for i in range(viseq.THUMB_FAIL_THRESHOLD + 2):
+        viseq.request_missing_thumbnails(now=1000.0 + i * 10.0)
+    requests = [a for a, _ in fake.sent if a.startswith("/viosc/thumb/")]
+    regens = [a for a, _ in fake.sent if a.startswith("/viosc/regen_thumb/")]
+    assert len(requests) == viseq.THUMB_FAIL_THRESHOLD + 2
+    assert len(regens) == 1, "exactly one regen retry fires when the tile flips to failed"
+    assert viseq.thumb_fail_count["clipA"] == viseq.THUMB_FAIL_THRESHOLD + 2
+
+
+def test_e10s04_reply_resets_fail_count(monkeypatch):
+    monkeypatch.setattr(
+        dpg, "does_item_exist",
+        lambda item: item.startswith("thumb_container_") or item == "vimix_media_window",
+    )
+    viseq.thumb_fail_count = {"clipA": viseq.THUMB_FAIL_THRESHOLD}
+    fake_img = np.zeros((180, 320, 4), dtype=np.float32)
+    dpg.calls.clear()
+    viseq.apply_thumbnail_texture("clipA", "0", fake_img, 320, 180)
+    assert "clipA" not in viseq.thumb_fail_count, "a successful reply must clear the failure state"
+    del viseq.thumbnails_data["clipA"]
+
+
+def test_e10s04_tile_shows_failed_label(monkeypatch):
+    viseq.thumb_fail_count = {"clipA": viseq.THUMB_FAIL_THRESHOLD}
+    viseq.request_timestamps = {}
+    viseq.thumbnails_data.clear()
+    dpg.calls.clear()
+    viseq.update_vimix_sources_ui(
+        json.dumps({"current_source": 0, "sources": {"0": {"name": "clipA", "index": 0, "uri": "file:///x.mp4"}}})
+    )
+    failed_texts = [a[1][0] for c in dpg.calls if c[0] == "add_text" for a in [c] if a[1] and a[1][0] == viseq.THUMB_FAIL_LABEL]
+    assert failed_texts, "the tile must show the failed label after the threshold"
+
+
+def test_e10s04_failed_state_cleared_after_reply(monkeypatch):
+    viseq.thumb_fail_count = {"clipA": viseq.THUMB_FAIL_THRESHOLD}
+    viseq.request_timestamps = {}
+    viseq.thumbnails_data.clear()
+    # a reply lands: texture applied -> fail count cleared
+    monkeypatch.setattr(
+        dpg, "does_item_exist",
+        lambda item: item.startswith("thumb_container_") or item == "vimix_media_window",
+    )
+    fake_img = np.zeros((180, 320, 4), dtype=np.float32)
+    viseq.apply_thumbnail_texture("clipA", "0", fake_img, 320, 180)
+    assert "clipA" not in viseq.thumb_fail_count
+    del viseq.thumbnails_data["clipA"]
