@@ -468,8 +468,8 @@ def test_med6_normal_image_decoded_by_worker():
 def test_l1_stale_source_pruned():
     viseq.thumbnails_data.clear()
     viseq.request_timestamps.clear()
-    viseq.thumbnails_data["clipA"] = "tex_clipA"
-    viseq.thumbnails_data["ghost"] = "tex_ghost"
+    viseq.thumbnails_data["clipA"] = ["tex_clipA_0"]
+    viseq.thumbnails_data["ghost"] = ["tex_ghost_0"]
     viseq.request_timestamps["thumb_clipA"] = 1.0
     viseq.request_timestamps["thumb_ghost"] = 2.0
     viseq.update_vimix_sources_ui(

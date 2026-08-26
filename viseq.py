@@ -871,7 +871,8 @@ band1: float = 0.0
 band2: float = 0.0
 band3: float = 0.0
 
-thumbnails_data: dict[str, str] = {}
+# e10s03: per-source list of texture tags (tex_<name>_<idx>)
+thumbnails_data: dict[str, list[str]] = {}
 request_timestamps: dict[str, float] = {}
 
 
@@ -956,7 +957,7 @@ def update_track_slot_ui(row: int) -> None:
     dpg.add_spacer(parent=slot_tag, height=SLOT_BUTTON_TOP_SPACER)
     if target_id:
         if target_id in thumbnails_data:
-            tex_tag = thumbnails_data[target_id]
+            tex_tag = thumbnails_data[target_id][0]
             dpg.add_image_button(
                 texture_tag=tex_tag,
                 width=SLOT_BUTTON_WIDTH,
@@ -1309,12 +1310,12 @@ def regen_thumb_callback(sender: Any, app_data: Any, user_data: Any) -> None:
         append_log("OUT", msg_addr)
 
     with dpg.mutex():
-        if target_id in thumbnails_data:
-            thumbnails_data.pop(target_id)
+        tex_tags = thumbnails_data.pop(target_id, None)
         if dpg.does_item_exist(f"img_{target_id}"):
             dpg.delete_item(f"img_{target_id}")
-        if dpg.does_item_exist(f"tex_{target_id}"):
-            dpg.delete_item(f"tex_{target_id}")
+        for tex_tag in tex_tags or []:
+            if dpg.does_item_exist(tex_tag):
+                dpg.delete_item(tex_tag)
 
         container_tag = f"thumb_container_{target_id}"
         loading_tag = f"loading_txt_{target_id}"
@@ -1331,6 +1332,52 @@ def regen_thumb_callback(sender: Any, app_data: Any, user_data: Any) -> None:
                     callback=regen_thumb_callback,
                     user_data=target_id,
                 )
+
+
+def apply_thumbnail_texture(name: str, idx: str, img_data: Any, w: int, h: int) -> None:
+    """Apply one decoded thumbnail frame on the main thread (e10s03).
+
+    Each reply index becomes its own static texture (tex_<name>_<idx>) and is
+    appended to the per-source list in thumbnails_data. The FIRST texture of a
+    source creates the tile image (and its regen popup); later indices only
+    append to the list — no widget churn.
+    """
+    target_id = name
+    tex_tag = f"tex_{target_id}_{idx}"
+    img_tag = f"img_{target_id}"
+    container_tag = f"thumb_container_{target_id}"
+    loading_tag = f"loading_txt_{target_id}"
+
+    if dpg.does_item_exist(tex_tag):
+        dpg.delete_item(tex_tag)
+
+    dpg.add_static_texture(
+        width=w, height=h, default_value=img_data, tag=tex_tag, parent="texture_registry"
+    )
+
+    is_first = target_id not in thumbnails_data
+    thumbs = thumbnails_data.setdefault(target_id, [])
+    if tex_tag not in thumbs:
+        thumbs.append(tex_tag)
+
+    if is_first and not dpg.does_item_exist(img_tag) and dpg.does_item_exist(container_tag):
+        if dpg.does_item_exist(loading_tag):
+            dpg.delete_item(loading_tag)
+        dpg.add_image(texture_tag=tex_tag, tag=img_tag, width=115, height=65, parent=container_tag)
+
+        with dpg.popup(img_tag, mousebutton=dpg.mvMouseButton_Right):
+            dpg.add_menu_item(
+                label="Regenerate Thumbnail (Random)",
+                callback=regen_thumb_callback,
+                user_data=target_id,
+            )
+
+    for r, track in enumerate(tracks_data):
+        if track.get("target_id") == target_id:
+            update_track_slot_ui(r)
+    for p in monitor_players:
+        if p.get("target_id") == target_id:
+            update_monitor_player_ui(p["id"])
 
 
 def update_vimix_sources_ui(json_string: str) -> None:
@@ -1357,10 +1404,10 @@ def update_vimix_sources_ui(json_string: str) -> None:
             live_ids.add(str(name) if name else str(k))
         for target_id in list(thumbnails_data):
             if target_id not in live_ids:
-                thumbnails_data.pop(target_id)
-                tex_tag = f"tex_{target_id}"
-                if dpg.does_item_exist(tex_tag):
-                    dpg.delete_item(tex_tag)
+                tex_tags = thumbnails_data.pop(target_id)
+                for tex_tag in tex_tags:
+                    if dpg.does_item_exist(tex_tag):
+                        dpg.delete_item(tex_tag)
         for key in list(request_timestamps):
             if key.startswith("thumb_"):
                 target_id = key[len("thumb_") :]
@@ -1490,7 +1537,7 @@ def update_vimix_sources_ui(json_string: str) -> None:
                     g_id = dpg.add_group(parent=cw, tag=container_tag, indent=4)
                     img_tag = f"img_{target_id}"
                     if target_id in thumbnails_data:
-                        tex_tag = thumbnails_data[target_id]
+                        tex_tag = thumbnails_data[target_id][0]
                         if dpg.does_item_exist(img_tag):
                             dpg.delete_item(img_tag)
                         dpg.add_image(
@@ -1588,7 +1635,7 @@ def update_vimix_sources_ui(json_string: str) -> None:
 
 def thumbnail_decoder_worker() -> None:
     while True:
-        name, _, blob_bytes = blob_queue.get()
+        name, idx, blob_bytes = blob_queue.get()
         try:
             image = Image.open(io.BytesIO(blob_bytes))
             width, height = image.size
@@ -1596,7 +1643,7 @@ def thumbnail_decoder_worker() -> None:
                 raise ValueError(f"thumbnail too large: {width}x{height} px")
             rgba = image.convert("RGBA")
             img_data = np.array(rgba, dtype=np.float32) / 255.0
-            texture_queue.put((name, img_data.flatten(), width, height))
+            texture_queue.put((name, idx, img_data.flatten(), width, height))
         except Exception as e:
             print(f"[viseq Decoder Error] Unable to decode '{name}': {e}")
         blob_queue.task_done()
@@ -1734,7 +1781,7 @@ def update_monitor_player_ui(player_id: int) -> None:
                 with dpg.group(horizontal=True):
                     if target_id in thumbnails_data:
                         dpg.add_image(
-                            texture_tag=thumbnails_data[target_id],
+                            texture_tag=thumbnails_data[target_id][0],
                             width=MONITOR_THUMB_W,
                             height=MONITOR_THUMB_H,
                         )
@@ -3658,42 +3705,8 @@ try:
             update_vimix_sources_ui(latest_json)
 
         while not texture_queue.empty():
-            name, img_data, w, h = texture_queue.get()
-            target_id = name
-            tex_tag = f"tex_{target_id}"
-            img_tag = f"img_{target_id}"
-            container_tag = f"thumb_container_{target_id}"
-            loading_tag = f"loading_txt_{target_id}"
-
-            if dpg.does_item_exist(tex_tag):
-                dpg.delete_item(tex_tag)
-
-            dpg.add_static_texture(
-                width=w, height=h, default_value=img_data, tag=tex_tag, parent="texture_registry"
-            )
-
-            thumbnails_data[target_id] = tex_tag
-
-            if not dpg.does_item_exist(img_tag) and dpg.does_item_exist(container_tag):
-                if dpg.does_item_exist(loading_tag):
-                    dpg.delete_item(loading_tag)
-                dpg.add_image(
-                    texture_tag=tex_tag, tag=img_tag, width=115, height=65, parent=container_tag
-                )
-
-                with dpg.popup(img_tag, mousebutton=dpg.mvMouseButton_Right):
-                    dpg.add_menu_item(
-                        label="Regenerate Thumbnail (Random)",
-                        callback=regen_thumb_callback,
-                        user_data=target_id,
-                    )
-
-            for r, track in enumerate(tracks_data):
-                if track.get("target_id") == target_id:
-                    update_track_slot_ui(r)
-            for p in monitor_players:
-                if p.get("target_id") == target_id:
-                    update_monitor_player_ui(p["id"])
+            name, idx, img_data, w, h = texture_queue.get()
+            apply_thumbnail_texture(name, idx, img_data, w, h)
 
         if viosc_client:
             current_time = time.time()
