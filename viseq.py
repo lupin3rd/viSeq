@@ -874,6 +874,9 @@ band3: float = 0.0
 # e10s03: per-source list of texture tags (tex_<name>_<idx>)
 thumbnails_data: dict[str, list[str]] = {}
 request_timestamps: dict[str, float] = {}
+# e10s04: per-source thumb cycle state {target_id: (current_index, last_switch_time)}
+thumb_cycle_state: dict[str, tuple[int, float]] = {}
+THUMB_CYCLE_INTERVAL = 0.75  # seconds per frame in the Mediagrid thumb cycle
 
 
 def get_input_devices() -> list[str]:
@@ -1378,6 +1381,45 @@ def apply_thumbnail_texture(name: str, idx: str, img_data: Any, w: int, h: int) 
     for p in monitor_players:
         if p.get("target_id") == target_id:
             update_monitor_player_ui(p["id"])
+
+
+def advance_thumb_cycle(
+    thumbs_count: int, now: float, state: tuple[int, float]
+) -> tuple[int, float]:
+    """Advance one source's thumb-cycle state on a fixed wall-clock cadence (pure).
+
+    Returns the new (index, last_switch_time). Sources with fewer than two
+    frames never cycle (images stay static); the anchor moves only when a
+    switch actually happens, so time spent hidden does not fast-forward frames.
+    """
+    cur, last = state
+    if thumbs_count < 2:
+        return 0, last
+    if now - last < THUMB_CYCLE_INTERVAL:
+        return cur, last
+    return (cur + 1) % thumbs_count, now
+
+
+def tick_thumb_cycle(now: float) -> None:
+    """Advance Mediagrid thumb frames once per main-loop frame (e10s04).
+
+    Gated: no cycling while the Mediagrid window is hidden or gone. Tiles with
+    >=2 stored textures switch texture_tag via configure_item on the cadence;
+    the switch reuses pre-loaded static textures (SPIKE-thumb-cycle: ~1.6 us
+    per call — negligible).
+    """
+    if not dpg.does_item_exist("vimix_media_window"):
+        return
+    if not dpg.is_item_shown("vimix_media_window"):
+        return
+    for target_id, thumbs in list(thumbnails_data.items()):
+        state = thumb_cycle_state.get(target_id, (0, now))
+        new_state = advance_thumb_cycle(len(thumbs), now, state)
+        thumb_cycle_state[target_id] = new_state
+        if new_state[0] != state[0]:
+            img_tag = f"img_{target_id}"
+            if dpg.does_item_exist(img_tag):
+                dpg.configure_item(img_tag, texture_tag=thumbs[new_state[0]])
 
 
 def update_vimix_sources_ui(json_string: str) -> None:
@@ -3707,6 +3749,8 @@ try:
         while not texture_queue.empty():
             name, idx, img_data, w, h = texture_queue.get()
             apply_thumbnail_texture(name, idx, img_data, w, h)
+
+        tick_thumb_cycle(time.time())
 
         if viosc_client:
             current_time = time.time()

@@ -2843,7 +2843,11 @@ def test_e10s04_cycle_static_below_two_frames():
 
 
 def test_e10s04_tick_switches_texture_tag_on_cadence(monkeypatch):
-    monkeypatch.setattr(dpg, "does_item_exist", lambda item: item.startswith("img_"))
+    monkeypatch.setattr(
+        dpg,
+        "does_item_exist",
+        lambda item: item.startswith("img_") or item == "vimix_media_window",
+    )
     viseq.thumbnails_data["clipA"] = ["tex_clipA_0", "tex_clipA_1", "tex_clipA_2"]
     viseq.thumb_cycle_state["clipA"] = (0, 0.0)
     dpg.calls.clear()
