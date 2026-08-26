@@ -30,7 +30,7 @@ Single-file DearPyGui app. The main thread owns all UI access. Worker threads
 ## Conventions
 
 - Conventional Commits (`feat`/`fix`/`chore`/`refactor`/`style`/`test`) — already in use.
-- Type hints on public functions. Comments in English. UI labels stay Italian.
+- Type hints on public functions. Comments in English. UI labels stay English (e08s02: full English pass).
 - Named constants for magic values (audit L-6).
 
 ## Never

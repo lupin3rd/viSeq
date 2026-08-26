@@ -22,13 +22,15 @@ summary: >-
 
 in_scope:
   - e08s01: "Help menubar entry (label 'Help') opening an About window (tag help_window, hidden at boot, closable with X) always centered on the viewport; window content = ASCII-art logo (monospace font when available, default font fallback), app title, license line 'GPL-3.0', author line 'Luca Franceschini aka Lupin3rd'."
+  - e08s02: "Version line in the About window (APP_VERSION constant, single source of truth) + full English UI pass: every user-facing label in viseq is English (theme presets Dark/Light/Custom, beat-source labels, Settings sections/buttons/checkbox, help-window lines)."
 
 out_of_scope:
-  - "Version number or changelog in the About window — the user asked only for logo + license + author; a version line would need a maintained APP_VERSION constant (deferred, can be added when the app gains versioning)."
+  - "Version number or changelog beyond the single version line — no changelog, no per-feature versioning (deferred)."
   - "Layout save/restore integration for help_window — it is a transient dialog; it must not appear in LAYOUT_WINDOW_TAGS and a saved layout must never re-open it at boot."
-  - "Localization of the menubar (Help stays English, consistent with Monitor/Show/Settings)."
+  - "Localization framework or i18n — the English pass is a direct label translation, not a locale system."
   - "A modal/always-on-top window — the window is closable, movable and can be re-centered on next open."
-  - "Any change to the OSC contract, sequencer, media grid or existing windows."
+  - "Any change to the OSC contract, sequencer, media grid or existing windows beyond label text."
+  - "Renaming internal identifiers, tags or config keys (scuro/chiaro/custom stay as-is) — only the displayed text changes."
 
 constraints:
   - "Runtime: Python 3.13, dearpygui 2.3.1, single-file viseq.py (no module split)."
@@ -39,9 +41,10 @@ constraints:
 success_criteria:
   - "Menubar shows a 'Help' entry whose callback opens the help window."
   - "Opening the window re-centers it on the viewport: centered_window_pos(viewport, window) returns ( (vp_w - w) // 2, (vp_h - h) // 2 ) clamped at >= 0, and show_help_window applies it via set_item_pos + show_item."
-  - "The window is hidden at boot, closable with X, and its content includes the full supplied ASCII logo, the GPL-3.0 license line and the 'Luca Franceschini aka Lupin3rd' author line."
+  - "The window is hidden at boot, closable with X, and its content includes the full supplied ASCII logo, a 'Version: <APP_VERSION>' line, the GPL-3.0 license line and the 'Luca Franceschini aka Lupin3rd' author line — all in English."
+  - "No Italian UI string remains: an audit grep over viseq.py label/themed-text strings finds none (regression test asserting the English labels)."
   - "help_window is not in LAYOUT_WINDOW_TAGS; test_layout_window_tags_cover_all_fixed_windows stays green unchanged."
-  - "Full regression suite green (123 existing tests + new ones); preflight green; manual acceptance on the real rig."
+  - "Full regression suite green (129 existing tests + new ones); preflight green; manual acceptance on the real rig."
 
 references:
   - "specs/epics/e03-window-manager-restructure/e03s02-show-logs.md (prior hidden-window + menubar pattern)"

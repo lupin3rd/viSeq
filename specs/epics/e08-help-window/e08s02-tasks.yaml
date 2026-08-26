@@ -1,0 +1,21 @@
+story_id: e08s02
+title: "Version line in the About window (APP_VERSION) + full English UI labels pass"
+status: passing
+bcps: 2
+tasks:
+- id: 1
+  description: "APP_VERSION constant (single source of truth, '1.1.0' matching release-plan) + 'Version: <APP_VERSION>' line in the About window"
+  verify: ".venv/bin/python -m pytest tests/ -q -k 'version or help_window'"
+  risk: P2
+  status: passing
+  allure:
+    severity: normal
+    categories: ["ui", "unit"]
+- id: 2
+  description: "English UI pass: theme presets Dark/Light/Custom, beat-source labels (BPM Detection, Beat Band N, Manual BPM), Settings 'Windows'/'Theme' sections, Save/Restore layout buttons, 'Restore at startup' checkbox, About-window lines (for Vimix, License:, Created by:) — displayed text only; tags and config keys (scuro/chiaro/custom) unchanged; tests updated to the English labels + a regression test proving no Italian UI string remains"
+  verify: ".venv/bin/python -m pytest tests/ -q -k 'english or settings or theme or help' && .venv/bin/python -m pytest tests/ -q"
+  risk: P1
+  status: passing
+  allure:
+    severity: high
+    categories: ["ui", "localization"]

@@ -106,3 +106,6 @@ epics:
       - id: e08s01
         title: "Help menubar entry + centered About window with ASCII logo, GPL-3.0 and author line"
         bcps: 2
+      - id: e08s02
+        title: "Version line in the About window (APP_VERSION) + full English UI labels pass"
+        bcps: 2

@@ -244,6 +244,15 @@ import_time_slots = [
 # (add_text receives the string positionally; fall back to a text= kwarg for exotic calls)
 import_time_texts = [(a[0] if a else kw.get("text")) for n, a, kw in dpg.calls if n == "add_text"]
 
+# e08: every user-facing UI label (checkbox/button/menu/combo) for the English-pass scan,
+# captured before any calls-list clears; text widgets come from import_time_texts.
+import_time_ui_labels = [
+    kw.get("label")
+    for n, a, kw in dpg.calls
+    if n in ("add_checkbox", "add_button", "add_menu_item", "add_combo")
+    and isinstance(kw.get("label"), str)
+]
+
 # e04: audio-window spectrum structure, captured before any calls-list clears
 spec_drawlist_tag = any(
     n == "drawlist" and kw.get("tag") == "spec_drawlist" for n, a, kw in dpg.calls
@@ -275,7 +284,7 @@ band_rect_tags = {
 import_time_settings_buttons = [
     kw
     for n, a, kw in dpg.calls
-    if n == "add_button" and kw.get("label") in ("Salva layout", "Ripristina layout")
+    if n == "add_button" and kw.get("label") in ("Save layout", "Restore layout")
 ]
 import_time_restore_checkbox = [
     kw
@@ -1512,11 +1521,11 @@ def test_restore_layout_boot_toggle_persists(monkeypatch, tmp_path):
     assert cfg["layout"]["restore_on_boot"] is True
 
 
-def test_settings_window_has_finestre_section():
+def test_settings_window_has_windows_section():
     labels = [kw.get("label") for kw in import_time_settings_buttons]
-    assert "Salva layout" in labels, "Salva layout button must exist"
-    assert "Ripristina layout" in labels, "Ripristina layout button must exist"
-    assert import_time_restore_checkbox, "Ripristina all'avvio checkbox must exist"
+    assert "Save layout" in labels, "Save layout button must exist"
+    assert "Restore layout" in labels, "Restore layout button must exist"
+    assert import_time_restore_checkbox, "Restore at startup checkbox must exist"
     cb = import_time_restore_checkbox[0]
     assert cb.get("default_value") is True, "restore-at-boot must default on"
     assert cb.get("callback") == viseq.on_restore_layout_boot_toggle
@@ -1597,8 +1606,8 @@ def test_theme_color_creation_records_binding():
 
 
 def test_settings_theme_section_wired():
-    assert import_time_theme_combo, "Tema preset combo must exist"
-    assert import_time_theme_combo[0].get("items") == ["Scuro", "Chiaro", "Personalizzato"]
+    assert import_time_theme_combo, "Theme preset combo must exist"
+    assert import_time_theme_combo[0].get("items") == ["Dark", "Light", "Custom"]
     assert import_time_theme_combo[0].get("callback") == viseq.on_theme_preset
     assert set(import_time_theme_edits.keys()) == {
         "theme_color_window_bg",
@@ -1621,11 +1630,11 @@ def test_spectrum_bars_are_palette_driven():
         )
 
 
-def test_on_theme_preset_chiaro_applies_and_persists(monkeypatch, tmp_path):
+def test_on_theme_preset_light_applies_and_persists(monkeypatch, tmp_path):
     p = tmp_path / "config.json"
     monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
     dpg.calls.clear()
-    viseq.on_theme_preset(None, "Chiaro")
+    viseq.on_theme_preset(None, "Light")
     assert viseq.active_palette == viseq.LIGHT_PALETTE
     cfg = viseq.load_config()
     assert cfg["theme"]["preset"] == "chiaro"
@@ -1654,7 +1663,7 @@ def test_on_theme_color_derives_from_edits_and_persists(monkeypatch, tmp_path):
     cfg = viseq.load_config()
     assert cfg["theme"]["preset"] == "custom"
     assert cfg["theme"]["colors"] == pal
-    assert dpg.values.get("theme_preset") == "Personalizzato", "editing a color switches to custom"
+    assert dpg.values.get("theme_preset") == "Custom", "editing a color switches to custom"
     viseq.apply_palette(viseq.DEFAULT_PALETTE)
 
 
@@ -1724,7 +1733,7 @@ def test_theme_preset_custom_with_untouched_edits_stays_sane(monkeypatch, tmp_pa
         dpg.values[f"theme_color_{slot}"] = [*viseq.DEFAULT_PALETTE[slot], 255]
     p = tmp_path / "config.json"
     monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
-    viseq.on_theme_preset(None, "Personalizzato")
+    viseq.on_theme_preset(None, "Custom")
     pal = viseq.active_palette
     assert all(0 <= c <= 255 for slot in pal for c in pal[slot]), "no out-of-range channels"
     assert pal["window_bg"] == viseq.DEFAULT_PALETTE["window_bg"]
@@ -2029,3 +2038,66 @@ def test_show_help_window_centers_and_shows(monkeypatch):
     assert any(n == "show_item" and a == ("help_window",) for n, a, kw in dpg.calls), (
         "the callback must show the window"
     )
+
+
+# ---------- e08s02: version line + full English UI pass ----------
+def test_app_version_constant():
+    assert viseq.APP_VERSION == "1.1.0", "APP_VERSION must match the release-plan target"
+    assert isinstance(viseq.APP_VERSION, str)
+
+
+def test_help_window_version_line():
+    texts = [t for t in import_time_texts if isinstance(t, str)]
+    assert f"Version: {viseq.APP_VERSION}" in texts, "the About window must show the version"
+
+
+def test_help_window_lines_english():
+    texts = [t for t in import_time_texts if isinstance(t, str)]
+    assert any("for Vimix" in t for t in texts), "the About title must be English"
+    assert "License: GPL-3.0" in texts, "the license line must be English"
+    assert "Created by: Luca Franceschini aka Lupin3rd" in texts, "the author line must be English"
+    assert not any("per Vimix" in t or "Licenza" in t or "Creato da" in t for t in texts), (
+        "no Italian About-window lines may remain"
+    )
+
+
+ITALIAN_UI_TERMS = (
+    "Scuro",
+    "Chiaro",
+    "Personalizzato",
+    "Rilevazione",
+    "Battito",
+    "BPM Manuale",
+    "Finestre",
+    "Salva layout",
+    "Ripristina",
+    "Licenza",
+    "Creato da",
+    "per Vimix",
+)
+
+
+def test_no_italian_ui_strings_remain():
+    labels = [t for t in import_time_ui_labels if isinstance(t, str)]
+    labels += [t for t in import_time_texts if isinstance(t, str)]
+    labels += list(viseq.THEME_PRESET_LABELS.values())
+    labels += list(viseq.BEAT_SOURCE_LABELS.values())
+    joined = "\n".join(labels)
+    for term in ITALIAN_UI_TERMS:
+        assert term not in joined, f"Italian UI string still present: {term!r}"
+
+
+def test_beat_source_labels_english():
+    assert viseq.BEAT_SOURCE_LABELS[viseq.BEAT_SOURCE_ANALYSIS] == "BPM Detection"
+    assert viseq.BEAT_SOURCE_LABELS[viseq.BEAT_SOURCE_MANUAL] == "Manual BPM"
+    band_keys = {1: viseq.BEAT_SOURCE_BAND1, 2: viseq.BEAT_SOURCE_BAND2, 3: viseq.BEAT_SOURCE_BAND3}
+    for band, key in band_keys.items():
+        assert viseq.BEAT_SOURCE_LABELS[key] == f"Beat Band {band}"
+
+
+def test_theme_preset_labels_english():
+    assert viseq.THEME_PRESET_LABELS == {"scuro": "Dark", "chiaro": "Light", "custom": "Custom"}
+    # the label -> key mapping must still resolve after the English rename
+    assert viseq._preset_key("Dark") == "scuro"
+    assert viseq._preset_key("Light") == "chiaro"
+    assert viseq._preset_key("Custom") == "custom"

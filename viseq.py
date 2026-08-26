@@ -96,10 +96,13 @@ is_server_running: bool = False
 CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(CONFIG_DIR, "viseq_config.json")
 
+# viseq application version — single source of truth (matches specs/release-plan.yaml, e08s02).
+APP_VERSION: str = "1.1.0"
+
 # Palette slots drive every chrome color: the global theme, the per-item themes, explicit
 # text colors and the main draw items. The five primaries are user-editable in the Settings
-# window; the rest derive from them (derive_palette). "Scuro" reproduces the legacy look
-# exactly, so first launch is visually identical (SCOPE_LATEST success criterion).
+# window; the rest derive from them (derive_palette). The "Dark" preset reproduces the
+# legacy look exactly, so first launch is visually identical (SCOPE_LATEST criterion).
 PALETTE_SLOTS: list[str] = [
     "window_bg",
     "panel_bg",
@@ -118,16 +121,16 @@ PALETTE_SLOTS: list[str] = [
 ]
 THEME_PRIMARY_SLOTS: list[str] = ["window_bg", "panel_bg", "text", "border", "accent"]
 THEME_PRIMARY_LABELS: dict[str, str] = {
-    "window_bg": "Sfondo",
-    "panel_bg": "Pannelli",
-    "text": "Testo",
-    "border": "Linee",
-    "accent": "Accento",
+    "window_bg": "Background",
+    "panel_bg": "Panels",
+    "text": "Text",
+    "border": "Lines",
+    "accent": "Accent",
 }
 THEME_PRESET_LABELS: dict[str, str] = {
-    "scuro": "Scuro",
-    "chiaro": "Chiaro",
-    "custom": "Personalizzato",
+    "scuro": "Dark",
+    "chiaro": "Light",
+    "custom": "Custom",
 }
 
 DEFAULT_PALETTE: dict[str, list[int]] = {
@@ -417,7 +420,7 @@ def _read_primary_colors_from_edits() -> dict[str, list[int]]:
 
 
 def _preset_key(label: str) -> str:
-    """Combo label -> config key ('Personalizzato' -> 'custom')."""
+    """Combo label -> config key ('Custom' -> 'custom')."""
     for key, lbl in THEME_PRESET_LABELS.items():
         if lbl == label:
             return key
@@ -540,7 +543,7 @@ def snapshot_window_layout() -> list[dict[str, Any]]:
     """Record shown/pos/size for every existing layout-tracked window (main thread only).
 
     LAYOUT_ALWAYS_HIDDEN_TAGS (the Settings window) are always recorded as closed: they
-    stay open while the user clicks "Salva layout", and must not come back at boot.
+    stay open while the user clicks "Save layout", and must not come back at boot.
     """
     records: list[dict[str, Any]] = []
     for tag in _existing_layout_window_tags():
@@ -586,7 +589,7 @@ def apply_window_layout(records: list[dict[str, Any]]) -> None:
 
 
 def save_layout_to_config(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Settings 'Salva layout': snapshot the current layout and persist it."""
+    """Settings 'Save layout': snapshot the current layout and persist it."""
     cfg = load_config()
     cfg["layout"]["windows"] = snapshot_window_layout()
     save_config(cfg)
@@ -595,7 +598,7 @@ def save_layout_to_config(sender: Any = None, app_data: Any = None, user_data: A
 def restore_layout_from_config(
     sender: Any = None, app_data: Any = None, user_data: Any = None
 ) -> None:
-    """Settings 'Ripristina layout': re-apply the saved layout from the config."""
+    """Settings 'Restore layout': re-apply the saved layout from the config."""
     cfg = load_config()
     apply_window_layout(cfg["layout"]["windows"])
 
@@ -608,7 +611,7 @@ def should_restore_layout_on_boot(cfg: dict[str, Any]) -> bool:
 def on_restore_layout_boot_toggle(
     sender: Any = None, app_data: Any = None, user_data: Any = None
 ) -> None:
-    """Settings 'Ripristina all'avvio' checkbox: persist the flag."""
+    """Settings 'Restore at startup' checkbox: persist the flag."""
     cfg = load_config()
     cfg["layout"]["restore_on_boot"] = bool(app_data)
     save_config(cfg)
@@ -699,12 +702,12 @@ BEAT_SOURCE_BAND3 = "band3_beat"
 BEAT_SOURCE_MIDI = "midi_sync"
 BEAT_SOURCE_MANUAL = "manual_bpm"
 BEAT_SOURCE_LABELS = {
-    BEAT_SOURCE_ANALYSIS: "Rilevazione BPM",
-    BEAT_SOURCE_BAND1: "Battito Band 1",
-    BEAT_SOURCE_BAND2: "Battito Band 2",
-    BEAT_SOURCE_BAND3: "Battito Band 3",
+    BEAT_SOURCE_ANALYSIS: "BPM Detection",
+    BEAT_SOURCE_BAND1: "Beat Band 1",
+    BEAT_SOURCE_BAND2: "Beat Band 2",
+    BEAT_SOURCE_BAND3: "Beat Band 3",
     BEAT_SOURCE_MIDI: "MIDI Sync",
-    BEAT_SOURCE_MANUAL: "BPM Manuale",
+    BEAT_SOURCE_MANUAL: "Manual BPM",
 }
 beat_source: str = BEAT_SOURCE_ANALYSIS  # default: current behavior (essentia BPM)
 sync_event_beat = threading.Event()  # fired once per beat in band/MIDI modes
@@ -2629,7 +2632,7 @@ with dpg.window(
         dpg.add_spacer(width=14)
         # Beat source line 1: BPM detection (with its BPM readout) + bands 1-2
         dpg.add_checkbox(
-            label="Rilevazione BPM",
+            label=BEAT_SOURCE_LABELS[BEAT_SOURCE_ANALYSIS],
             tag="cb_beat_bpm_analysis",
             default_value=True,
             callback=on_beat_source,
@@ -2683,7 +2686,7 @@ with dpg.window(
                 )
             dpg.add_spacer(width=10)
         dpg.add_checkbox(
-            label="BPM Manuale",
+            label=BEAT_SOURCE_LABELS[BEAT_SOURCE_MANUAL],
             tag="cb_beat_manual_bpm",
             callback=on_beat_source,
             user_data=BEAT_SOURCE_MANUAL,
@@ -2885,15 +2888,15 @@ with dpg.window(
     with dpg.group(tag="vimix_raw_group"):
         pass
 
-    # --- Finestre section (e06s01): window layout save/restore ---
+    # --- Windows section (e06s01): window layout save/restore ---
     dpg.add_spacer(height=8)
-    themed_text("Finestre", slot="text")
+    themed_text("Windows", slot="text")
     dpg.add_separator()
     with dpg.group(horizontal=True):
-        dpg.add_button(label="Salva layout", callback=save_layout_to_config, width=110)
-        dpg.add_button(label="Ripristina layout", callback=restore_layout_from_config, width=130)
+        dpg.add_button(label="Save layout", callback=save_layout_to_config, width=110)
+        dpg.add_button(label="Restore layout", callback=restore_layout_from_config, width=130)
     dpg.add_checkbox(
-        label="Ripristina all'avvio",
+        label="Restore at startup",
         tag="cb_restore_layout_boot",
         default_value=True,
         callback=on_restore_layout_boot_toggle,
@@ -2901,11 +2904,11 @@ with dpg.window(
     dpg.add_spacer(height=8)
 
     # --- Tema section (e06s02): preset combo + five custom color pickers ---
-    themed_text("Tema", slot="text")
+    themed_text("Theme", slot="text")
     dpg.add_separator()
     dpg.add_combo(
-        items=["Scuro", "Chiaro", "Personalizzato"],
-        default_value="Scuro",
+        items=["Dark", "Light", "Custom"],
+        default_value="Dark",
         tag="theme_preset",
         width=150,
         callback=on_theme_preset,
@@ -2957,10 +2960,11 @@ with dpg.window(
             # DPG 2.3.1: bind_item_font(item, font); bind_font() only takes a global font.
             dpg.bind_item_font("help_logo_text", _help_mono_font)
     dpg.add_spacer(height=6)
-    themed_text("viseq — Audio-Reactive VJ Controller per Vimix", slot="text_bright")
+    themed_text("viseq — Audio-Reactive VJ Controller for Vimix", slot="text_bright")
     dpg.add_separator()
-    themed_text("Licenza: GPL-3.0", slot="text")
-    themed_text("Creato da: Luca Franceschini aka Lupin3rd", slot="text")
+    themed_text(f"Version: {APP_VERSION}", slot="text")
+    themed_text("License: GPL-3.0", slot="text")
+    themed_text("Created by: Luca Franceschini aka Lupin3rd", slot="text")
 
 # NEW THREAD FOR HIGH-FREQUENCY FADES
 threading.Thread(target=fade_tick_loop, daemon=True).start()
