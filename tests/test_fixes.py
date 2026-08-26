@@ -2899,7 +2899,8 @@ def test_e10s04_fail_count_increments_and_sends_one_regen_at_threshold(monkeypat
 
 def test_e10s04_reply_resets_fail_count(monkeypatch):
     monkeypatch.setattr(
-        dpg, "does_item_exist",
+        dpg,
+        "does_item_exist",
         lambda item: item.startswith("thumb_container_") or item == "vimix_media_window",
     )
     viseq.thumb_fail_count = {"clipA": viseq.THUMB_FAIL_THRESHOLD}
@@ -2916,9 +2917,20 @@ def test_e10s04_tile_shows_failed_label(monkeypatch):
     viseq.thumbnails_data.clear()
     dpg.calls.clear()
     viseq.update_vimix_sources_ui(
-        json.dumps({"current_source": 0, "sources": {"0": {"name": "clipA", "index": 0, "uri": "file:///x.mp4"}}})
+        json.dumps(
+            {
+                "current_source": 0,
+                "sources": {"0": {"name": "clipA", "index": 0, "uri": "file:///x.mp4"}},
+            }
+        )
     )
-    failed_texts = [a[1][0] for c in dpg.calls if c[0] == "add_text" for a in [c] if a[1] and a[1][0] == viseq.THUMB_FAIL_LABEL]
+    failed_texts = [
+        a[1][0]
+        for c in dpg.calls
+        if c[0] == "add_text"
+        for a in [c]
+        if a[1] and a[1][0] == viseq.THUMB_FAIL_LABEL
+    ]
     assert failed_texts, "the tile must show the failed label after the threshold"
 
 
@@ -2928,10 +2940,34 @@ def test_e10s04_failed_state_cleared_after_reply(monkeypatch):
     viseq.thumbnails_data.clear()
     # a reply lands: texture applied -> fail count cleared
     monkeypatch.setattr(
-        dpg, "does_item_exist",
+        dpg,
+        "does_item_exist",
         lambda item: item.startswith("thumb_container_") or item == "vimix_media_window",
     )
     fake_img = np.zeros((180, 320, 4), dtype=np.float32)
     viseq.apply_thumbnail_texture("clipA", "0", fake_img, 320, 180)
     assert "clipA" not in viseq.thumb_fail_count
     del viseq.thumbnails_data["clipA"]
+
+
+def test_e10s04_grid_cycling_does_not_force_full_rate():
+    saved = (viseq.is_playing, viseq.is_audio_analyzing, list(viseq.monitor_players))
+    viseq.is_playing = False
+    viseq.is_audio_analyzing = False
+    viseq.monitor_players.clear()
+    saved_thumbs = dict(viseq.thumbnails_data)
+    viseq.thumbnails_data["clipA"] = ["tex_clipA_0", "tex_clipA_1", "tex_clipA_2"]
+    try:
+        # SPIKE-thumb-cycle: at 1.6 us/switch the 750 ms cycle renders smoothly at
+        # the idle rate, so thumb cycling must NOT force the full render rate.
+        assert viseq.frame_sleep() == viseq.FRAME_SLEEP_IDLE, (
+            "grid thumb cycling stays on the idle throttle (spike decision)"
+        )
+    finally:
+        viseq.is_playing, viseq.is_audio_analyzing, viseq.monitor_players = (
+            saved[0],
+            saved[1],
+            saved[2],
+        )
+        viseq.thumbnails_data.clear()
+        viseq.thumbnails_data.update(saved_thumbs)

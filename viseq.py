@@ -877,6 +877,10 @@ request_timestamps: dict[str, float] = {}
 # e10s04: per-source thumb cycle state {target_id: (current_index, last_switch_time)}
 thumb_cycle_state: dict[str, tuple[int, float]] = {}
 THUMB_CYCLE_INTERVAL = 0.75  # seconds per frame in the Mediagrid thumb cycle
+# e10s04: consecutive unanswered thumb requests per source -> failed tile state
+thumb_fail_count: dict[str, int] = {}
+THUMB_FAIL_THRESHOLD = 5  # request cycles (~15 s) before the tile flips to failed
+THUMB_FAIL_LABEL = " [ Thumb failed — right-click to retry ] "
 
 
 def get_input_devices() -> list[str]:
@@ -1314,6 +1318,7 @@ def regen_thumb_callback(sender: Any, app_data: Any, user_data: Any) -> None:
 
     with dpg.mutex():
         tex_tags = thumbnails_data.pop(target_id, None)
+        thumb_fail_count[target_id] = 0  # a manual retry clears the failure state (e10s04)
         if dpg.does_item_exist(f"img_{target_id}"):
             dpg.delete_item(f"img_{target_id}")
         for tex_tag in tex_tags or []:
@@ -1362,6 +1367,7 @@ def apply_thumbnail_texture(name: str, idx: str, img_data: Any, w: int, h: int) 
     thumbs = thumbnails_data.setdefault(target_id, [])
     if tex_tag not in thumbs:
         thumbs.append(tex_tag)
+    thumb_fail_count.pop(name, None)  # a reply clears the failure state (e10s04)
 
     if is_first and not dpg.does_item_exist(img_tag) and dpg.does_item_exist(container_tag):
         if dpg.does_item_exist(loading_tag):
@@ -1422,6 +1428,34 @@ def tick_thumb_cycle(now: float) -> None:
                 dpg.configure_item(img_tag, texture_tag=thumbs[new_state[0]])
 
 
+def request_missing_thumbnails(now: float) -> None:
+    """Request thumbs for sources that still lack them (3 s throttle, e10s04).
+
+    Each sent-but-unanswered request bumps the source's fail counter; crossing
+    the threshold fires ONE regen retry and the tile flips to the failed label
+    (rendered by update_vimix_sources_ui). A successful reply clears the counter.
+    """
+    if not viosc_client:
+        return
+    for idx, props in global_vimix_state.get("sources", {}).items():
+        name = props.get("name")
+        uri = props.get("uri")
+        target_id = str(name) if name else str(idx)
+
+        if uri and target_id not in thumbnails_data:
+            last_thumb = request_timestamps.get(f"thumb_{target_id}", 0)
+            if now - last_thumb > THUMB_REQUEST_INTERVAL:
+                msg_addr = f"/viosc/thumb/{target_id}"
+                viosc_client.send_message(msg_addr, ["all"])
+                append_log("OUT", msg_addr)
+                request_timestamps[f"thumb_{target_id}"] = now
+                thumb_fail_count[target_id] = thumb_fail_count.get(target_id, 0) + 1
+                if thumb_fail_count[target_id] == THUMB_FAIL_THRESHOLD:
+                    regen_addr = f"/viosc/regen_thumb/{target_id}"
+                    viosc_client.send_message(regen_addr, [])
+                    append_log("OUT", regen_addr)
+
+
 def update_vimix_sources_ui(json_string: str) -> None:
     global global_vimix_state, last_ui_signature, last_num_cols
     try:
@@ -1455,6 +1489,9 @@ def update_vimix_sources_ui(json_string: str) -> None:
                 target_id = key[len("thumb_") :]
                 if target_id not in live_ids:
                     request_timestamps.pop(key)
+        for target_id in list(thumb_fail_count):
+            if target_id not in live_ids:
+                thumb_fail_count.pop(target_id)
 
         current_source = global_vimix_state["current_source"]
         data_dict = global_vimix_state["sources"]
@@ -1595,10 +1632,15 @@ def update_vimix_sources_ui(json_string: str) -> None:
                         loading_tag = f"loading_txt_{target_id}"
                         if dpg.does_item_exist(loading_tag):
                             dpg.delete_item(loading_tag)
+                        is_failed = thumb_fail_count.get(target_id, 0) >= THUMB_FAIL_THRESHOLD
                         dpg.add_text(
-                            " [ Loading... ]",
+                            THUMB_FAIL_LABEL if is_failed else " [ Loading... ]",
                             parent=g_id,
-                            color=palette_rgba(active_palette["text_dim"]),
+                            color=palette_rgba(
+                                active_palette["warning"]
+                                if is_failed
+                                else active_palette["text_dim"]
+                            ),
                             tag=loading_tag,
                         )
                         _text_color_bindings[loading_tag] = "text_dim"
@@ -3752,20 +3794,7 @@ try:
 
         tick_thumb_cycle(time.time())
 
-        if viosc_client:
-            current_time = time.time()
-            for idx, props in global_vimix_state.get("sources", {}).items():
-                name = props.get("name")
-                uri = props.get("uri")
-                target_id = str(name) if name else str(idx)
-
-                if uri and target_id not in thumbnails_data:
-                    last_thumb = request_timestamps.get(f"thumb_{target_id}", 0)
-                    if current_time - last_thumb > THUMB_REQUEST_INTERVAL:
-                        msg_addr = f"/viosc/thumb/{target_id}"
-                        viosc_client.send_message(msg_addr, ["all"])
-                        append_log("OUT", msg_addr)
-                        request_timestamps[f"thumb_{target_id}"] = current_time
+        request_missing_thumbnails(time.time())
 
         # monitor players: cleanup closed windows and refresh values
         for p in list(monitor_players):
