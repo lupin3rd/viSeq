@@ -96,3 +96,13 @@ epics:
       - id: e07s03
         title: "P2 — Monitor refresh: skip configure when arm static and values unchanged"
         bcps: 2
+
+  - id: e08
+    slug: help-window
+    title: "Help menu entry + centered About window (ASCII logo, GPL-3.0, author)"
+    wsjf: 25
+    baseline_bcps: 2
+    stories:
+      - id: e08s01
+        title: "Help menubar entry + centered About window with ASCII logo, GPL-3.0 and author line"
+        bcps: 2

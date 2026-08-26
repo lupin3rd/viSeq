@@ -240,6 +240,10 @@ import_time_slots = [
     if n == "child_window" and str(kw.get("tag", "")).startswith("seq_slot_")
 ]
 
+# e08: help-window text content, captured before any calls-list clears
+# (add_text receives the string positionally; fall back to a text= kwarg for exotic calls)
+import_time_texts = [(a[0] if a else kw.get("text")) for n, a, kw in dpg.calls if n == "add_text"]
+
 # e04: audio-window spectrum structure, captured before any calls-list clears
 spec_drawlist_tag = any(
     n == "drawlist" and kw.get("tag") == "spec_drawlist" for n, a, kw in dpg.calls
@@ -1962,3 +1966,66 @@ def test_monitor_refresh_arm_only_while_playing():
     finally:
         viseq.monitor_players = saved_players
         viseq.global_vimix_state["sources"] = saved_sources
+
+
+# ---------- e08: Help menubar + centered About window ----------
+def test_help_logo_constant_exact_art():
+    logo = viseq.HELP_ASCII_LOGO
+    lines = logo.split("\n")
+    assert len(lines) == 8, "the logo must keep all 8 supplied lines"
+    assert max(len(line) for line in lines) == 53, "the logo must keep its 53-char width"
+    assert lines[0].lstrip().startswith("___"), "the logo must start with the art, not a label"
+    assert lines[-1].strip().startswith("\\|_________|"), "the logo must end with the art"
+
+
+def test_centered_window_pos_math():
+    # even viewport/window: exact center
+    assert viseq.centered_window_pos(1700, 1080, 540, 260) == (580, 410)
+    # odd viewport: floor the offset
+    assert viseq.centered_window_pos(1701, 1081, 540, 260) == (580, 410)
+    # window wider than the viewport -> clamp at 0, never negative
+    assert viseq.centered_window_pos(500, 400, 540, 260) == (0, 70)
+    assert viseq.centered_window_pos(500, 400, 540, 500) == (0, 0)
+    # exact fit -> (0, 0)
+    assert viseq.centered_window_pos(540, 260, 540, 260) == (0, 0)
+
+
+def test_help_window_hidden_closable_not_in_layout():
+    w = import_time_windows.get("help_window")
+    assert w, "help window must be tagged help_window"
+    assert w.get("show") is False, "help window must be hidden by default"
+    assert w.get("label") == "Help"
+    assert not w.get("no_close"), "help window must be closable with X"
+    assert "help_window" not in viseq.LAYOUT_WINDOW_TAGS, (
+        "the About dialog must not join the layout save/restore tracking"
+    )
+
+
+def test_menubar_help_entry_wired():
+    items = {kw.get("label"): kw.get("callback") for kw in import_time_menu_items}
+    assert items.get("Help") == viseq.show_help_window, (
+        "Help menubar entry must open the help window"
+    )
+
+
+def test_help_window_content():
+    texts = [t for t in import_time_texts if isinstance(t, str)]
+    assert viseq.HELP_ASCII_LOGO in texts, "the About window must embed the ASCII logo"
+    assert any("GPL-3.0" in t for t in texts), "license line must mention GPL-3.0"
+    assert any("Luca Franceschini" in t for t in texts), "author line must name the creator"
+    assert any("Lupin3rd" in t for t in texts), "author line must include the alias"
+
+
+def test_show_help_window_centers_and_shows(monkeypatch):
+    monkeypatch.setattr(dpg, "get_viewport_width", lambda: 1700)
+    monkeypatch.setattr(dpg, "get_viewport_height", lambda: 1080)
+    monkeypatch.setattr(dpg, "get_item_width", lambda tag: 540)
+    monkeypatch.setattr(dpg, "get_item_height", lambda tag: 260)
+    dpg.calls.clear()
+    viseq.show_help_window()
+    assert any(
+        n == "set_item_pos" and a == ("help_window", (580, 410)) for n, a, kw in dpg.calls
+    ), "the callback must re-center the window on the viewport"
+    assert any(n == "show_item" and a == ("help_window",) for n, a, kw in dpg.calls), (
+        "the callback must show the window"
+    )

@@ -5,11 +5,11 @@
 workflow_mode: solo-git
 
 handoff:
-  next_skill: verify-work
-  active_epic_id: e06
-  active_story_id: e06s02
+  next_skill: develop-tdd
+  active_epic_id: e08
+  active_story_id: e08s01
 
-active_flow: verify
+active_flow: build
 bug_cycle:
   current_step: 0
   completed_steps: [1, 2, 3, 4, 5]

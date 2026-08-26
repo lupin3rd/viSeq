@@ -1,0 +1,25 @@
+# specs/epics/e08-help-window/epic.yaml — capsule manifest (slice-tasks)
+id: e08
+slug: help-window
+title: "Help menu entry + centered About window (ASCII logo, GPL-3.0, author)"
+status: in_progress
+delta: ENHANCED   # purely additive: one menubar entry + one hidden dialog window; no existing behavior changes
+context: >-
+  viseq has no About/help surface. The user wants a "Help" entry in the top menubar that
+  opens a window always centered on the viewport with the viseq info: the ASCII-art logo
+  (supplied by the user), the license (GPL-3.0) and the author (Luca Franceschini aka
+  Lupin3rd). The window follows the proven e03 pattern (hidden boot window, show=False,
+  closable with X, opened by a menubar callback). It is a transient dialog: not part of
+  the layout save/restore (LAYOUT_WINDOW_TAGS untouched) and never re-opened by a layout
+  restore. The ASCII logo needs a monospace font to align; load DejaVu Sans Mono
+  defensively (os.path.exists over a few common Linux paths) and fall back to the default
+  font when absent — headless tests must not depend on font presence.
+stories:
+  - id: e08s01
+    title: "Help menubar entry + centered About window with ASCII logo, GPL-3.0 and author line"
+    bcps: 2
+    delta: ENHANCED
+references:
+  - "specs/product/SCOPE_LATEST.yaml"
+  - "specs/epics/e03-window-manager-restructure/e03s02-show-logs.md"
+  - "specs/epics/e06-settings-window-features/e06s01-window-layout.md"

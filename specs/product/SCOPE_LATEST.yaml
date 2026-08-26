@@ -2,57 +2,48 @@
 # Consumed by: slice-tasks, plan-work, develop-tdd, verify-work
 
 core_value: >-
-  Cut viseq's measurable CPU waste (measured in SPIKE-perf): stop re-setting unchanged
-  Mediagrid cells on every viOSC state push, render at full rate only while something
-  animates, and stop re-configuring unchanged monitor widgets every frame.
+  Give the user a one-click "Help" entry in the top menubar that opens an About window,
+  centered on the viewport, showing the viseq ASCII-art logo, the license (GPL-3.0) and
+  the author (Luca Franceschini aka Lupin3rd).
 
 summary: >-
-  A headless profiling spike (specs/archive/spikes/SPIKE-perf.md) measured the app's hot
-  paths. Python-side work is mostly cheap (FFT 0.07 ms, essentia BPM 18 ms @1 Hz), but two
-  costs are real and removable: (1) update_vimix_sources_ui runs a per-source loop on every
-  viOSC state push — ~2 bind/configure + ~18 set_value per source per push (raw-table cells
-  and tile readouts) — even when nothing changed; (2) the main loop renders at 60 fps
-  unconditionally while the render cost scales with live widget count; (3) every monitor
-  player re-configures its arm/speed/alpha/seek widgets every frame even when static.
+  viseq has no way to discover what it is, who wrote it, or under which license it is
+  distributed. This initiative adds a "Help" entry in the viewport menubar (next to the
+  existing "Settings" entry) that opens a small hidden-until-then About window always
+  centered on the screen. The window shows the ASCII-art logo the user supplied (rendered
+  in a monospace font when one is available, with a graceful fallback), the app name, the
+  license line (GPL-3.0) and the author line (Luca Franceschini aka Lupin3rd).
 
-  This initiative fixes the three measured costs without any visible behavior change:
-  (P0) the Mediagrid's structural updates (tile theme/title/index badge) become
-  signature-gated (current_source joins the signature) and value updates (tile alpha, raw
-  table cells) become per-cell cached, so a push that changes nothing performs no dpg
-  calls; (P1) the main loop renders at ~60 fps while animating (sequencer running,
-  spectrum on, any monitor video playing) and ~30 fps while idle; (P2) monitor players
-  skip configure_item when the displayed value is unchanged and when the disc is not
-  spinning. Behavior, look, and the OSC contract are untouched.
+  The About window follows the exact pattern already proven by e03 (Settings/Logs): a
+  hidden boot window (show=False, closable with X), opened by a menubar callback. It is
+  NOT part of the layout save/restore (it is a dialog, not workspace) and it is NOT
+  tracked by LAYOUT_WINDOW_TAGS. The centering math is a pure, unit-tested helper
+  (centered_window_pos) that the show callback feeds with the live viewport/window sizes.
 
 in_scope:
-  - e07s01: "P0 — Mediagrid per-push cost: add current_source to the rebuild signature and move the structural per-source updates (tile theme/title/index badge) inside the signature guard; introduce a per-cell value cache for tile_alpha and the raw vimix table cells so unchanged values skip set_value entirely. Measured target: an identical state push performs zero dpg calls (was ~20/source)."
-  - e07s02: "P1 — Idle render throttling: a frame_sleep() decision (full rate while is_playing or spectrum on or any monitor video playing; throttled rate otherwise) drives the main-loop sleep. No change to frame work, only cadence."
-  - e07s03: "P2 — Monitor refresh: refresh_monitor_display skips configure_item when the disc arm is not advancing (video paused), and caches last speed/alpha/seek per player so unchanged values are not re-configured every frame."
+  - e08s01: "Help menubar entry (label 'Help') opening an About window (tag help_window, hidden at boot, closable with X) always centered on the viewport; window content = ASCII-art logo (monospace font when available, default font fallback), app title, license line 'GPL-3.0', author line 'Luca Franceschini aka Lupin3rd'."
 
 out_of_scope:
-  - "Reducing the Mediagrid's live widget count (7k widgets @200 sources) — structural, needs a real-rig frame-time measurement first (SPIKE-perf P3)."
-  - "Changing the OSC contract, the JSON payload handling, or the viOSC interaction."
-  - "Touching the spectrum FFT, essentia cadence, fade ticks, or thumbnail decoding (measured negligible)."
-  - "Module split of viseq.py — a maintainability refactor, zero performance benefit (deferred decision from e01 still holds)."
-  - "GPU-side tuning (vsync, multi-viewport) — not measurable headless."
+  - "Version number or changelog in the About window — the user asked only for logo + license + author; a version line would need a maintained APP_VERSION constant (deferred, can be added when the app gains versioning)."
+  - "Layout save/restore integration for help_window — it is a transient dialog; it must not appear in LAYOUT_WINDOW_TAGS and a saved layout must never re-open it at boot."
+  - "Localization of the menubar (Help stays English, consistent with Monitor/Show/Settings)."
+  - "A modal/always-on-top window — the window is closable, movable and can be re-centered on next open."
+  - "Any change to the OSC contract, sequencer, media grid or existing windows."
 
 constraints:
   - "Runtime: Python 3.13, dearpygui 2.3.1, single-file viseq.py (no module split)."
-  - "OSC contract with viOSC is frozen; payload shape and update cadence are inputs, not changed."
-  - "No visible behavior change: same look, same controls, same values shown; only the amount of redundant dpg work changes."
-  - "All UI mutations stay on the main thread (HIGH-1); the new caches are main-thread state."
-  - "Verification is headless (stub harness: call-count and value assertions) + the user's manual acceptance on the real rig (frame feel at idle, media grid with real viOSC sources)."
+  - "UI mutations stay on the main thread (HIGH-1): the help window is created at boot and shown from a menu callback — no worker involvement."
+  - "Headless verification via the stub harness (tests/test_fixes.py): import-time window snapshot, pure centering math, callback assertions."
+  - "Monospace font loading must be defensive (os.path.exists guard) and must not crash headless tests where no font file exists."
 
 success_criteria:
-  - "An identical viOSC state push triggers zero dpg calls in update_vimix_sources_ui (regression test asserts no bind_item_theme/configure_item/set_value on the second identical push)."
-  - "A value-only change (e.g. alpha) updates exactly the affected cells (tile alpha + raw cell), not the whole grid."
-  - "Selecting a different source (current_source change) still refreshes the tile themes (signature covers it)."
-  - "frame_sleep() returns the throttled rate while idle and the full rate while playing/spectrum/monitor-video-active (regression test)."
-  - "refresh_monitor_display with unchanged props performs no configure_item for the arm/speed/alpha/seek widgets; a changed seek updates only the seek fill."
-  - "Full regression suite green (115 tests + new ones); preflight green; manual acceptance on the real rig."
+  - "Menubar shows a 'Help' entry whose callback opens the help window."
+  - "Opening the window re-centers it on the viewport: centered_window_pos(viewport, window) returns ( (vp_w - w) // 2, (vp_h - h) // 2 ) clamped at >= 0, and show_help_window applies it via set_item_pos + show_item."
+  - "The window is hidden at boot, closable with X, and its content includes the full supplied ASCII logo, the GPL-3.0 license line and the 'Luca Franceschini aka Lupin3rd' author line."
+  - "help_window is not in LAYOUT_WINDOW_TAGS; test_layout_window_tags_cover_all_fixed_windows stays green unchanged."
+  - "Full regression suite green (123 existing tests + new ones); preflight green; manual acceptance on the real rig."
 
 references:
-  - "specs/archive/spikes/SPIKE-perf.md (measured hot paths and numbers)"
-  - "specs/planning-context.yaml (frozen OSC contract)"
+  - "specs/epics/e03-window-manager-restructure/e03s02-show-logs.md (prior hidden-window + menubar pattern)"
+  - "specs/epics/e06-settings-window-features/e06s01-window-layout.md (LAYOUT_WINDOW_TAGS / LAYOUT_ALWAYS_HIDDEN_TAGS contract)"
   - "specs/tech-architecture/tech-stack.md"
-  - "specs/epics/e06-settings-window-features/ (prior e06 work, same file)"

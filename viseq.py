@@ -181,6 +181,34 @@ LAYOUT_WINDOW_TAGS: list[str] = [
 # snapshot records it as closed and apply always hides it (e06s01 user revision).
 LAYOUT_ALWAYS_HIDDEN_TAGS: tuple[str, ...] = ("settings_window",)
 
+# e08: About window (Help menubar). The ASCII logo is the user-supplied art, kept verbatim
+# (8 lines x 53 chars, trailing spaces included) as a raw string so the backslashes survive.
+# The window is a transient dialog: it stays out of LAYOUT_WINDOW_TAGS, so a saved layout
+# never re-opens it at boot and the layout snapshot never records it.
+HELP_ASCII_LOGO: str = r""" ___      ___ ___  ________  _______   ________      
+|\  \    /  /|\  \|\   ____\|\  ___ \ |\   __  \     
+\ \  \  /  / | \  \ \  \___|\ \   __/|\ \  \|\  \    
+ \ \  \/  / / \ \  \ \_____  \ \  \_|/_\ \  \\\  \   
+  \ \    / /   \ \  \|____|\  \ \  \_|\ \ \  \\\  \  
+   \ \__/ /     \ \__\____\_\  \ \_______\ \_____  \ 
+    \|__|/       \|__|\_________\|_______|\|___| \__|
+                     \|_________|               \|__|"""
+
+# e08: About-window geometry (measured: logo is 53 chars wide; DejaVu Sans Mono 13px is
+# ~7.8px/char, so ~414px of art in a 540px window leaves ~63px of side padding).
+HELP_WINDOW_WIDTH = 540
+HELP_WINDOW_HEIGHT = 260
+HELP_LOGO_INDENT = (HELP_WINDOW_WIDTH - int(53 * 7.8)) // 2
+
+# e08: monospace font for the ASCII logo; the first existing path wins, None falls back to
+# the default proportional font (cosmetic only — the logo then drifts off alignment).
+_HELP_MONO_FONT_PATHS: tuple[str, ...] = (
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    "/usr/share/fonts/dejavu/DejaVuSansMono.ttf",
+    "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+)
+_help_mono_font: Any = None
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "layout": {"restore_on_boot": True, "windows": []},
     "theme": {"preset": "scuro", "colors": copy.deepcopy(DEFAULT_PALETTE)},
@@ -2027,6 +2055,31 @@ def show_logs_window(sender: Any = None, app_data: Any = None, user_data: Any = 
     dpg.show_item("logs_window")
 
 
+def centered_window_pos(
+    viewport_w: int, viewport_h: int, window_w: int, window_h: int
+) -> tuple[int, int]:
+    """Top-left position centering a window of the given size on a viewport.
+
+    Pure math (no dpg): each axis is (viewport - window) // 2, clamped at >= 0 so a window
+    larger than the viewport never gets a negative offset.
+    """
+    return (max(0, (viewport_w - window_w) // 2), max(0, (viewport_h - window_h) // 2))
+
+
+def show_help_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Open the About window from the menubar, re-centered on the viewport."""
+    dpg.set_item_pos(
+        "help_window",
+        centered_window_pos(
+            dpg.get_viewport_width(),
+            dpg.get_viewport_height(),
+            dpg.get_item_width("help_window"),
+            dpg.get_item_height("help_window"),
+        ),
+    )
+    dpg.show_item("help_window")
+
+
 def callback_resync() -> None:
     global current_step
     current_step = -1
@@ -2492,6 +2545,14 @@ dpg.create_context()
 with dpg.texture_registry(tag="texture_registry"):
     pass
 
+# e08: monospace font for the About-window ASCII logo (guarded: no font file -> None means
+# the logo falls back to the default proportional font). Built right after create_context.
+for _help_mono_font_path in _HELP_MONO_FONT_PATHS:
+    if os.path.exists(_help_mono_font_path):
+        with dpg.font_registry():
+            _help_mono_font = dpg.add_font(_help_mono_font_path, size=13)
+        break
+
 with dpg.handler_registry():
     # DPG 2.3.1 key handlers have no modifier support: the wrapper checks Ctrl itself
     dpg.add_key_press_handler(dpg.mvKey_C, callback=_on_copy_key)
@@ -2879,6 +2940,27 @@ with dpg.window(
 ):
     dpg.add_text("Waiting for OSC traffic...", tag="osc_log_text")
 
+# WINDOW 6: HELP / ABOUT (hidden; opened from the menubar "Help", re-centered on open, e08)
+with dpg.window(
+    label="Help",
+    width=HELP_WINDOW_WIDTH,
+    height=HELP_WINDOW_HEIGHT,
+    pos=(0, 0),
+    tag="help_window",
+    show=False,
+):
+    dpg.add_spacer(height=8)
+    with dpg.group(horizontal=True):
+        dpg.add_spacer(width=HELP_LOGO_INDENT)
+        dpg.add_text(HELP_ASCII_LOGO, tag="help_logo_text")
+        if _help_mono_font is not None:
+            dpg.bind_font("help_logo_text", _help_mono_font)
+    dpg.add_spacer(height=6)
+    themed_text("viseq — Audio-Reactive VJ Controller per Vimix", slot="text_bright")
+    dpg.add_separator()
+    themed_text("Licenza: GPL-3.0", slot="text")
+    themed_text("Creato da: Luca Franceschini aka Lupin3rd", slot="text")
+
 # NEW THREAD FOR HIGH-FREQUENCY FADES
 threading.Thread(target=fade_tick_loop, daemon=True).start()
 threading.Thread(target=spectrum_analyzer_loop, daemon=True).start()
@@ -2897,6 +2979,7 @@ with dpg.viewport_menu_bar():
     with dpg.menu(label="Show"):
         dpg.add_menu_item(label="Logs", callback=show_logs_window)
     dpg.add_menu_item(label="Settings", callback=show_settings_window)
+    dpg.add_menu_item(label="Help", callback=show_help_window)
 dpg.setup_dearpygui()
 dpg.show_viewport()
 autostart_osc()  # boot: auto-connect OSC client + start listening server (no manual clicks)
