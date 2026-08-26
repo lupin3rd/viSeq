@@ -2101,3 +2101,178 @@ def test_theme_preset_labels_english():
     assert viseq._preset_key("Dark") == "scuro"
     assert viseq._preset_key("Light") == "chiaro"
     assert viseq._preset_key("Custom") == "custom"
+
+
+# ---------- e09s01: MIDI mapping engine ----------
+def _mk_binding(device="", channel=0, type_="note", number=36, action="seq_toggle", params=None):
+    return {
+        "device": device,
+        "channel": channel,
+        "type": type_,
+        "number": number,
+        "action": action,
+        "params": params or {},
+    }
+
+
+def test_midi_config_defaults_merge(monkeypatch, tmp_path):
+    # a config with no midi section (pre-e09 file) must load with midi defaults
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"layout": {"restore_on_boot": False, "windows": []}}))
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    cfg = viseq.load_config()
+    assert cfg["midi"]["enabled"] is False
+    assert cfg["midi"]["input_port"] is None
+    assert cfg["midi"]["bindings"] == []
+
+
+def test_midi_config_round_trip(monkeypatch, tmp_path):
+    p = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    cfg = viseq.load_config()
+    cfg["midi"]["enabled"] = True
+    cfg["midi"]["input_port"] = "Launchpad MK2 MIDI 1"
+    cfg["midi"]["bindings"] = [_mk_binding(device="Launchpad MK2 MIDI 1", number=0)]
+    viseq.save_config(cfg)
+    loaded = viseq.load_config()
+    assert loaded["midi"]["enabled"] is True
+    assert loaded["midi"]["input_port"] == "Launchpad MK2 MIDI 1"
+    assert loaded["midi"]["bindings"][0]["number"] == 0
+
+
+def test_binding_matches_exact():
+    b = _mk_binding(channel=0, type_="note", number=36)
+    assert viseq.binding_matches(b, "note", 36, 0)
+    assert not viseq.binding_matches(b, "note", 37, 0), "wrong number must not match"
+    assert not viseq.binding_matches(b, "note", 36, 1), "wrong channel must not match"
+    assert not viseq.binding_matches(b, "cc", 36, 0), "wrong type must not match"
+
+
+def test_resolve_note_on_edge_semantics():
+    dpg.calls.clear()
+    saved = viseq.midi_bindings[:]
+    viseq.midi_bindings[:] = [_mk_binding(device="Port A", number=36, params={"row": 0, "col": 0})]
+    try:
+        import mido
+
+        on = mido.Message("note_on", note=36, velocity=100, channel=0)
+        off = mido.Message("note_on", note=36, velocity=0, channel=0)
+        note_off = mido.Message("note_off", note=36, channel=0)
+        wrong_port = mido.Message("note_on", note=36, velocity=100, channel=0)
+        wrong_note = mido.Message("note_on", note=37, velocity=100, channel=0)
+        result = [("seq_toggle", {"row": 0, "col": 0}, 100)]
+        assert viseq.resolve_midi_message(on, "Port A") == result
+        assert viseq.resolve_midi_message(off, "Port A") == [], "release edge must not fire"
+        assert viseq.resolve_midi_message(note_off, "Port A") == [], "note_off must not fire"
+        assert viseq.resolve_midi_message(wrong_port, "Port B") == [], "device filter"
+        assert viseq.resolve_midi_message(wrong_note, "Port A") == [], "wrong note"
+        wildcard = _mk_binding(device="", number=40, action="transport_play")
+        viseq.midi_bindings[:] = [wildcard]
+        any_port = mido.Message("note_on", note=40, velocity=1, channel=0)
+        assert viseq.resolve_midi_message(any_port, "Anything") == [("transport_play", {}, 1)]
+    finally:
+        viseq.midi_bindings[:] = saved
+
+
+def test_resolve_cc_carries_value():
+    saved = viseq.midi_bindings[:]
+    viseq.midi_bindings[:] = [_mk_binding(type_="cc", number=7, action="volume")]
+    try:
+        import mido
+
+        msg = mido.Message("control_change", control=7, value=64, channel=0)
+        assert viseq.resolve_midi_message(msg, "Knob") == [("volume", {}, 64)]
+    finally:
+        viseq.midi_bindings[:] = saved
+
+
+def test_midi_action_seq_toggle():
+    saved = [t["steps"][0]["active"] for t in viseq.tracks_data]
+    viseq.tracks_data[0]["steps"][0]["active"] = False
+    dpg.calls.clear()
+    viseq.midi_action_seq_toggle(0, 0)
+    assert viseq.tracks_data[0]["steps"][0]["active"] is True, "MIDI toggle must flip the step"
+    assert dpg.values.get("seq_cb_0_0") is True, "the cell checkbox must stay in sync"
+    viseq.midi_action_seq_toggle(0, 0)
+    assert viseq.tracks_data[0]["steps"][0]["active"] is False
+    for t, a in zip(viseq.tracks_data, saved, strict=True):
+        t["steps"][0]["active"] = a
+
+
+def test_midi_action_transport_and_nudge():
+    saved_playing = viseq.is_playing
+    viseq.is_playing = False
+    viseq.midi_execute(viseq.MIDI_ACTION_TRANSPORT_PLAY, {}, 0)
+    assert viseq.is_playing is True, "play action must toggle the transport"
+    viseq.is_playing = saved_playing
+
+    saved_step = viseq.current_step
+    viseq.current_step = 3
+    viseq.midi_execute(viseq.MIDI_ACTION_TRANSPORT_RESYNC, {}, 0)
+    assert viseq.current_step == -1, "resync must reset the playhead"
+    viseq.current_step = saved_step
+
+    saved_bpm = viseq.current_bpm
+    viseq.current_bpm = 120.0
+    viseq.midi_action_transport_tap()
+    viseq.midi_action_transport_tap()
+    assert viseq.current_bpm != 120.0, "two taps must compute a BPM"
+    viseq.current_bpm = saved_bpm
+
+
+def test_midi_action_beat_source_and_track_assign():
+    saved_beat = viseq.beat_source
+    viseq.midi_action_beat_source(viseq.BEAT_SOURCE_MANUAL)
+    assert viseq.beat_source == viseq.BEAT_SOURCE_MANUAL
+    viseq.beat_source = saved_beat
+
+    saved_state = dict(viseq.global_vimix_state)
+    saved_target = viseq.tracks_data[0].get("target_id")
+    viseq.global_vimix_state["current_source"] = "0"
+    viseq.global_vimix_state["sources"] = {"0": {"name": "clipA", "uri": "u"}}
+    viseq.midi_execute(viseq.MIDI_ACTION_TRACK_ASSIGN, {"row": 0}, 0)
+    assert viseq.tracks_data[0]["target_id"] == "clipA"
+    viseq.global_vimix_state.clear()
+    viseq.global_vimix_state.update(saved_state)
+    viseq.tracks_data[0]["target_id"] = saved_target
+
+
+def test_midi_learn_complete_merges_source_and_action():
+    viseq.midi_learn_pending = ("seq_toggle", {"row": 2, "col": 3})
+    viseq.midi_bindings.clear()
+    dpg.calls.clear()
+    source = {"device": "Launchpad", "channel": 0, "type": "note", "number": 23}
+    viseq.midi_learn_complete(source)
+    assert len(viseq.midi_bindings) == 1
+    b = viseq.midi_bindings[0]
+    assert b["action"] == "seq_toggle" and b["params"] == {"row": 2, "col": 3}
+    assert b["number"] == 23 and b["device"] == "Launchpad"
+    assert viseq.midi_learn_pending is None, "the pending slot must clear after a capture"
+    viseq.midi_bindings.clear()
+
+
+def test_midi_init_from_config_and_enable_persist(monkeypatch, tmp_path):
+    p = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    cfg = viseq.load_config()
+    cfg["midi"]["enabled"] = True
+    cfg["midi"]["input_port"] = "Device1"
+    cfg["midi"]["bindings"] = [_mk_binding(device="Device1", number=1)]
+    viseq.save_config(cfg)
+    viseq.midi_init_from_config(viseq.load_config())
+    assert viseq.midi_enabled is True
+    assert viseq.midi_input_port == "Device1"
+    assert len(viseq.midi_bindings) == 1
+    # disable via the public toggle persists
+    viseq.set_midi_enabled(False)
+    assert viseq.midi_enabled is False
+    assert viseq.load_config()["midi"]["enabled"] is False
+    # restore the shared mirrors for other tests
+    viseq.midi_init_from_config(viseq.load_config())
+
+
+def test_midi_first_input_discovery(monkeypatch):
+    import mido
+
+    monkeypatch.setattr(mido, "get_input_names", lambda: ["Launchpad X MIDI 1"])
+    assert mido.get_input_names() == ["Launchpad X MIDI 1"], "discovery must list devices"

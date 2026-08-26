@@ -212,10 +212,31 @@ _HELP_MONO_FONT_PATHS: tuple[str, ...] = (
 )
 _help_mono_font: Any = None
 
+# --- e09: MIDI control engine (single mido stack; notes + CCs, user-configurable bindings) ---
+MIDI_ACTION_SEQ_TOGGLE = "seq_toggle"
+MIDI_ACTION_TRANSPORT_PLAY = "transport_play"
+MIDI_ACTION_TRANSPORT_RESYNC = "transport_resync"
+MIDI_ACTION_TRANSPORT_TAP = "transport_tap"
+MIDI_ACTION_NUDGE_BACK = "nudge_back"
+MIDI_ACTION_NUDGE_FORWARD = "nudge_forward"
+MIDI_ACTION_BEAT_SOURCE = "beat_source"
+MIDI_ACTION_TRACK_ASSIGN = "track_assign"
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "layout": {"restore_on_boot": True, "windows": []},
     "theme": {"preset": "scuro", "colors": copy.deepcopy(DEFAULT_PALETTE)},
+    "midi": {"enabled": False, "input_port": None, "bindings": []},
 }
+
+# MIDI control runtime mirrors of cfg["midi"] (e09). The worker thread reads these; the
+# main thread writes them. Bindings: [{device, channel, type("note"/"cc"), number,
+# action, params}]. Learn flow state (e09s02): pending = (action, params) captured by a
+# learnable widget click, awaiting the next incoming MIDI message.
+midi_enabled: bool = False
+midi_input_port: str | None = None
+midi_bindings: list[dict[str, Any]] = []
+midi_learn_mode: bool = False
+midi_learn_pending: tuple[str, dict[str, Any]] | None = None
 
 # Runtime bindings (tag -> palette slot) recorded at widget creation so apply_palette() can
 # re-theme live. Theme color items are updated via set_value; text/draw items via
@@ -620,6 +641,7 @@ def on_restore_layout_boot_toggle(
 def apply_boot_config() -> None:
     """Boot: apply the persisted theme and (optionally) the saved window layout (e06)."""
     cfg = load_config()
+    midi_init_from_config(cfg)  # e09: MIDI control mirrors (enabled, port, bindings)
     _apply_theme_config(cfg["theme"])
     if dpg.does_item_exist("cb_restore_layout_boot"):
         dpg.set_value("cb_restore_layout_boot", cfg["layout"]["restore_on_boot"])
@@ -852,24 +874,26 @@ def frame_sleep() -> float:
 # ==============================================================================
 
 
-def assign_clip_to_track(sender: Any, app_data: Any, user_data: Any) -> None:
-    row = user_data
+def midi_action_track_assign(row: int) -> None:
+    """Assign the current viOSC source to track row — shared by mouse and MIDI (e09)."""
     current_source = global_vimix_state.get("current_source")
+    if current_source is None:
+        return
+    data_dict = global_vimix_state.get("sources", {})
+    target_id = None
+    for k, props in data_dict.items():
+        if str(k) == str(current_source):
+            name = props.get("name")
+            target_id = str(name) if name else str(k)
+            break
+    if target_id:
+        tracks_data[row]["target_id"] = target_id
+        tracks_data[row]["base_address"] = f"/vimix/{target_id}"
+        update_track_slot_ui(row)
 
-    if current_source is not None:
-        data_dict = global_vimix_state.get("sources", {})
-        target_id = None
 
-        for k, props in data_dict.items():
-            if str(k) == str(current_source):
-                name = props.get("name")
-                target_id = str(name) if name else str(k)
-                break
-
-        if target_id:
-            tracks_data[row]["target_id"] = target_id
-            tracks_data[row]["base_address"] = f"/vimix/{target_id}"
-            update_track_slot_ui(row)
+def assign_clip_to_track(sender: Any, app_data: Any, user_data: Any) -> None:
+    midi_action_track_assign(user_data)
 
 
 def update_track_slot_ui(row: int) -> None:
@@ -997,12 +1021,24 @@ def _any_input_focused() -> bool:
     return any(dpg.does_item_exist(tag) and dpg.is_item_focused(tag) for tag in INPUT_WIDGET_TAGS)
 
 
-def toggle_step_active(sender: Any, app_data: Any, user_data: Any) -> None:
-    row, col = user_data
+def _set_step_active(row: int, col: int, state: bool) -> None:
+    """Set a step's active state and refresh its visuals — shared by mouse and MIDI."""
     global active_step
     active_step = (row, col)  # clicking a step makes it the shortcut target
-    tracks_data[row]["steps"][col]["active"] = app_data
+    tracks_data[row]["steps"][col]["active"] = state
+    if dpg.does_item_exist(f"seq_cb_{row}_{col}"):
+        dpg.set_value(f"seq_cb_{row}_{col}", state)  # keep the cell checkbox in sync
     update_step_theme(row, col)
+
+
+def toggle_step_active(sender: Any, app_data: Any, user_data: Any) -> None:
+    row, col = user_data
+    _set_step_active(row, col, bool(app_data))
+
+
+def midi_action_seq_toggle(row: int, col: int) -> None:
+    """Toggle step (row, col) from a MIDI trigger (e09; mouse path keeps the checkbox value)."""
+    _set_step_active(row, col, not tracks_data[row]["steps"][col]["active"])
 
 
 def update_step_val(sender: Any, app_data: Any, user_data: Any) -> None:
@@ -1044,7 +1080,10 @@ def update_step_ui(row: int, col: int) -> None:
 
     with dpg.group(horizontal=True, parent=cell_tag):
         cb = dpg.add_checkbox(
-            default_value=step_data["active"], callback=toggle_step_active, user_data=(row, col)
+            default_value=step_data["active"],
+            tag=f"seq_cb_{row}_{col}",
+            callback=toggle_step_active,
+            user_data=(row, col),
         )
         dpg.add_text(
             step_data["type"] if step_data["type"] != "NONE" else "",
@@ -1967,15 +2006,12 @@ def autostart_osc() -> None:
     start_osc_server(VIOSC_IP, VIOSC_LISTEN_PORT)
 
 
-def on_beat_source(sender: Any, app_data: Any, user_data: Any) -> None:
-    """Select the sequencer beat source; exactly one checkbox stays active."""
+def midi_action_beat_source(mode: str) -> None:
+    """Select the sequencer beat source — shared by mouse and MIDI (e09)."""
     global beat_source, current_bpm
-    if not app_data:
-        dpg.set_value(sender, True)  # a beat source must remain selected
-        return
-    beat_source = user_data
-    for mode in BEAT_SOURCE_LABELS:
-        dpg.set_value(f"cb_beat_{mode}", mode == beat_source)
+    beat_source = mode
+    for m in BEAT_SOURCE_LABELS:
+        dpg.set_value(f"cb_beat_{m}", m == beat_source)
     is_manual = beat_source == BEAT_SOURCE_MANUAL
     dpg.configure_item("manual_bpm_input", show=is_manual)
     dpg.configure_item("btn_tap", show=is_manual)
@@ -1983,6 +2019,14 @@ def on_beat_source(sender: Any, app_data: Any, user_data: Any) -> None:
         current_bpm = float(dpg.get_value("manual_bpm_input"))
         dpg.set_value("testo_bpm", f"BPM: {current_bpm:.1f}")
         dpg.set_value("manual_bpm_text", f"{current_bpm:.0f} BPM")
+
+
+def on_beat_source(sender: Any, app_data: Any, user_data: Any) -> None:
+    """Select the sequencer beat source; exactly one checkbox stays active."""
+    if not app_data:
+        dpg.set_value(sender, True)  # a beat source must remain selected
+        return
+    midi_action_beat_source(user_data)
 
 
 def on_manual_bpm(sender: Any, app_data: Any, user_data: Any) -> None:
@@ -1993,8 +2037,8 @@ def on_manual_bpm(sender: Any, app_data: Any, user_data: Any) -> None:
     dpg.set_value("manual_bpm_text", f"{current_bpm:.0f} BPM")
 
 
-def tap_bpm(sender: Any, app_data: Any, user_data: Any) -> None:
-    """Set the BPM from the average interval of the last taps (manual mode)."""
+def midi_action_transport_tap() -> None:
+    """Register a tap for the manual BPM — shared by mouse and MIDI (e09)."""
     global current_bpm
     now = time.time()
     if tap_times and now - tap_times[-1] > 2.0:
@@ -2010,9 +2054,175 @@ def tap_bpm(sender: Any, app_data: Any, user_data: Any) -> None:
         dpg.set_value("manual_bpm_text", f"{current_bpm:.0f} BPM")
 
 
+def tap_bpm(sender: Any, app_data: Any, user_data: Any) -> None:
+    """Set the BPM from the average interval of the last taps (manual mode)."""
+    midi_action_transport_tap()
+
+
 def midi_beats_from_pulses(pulses: int) -> int:
     """Whole quarter-note beats contained in a MIDI clock pulse count (24 pulses/beat)."""
     return pulses // MIDI_CLOCK_PULSES_PER_BEAT
+
+
+# ---------- e09: MIDI control engine ----------
+def binding_matches(binding: dict[str, Any], msg_type: str, number: int, channel: int) -> bool:
+    """True when a parsed MIDI message (type, number, channel) matches the binding."""
+    if binding.get("type") != msg_type:
+        return False
+    if int(binding.get("number", -1)) != number:
+        return False
+    return int(binding.get("channel", 0)) == channel
+
+
+def _binding_device_ok(binding: dict[str, Any], port_name: str) -> bool:
+    """A binding matches the port when its device is empty (wildcard) or equals it."""
+    dev = binding.get("device")
+    return not dev or dev == port_name or dev == "*"
+
+
+def _parse_midi_msg(msg: Any) -> tuple[str | None, int, int]:
+    """Map a mido message to (type, number, value); release edges and other types -> None.
+
+    note_on velocity>0 is the trigger edge (velocity 0 and note_off are releases and must
+    never fire a binding — Launchpad sends note_on with velocity 0 on release).
+    """
+    if msg.type == "note_on":
+        if msg.velocity > 0:
+            return ("note", int(msg.note), int(msg.velocity))
+        return (None, 0, 0)
+    if msg.type == "note_off":
+        return (None, 0, 0)
+    if msg.type == "control_change":
+        return ("cc", int(msg.control), int(msg.value))
+    return (None, 0, 0)
+
+
+def resolve_midi_message(msg: Any, port_name: str) -> list[tuple[str, dict[str, Any], int]]:
+    """Bindings matching a raw mido message on the given port -> (action, params, value)."""
+    msg_type, number, value = _parse_midi_msg(msg)
+    if msg_type is None:
+        return []
+    channel = int(getattr(msg, "channel", 0))
+    out: list[tuple[str, dict[str, Any], int]] = []
+    for binding in list(midi_bindings):
+        if not _binding_device_ok(binding, port_name):
+            continue
+        if binding_matches(binding, msg_type, number, channel):
+            out.append((str(binding.get("action", "")), dict(binding.get("params") or {}), value))
+    return out
+
+
+def binding_source_from_message(msg: Any, port_name: str) -> dict[str, Any] | None:
+    """The (device, channel, type, number) half of a binding from a message; releases -> None."""
+    msg_type, number, _ = _parse_midi_msg(msg)
+    if msg_type is None:
+        return None
+    return {"device": port_name, "channel": int(msg.channel), "type": msg_type, "number": number}
+
+
+def midi_execute(action: str, params: dict[str, Any], value: int) -> None:
+    """Execute a resolved MIDI action on the main thread (called via ui_task_queue, e09)."""
+    if action == MIDI_ACTION_SEQ_TOGGLE:
+        midi_action_seq_toggle(int(params.get("row", 0)), int(params.get("col", 0)))
+    elif action == MIDI_ACTION_TRANSPORT_PLAY:
+        toggle_play()
+    elif action == MIDI_ACTION_TRANSPORT_RESYNC:
+        callback_resync()
+    elif action == MIDI_ACTION_TRANSPORT_TAP:
+        midi_action_transport_tap()
+    elif action == MIDI_ACTION_NUDGE_BACK:
+        callback_nudge_backward()
+    elif action == MIDI_ACTION_NUDGE_FORWARD:
+        callback_nudge_forward()
+    elif action == MIDI_ACTION_BEAT_SOURCE:
+        midi_action_beat_source(str(params.get("mode", "")))
+    elif action == MIDI_ACTION_TRACK_ASSIGN:
+        midi_action_track_assign(int(params.get("row", 0)))
+
+
+def _midi_enqueue_execute(action: str, params: dict[str, Any], value: int) -> None:
+    """Push one resolved MIDI action execution to the main thread (ui_task_queue)."""
+    ui_task(lambda: midi_execute(action, params, value))
+
+
+def handle_midi_message(msg: Any, port_name: str) -> None:
+    """Route one incoming message (worker thread): learn capture first, then dispatch."""
+    if midi_learn_pending is not None:
+        source = binding_source_from_message(msg, port_name)
+        if source is not None:
+            ui_task(lambda: midi_learn_complete(source))
+            return
+    for action, params, value in resolve_midi_message(msg, port_name):
+        _midi_enqueue_execute(action, params, value)
+
+
+def midi_learn_complete(binding: dict[str, Any]) -> None:
+    """Main thread: merge the captured source with the pending action and store the binding."""
+    global midi_learn_pending
+    if midi_learn_pending is None:
+        return
+    action, params = midi_learn_pending
+    binding["action"] = action
+    binding["params"] = params
+    midi_bindings.append(binding)
+    midi_learn_pending = None
+    if dpg.does_item_exist("midi_learn_status"):
+        dpg.set_value(
+            "midi_learn_status",
+            f"Bound: {action} <- {binding['device']} {binding['type']} {binding['number']}",
+        )
+
+
+def midi_init_from_config(cfg: dict[str, Any]) -> None:
+    """Load the MIDI control mirrors from the config (boot; the menu UI comes in e09s02)."""
+    global midi_enabled, midi_input_port
+    midi_cfg = cfg.get("midi") or {}
+    midi_enabled = bool(midi_cfg.get("enabled", False))
+    midi_input_port = midi_cfg.get("input_port") or None
+    midi_bindings[:] = midi_cfg.get("bindings") or []
+
+
+def set_midi_enabled(enabled: bool) -> None:
+    """Enable/disable the MIDI control engine and persist the flag (main thread)."""
+    global midi_enabled
+    midi_enabled = enabled
+    cfg = load_config()
+    cfg["midi"]["enabled"] = enabled
+    save_config(cfg)
+
+
+def midi_control_loop() -> None:
+    """MIDI control worker (e09): match messages against bindings, push executions to the
+    main thread via ui_task_queue (HIGH-1 — no direct dpg calls here).
+    """
+    global midi_input_port
+    try:
+        import mido
+    except ImportError:
+        return
+    while True:
+        if not midi_enabled:
+            time.sleep(0.2)
+            continue
+        port_name = midi_input_port
+        if not port_name:
+            names = mido.get_input_names()
+            if not names:
+                time.sleep(1.0)  # no device: retry quietly
+                continue
+            port_name = names[0]  # device discovery (Launchpad picked by name in e09s03)
+        try:
+            with mido.open_input(port_name) as port:
+                midi_input_port = port_name
+                append_log("MIDI", f"Control listening on {port_name}")
+                while midi_enabled:
+                    for msg in port.iter_pending():
+                        handle_midi_message(msg, port_name)
+                    time.sleep(0.002)
+        except Exception as e:
+            log_error("MIDI", str(e))
+            midi_input_port = None
+            time.sleep(2.0)
 
 
 def midi_clock_loop() -> None:
@@ -2970,6 +3180,7 @@ with dpg.window(
 threading.Thread(target=fade_tick_loop, daemon=True).start()
 threading.Thread(target=spectrum_analyzer_loop, daemon=True).start()
 threading.Thread(target=midi_clock_loop, daemon=True).start()
+threading.Thread(target=midi_control_loop, daemon=True).start()  # e09: control worker
 
 threading.Thread(target=sequencer_tick, daemon=True).start()
 threading.Thread(target=visual_metronome_loop, daemon=True).start()
