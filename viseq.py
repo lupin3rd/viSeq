@@ -99,6 +99,9 @@ CONFIG_PATH = os.path.join(CONFIG_DIR, "viseq_config.json")
 # viseq application version — single source of truth (matches specs/release-plan.yaml, e08s02).
 APP_VERSION: str = "1.1.0"
 
+# Author's GitHub profile, shown as a link in the About window (e08s01, user request).
+GITHUB_URL: str = "https://github.com/lupin3rd"
+
 # Palette slots drive every chrome color: the global theme, the per-item themes, explicit
 # text colors and the main draw items. The five primaries are user-editable in the Settings
 # window; the rest derive from them (derive_palette). The "Dark" preset reproduces the
@@ -200,7 +203,7 @@ HELP_ASCII_LOGO: str = r""" ___      ___ ___  ________  _______   ________
 # e08: About-window geometry (measured: logo is 53 chars wide; DejaVu Sans Mono 13px is
 # ~7.8px/char, so ~414px of art in a 540px window leaves ~63px of side padding).
 HELP_WINDOW_WIDTH = 540
-HELP_WINDOW_HEIGHT = 260
+HELP_WINDOW_HEIGHT = 300  # logo + title + version/license/author lines + GitHub button
 HELP_LOGO_INDENT = (HELP_WINDOW_WIDTH - int(53 * 7.8)) // 2
 
 # e08: monospace font for the ASCII logo; the first existing path wins, None falls back to
@@ -2617,6 +2620,16 @@ def show_help_window(sender: Any = None, app_data: Any = None, user_data: Any = 
     dpg.show_item("help_window")
 
 
+def open_github(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Open the author's GitHub profile in the default browser (Help window link)."""
+    try:
+        import webbrowser
+
+        webbrowser.open(GITHUB_URL)
+    except Exception as e:
+        log_error("Help", str(e))
+
+
 def callback_resync(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     global current_step
     current_step = -1
@@ -3527,11 +3540,12 @@ with dpg.window(
             # DPG 2.3.1: bind_item_font(item, font); bind_font() only takes a global font.
             dpg.bind_item_font("help_logo_text", _help_mono_font)
     dpg.add_spacer(height=6)
-    themed_text("viseq — Audio-Reactive VJ Controller for Vimix", slot="text_bright")
+    themed_text("viSeq — Audio-Reactive VJ Controller for Vimix", slot="text_bright")
     dpg.add_separator()
     themed_text(f"Version: {APP_VERSION}", slot="text")
     themed_text("License: GPL-3.0", slot="text")
     themed_text("Created by: Luca Franceschini aka Lupin3rd", slot="text")
+    dpg.add_button(label=f"GitHub: {GITHUB_URL}", callback=open_github)
 
 # WINDOW 7: MIDI (hidden; opened from the menubar "MIDI"). ALL MIDI features live here:
 # enable toggle, controller selection, MIDI Learn and the mappings list (e09s02, user
@@ -3593,7 +3607,7 @@ threading.Thread(target=visual_metronome_loop, daemon=True).start()
 threading.Thread(target=essentia_analyzer_loop, daemon=True).start()
 threading.Thread(target=thumbnail_decoder_worker, daemon=True).start()
 
-dpg.create_viewport(title="viseq - Audio-Reactive VJ Controller", width=1700, height=1080)
+dpg.create_viewport(title="viSeq - Audio-Reactive VJ Controller", width=1700, height=1080)
 apply_boot_config()  # e06: apply the saved theme + (optionally) the saved window layout
 with dpg.viewport_menu_bar():
     with dpg.menu(label="Monitor"):

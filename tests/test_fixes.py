@@ -275,6 +275,11 @@ import_time_midi_status = [
 import_time_seq_cb_0_0 = [
     kw for n, a, kw in dpg.calls if n == "add_checkbox" and kw.get("tag") == "seq_cb_0_0"
 ]
+import_time_github_btn = [
+    kw
+    for n, a, kw in dpg.calls
+    if n == "add_button" and str(kw.get("label", "")).startswith("GitHub:")
+]
 
 # e04: audio-window spectrum structure, captured before any calls-list clears
 spec_drawlist_tag = any(
@@ -2705,3 +2710,31 @@ def test_launchpad_flash_playhead_restores(monkeypatch):
         viseq.launchpad_out = saved_out
         viseq.launchpad_protocol = saved_proto
         viseq.current_step = saved_step
+
+
+# ---------- e08 follow-up: viSeq branding + GitHub link in the About window ----------
+def test_help_window_title_uses_viseq_branding():
+    texts = [t for t in import_time_texts if isinstance(t, str)]
+    assert any("viSeq" in t for t in texts), "the About title must use the viSeq branding"
+    assert not any(str(t).startswith("viseq ") for t in texts if isinstance(t, str)), (
+        "no lowercase 'viseq' branding may remain in user-facing text"
+    )
+
+
+def test_help_window_github_link():
+    assert viseq.GITHUB_URL == "https://github.com/lupin3rd"
+    assert import_time_github_btn, "the About window must offer the GitHub link button"
+    assert import_time_github_btn[0].get("label") == f"GitHub: {viseq.GITHUB_URL}"
+    assert import_time_github_btn[0].get("callback") == viseq.open_github
+
+
+def test_open_github_opens_browser(monkeypatch):
+    opened = []
+
+    class FakeBrowser:
+        def open(self, url):
+            opened.append(url)
+
+    monkeypatch.setattr("webbrowser.open", FakeBrowser().open)
+    viseq.open_github()
+    assert opened == ["https://github.com/lupin3rd"], "the callback must open the profile URL"
