@@ -109,3 +109,19 @@ epics:
       - id: e08s02
         title: "Version line in the About window (APP_VERSION) + full English UI labels pass"
         bcps: 2
+
+  - id: e09
+    slug: midi-control
+    title: "MIDI control: configurable mapping engine, MIDI Learn + menu, Novation Launchpad adapter with sequencer LED mirror"
+    wsjf: 45
+    baseline_bcps: 11
+    stories:
+      - id: e09s01
+        title: "MIDI mapping engine: binding schema + pure matching + action dispatch + midi_control_loop worker + config persistence"
+        bcps: 4
+      - id: e09s02
+        title: "MIDI Learn flow + MIDI menu (Enable, Learn, Mappings window with Delete, Save)"
+        bcps: 3
+      - id: e09s03
+        title: "Novation Launchpad adapter: model detection, 8x8 grid bindings, sequencer LED mirror"
+        bcps: 4

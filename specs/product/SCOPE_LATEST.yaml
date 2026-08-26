@@ -2,51 +2,61 @@
 # Consumed by: slice-tasks, plan-work, develop-tdd, verify-work
 
 core_value: >-
-  Give the user a one-click "Help" entry in the top menubar that opens an About window,
-  centered on the viewport, showing the viseq ASCII-art logo, the license (GPL-3.0) and
-  the author (Luca Franceschini aka Lupin3rd).
+  Let the user drive viseq from any MIDI controller — first the Novation Launchpad as an
+  8x8 hardware view of the step sequencer (buttons toggle steps, the pads' LEDs mirror the
+  sequencer state) — through a configurable, user-learnable mapping engine that binds
+  arbitrary MIDI notes and CCs to viseq actions.
 
 summary: >-
-  viseq has no way to discover what it is, who wrote it, or under which license it is
-  distributed. This initiative adds a "Help" entry in the viewport menubar (next to the
-  existing "Settings" entry) that opens a small hidden-until-then About window always
-  centered on the screen. The window shows the ASCII-art logo the user supplied (rendered
-  in a monospace font when one is available, with a graceful fallback), the app name, the
-  license line (GPL-3.0) and the author line (Luca Franceschini aka Lupin3rd).
+  viseq already depends on mido + python-rtmidi for MIDI clock sync. This initiative adds a
+  full MIDI control layer on top of that single stack, in three layers: (1) a mapping
+  engine — a configurable list of bindings {device, channel, type (note/cc), number,
+  action, params} persisted in viseq_config.json, dispatched by a worker thread whose
+  action executions are routed to the main thread through the existing ui_task_queue
+  (HIGH-1 invariant); (2) a MIDI Learn flow — the user first clicks the viseq control they
+  want to control, then presses the MIDI button (or moves the knob) that should trigger it,
+  and the binding is created; the menubar gains a "MIDI" menu with Enable, Learn, a
+  Mappings window (list + delete) and Save; (3) a Novation Launchpad adapter — model
+  auto-detection from the port name (MK2 family: native note mode; Launchpad X / Mini MK3:
+  programmer-mode SysEx), the 8x8 pad grid maps 1:1 to the step sequencer (auto-generated
+  bindings, not stored in user config), and the pad LEDs mirror step state (active = green,
+  empty = off, current playhead = white/amber, beat flash).
 
-  The About window follows the exact pattern already proven by e03 (Settings/Logs): a
-  hidden boot window (show=False, closable with X), opened by a menubar callback. It is
-  NOT part of the layout save/restore (it is a dialog, not workspace) and it is NOT
-  tracked by LAYOUT_WINDOW_TAGS. The centering math is a pure, unit-tested helper
-  (centered_window_pos) that the show callback feeds with the live viewport/window sizes.
+  Scope for v1 is the sequencer window (user decision): step toggle, transport
+  (play/stop, resync, tap, nudge) and clip-assign buttons are learnable. The engine
+  supports CC bindings end-to-end (capture, store, dispatch with the controller value);
+  concrete CC-driven actions (e.g. monitor volume) come with the monitor-player scope later.
 
 in_scope:
-  - e08s01: "Help menubar entry (label 'Help') opening an About window (tag help_window, hidden at boot, closable with X) always centered on the viewport; window content = ASCII-art logo (monospace font when available, default font fallback), app title, license line 'GPL-3.0', author line 'Luca Franceschini aka Lupin3rd'."
-  - e08s02: "Version line in the About window (APP_VERSION constant, single source of truth) + full English UI pass: every user-facing label in viseq is English (theme presets Dark/Light/Custom, beat-source labels, Settings sections/buttons/checkbox, help-window lines)."
+  - e09s01: "MIDI mapping engine: binding schema in viseq_config.json (midi section: enabled, input_port, bindings), pure matching (binding_matches), resolve_midi_message -> actions, action vocabulary for the sequencer (seq_toggle, transport_play/resync/tap/nudge, beat_source, track_assign), midi_control_loop worker routing executions through ui_task_queue, enable/disable."
+  - e09s02: "MIDI Learn + menu: learn mode (click a learnable viseq control -> capture action -> press MIDI button -> create binding), learnable wrappers on sequencer widgets, 'MIDI' menubar menu (Enable checkbox, Learn, Mappings window with per-binding Delete, Save to config)."
+  - e09s03: "Novation Launchpad adapter: model detection from port name (MK2/Mini MK2/Pro native note mode; X/Mini MK3 programmer-mode SysEx F0 00 20 29 02 0C ...), 8x8 grid -> seq_toggle auto-bindings, LED mirror of the sequencer (step state colors, playhead, beat flash), output via mido with a lock, safe no-op when no device."
 
 out_of_scope:
-  - "Version number or changelog beyond the single version line — no changelog, no per-feature versioning (deferred)."
-  - "Layout save/restore integration for help_window — it is a transient dialog; it must not appear in LAYOUT_WINDOW_TAGS and a saved layout must never re-open it at boot."
-  - "Localization framework or i18n — the English pass is a direct label translation, not a locale system."
-  - "A modal/always-on-top window — the window is closable, movable and can be re-centered on next open."
-  - "Any change to the OSC contract, sequencer, media grid or existing windows beyond label text."
-  - "Renaming internal identifiers, tags or config keys (scuro/chiaro/custom stay as-is) — only the displayed text changes."
+  - "Monitor-player / spectrum-analyzer MIDI control — deferred to a later epic (user: 'iniziare dalla finestra sequencer 8x8, poi vedremo')."
+  - "CC-driven continuous actions in v1 — the engine stores and dispatches CC bindings with their value, but no sequencer action consumes the value yet (deferred with the monitor scope)."
+  - "SysEx message bindings in the user mapping engine — v1 covers note + control_change only (Launchpad programmer-mode SysEx is handled internally by the adapter)."
+  - "Any change to the frozen OSC contract with viOSC/Vimix."
+  - "Multi-device parallel control (two controllers at once) — one input port at a time in v1."
+  - "i18n or a MIDI preset manager beyond Save/Delete of the current mapping list."
 
 constraints:
-  - "Runtime: Python 3.13, dearpygui 2.3.1, single-file viseq.py (no module split)."
-  - "UI mutations stay on the main thread (HIGH-1): the help window is created at boot and shown from a menu callback — no worker involvement."
-  - "Headless verification via the stub harness (tests/test_fixes.py): import-time window snapshot, pure centering math, callback assertions."
-  - "Monospace font loading must be defensive (os.path.exists guard) and must not crash headless tests where no font file exists."
+  - "Runtime: Python 3.13, dearpygui 2.3.1, mido 1.3.3 + python-rtmidi 1.5.8 (already in requirements.txt — NO new dependencies)."
+  - "HIGH-1: the MIDI worker thread never touches dpg directly; action executions and learn-capture UI updates are pushed to the main thread via ui_task_queue."
+  - "Config compatibility: existing viseq_config.json files (layout + theme only) must keep working — the midi section merges in with defaults (load_config deep-merge already provides this)."
+  - "Launchpad protocol knowledge comes from the official Programmers Reference (MK2 note mode: grid notes row*10+col, velocity = LED color; SysEx header F0 00 20 29 02 0C; MK3/X need programmer-mode SysEx) — exact per-model tables are finalized in the spike/implementation and validated on the user's real hardware."
+  - "Headless verification via the stub harness + mido being real (no ports on CI -> worker logs once and idles; all engine logic is pure and unit-tested)."
 
 success_criteria:
-  - "Menubar shows a 'Help' entry whose callback opens the help window."
-  - "Opening the window re-centers it on the viewport: centered_window_pos(viewport, window) returns ( (vp_w - w) // 2, (vp_h - h) // 2 ) clamped at >= 0, and show_help_window applies it via set_item_pos + show_item."
-  - "The window is hidden at boot, closable with X, and its content includes the full supplied ASCII logo, a 'Version: <APP_VERSION>' line, the GPL-3.0 license line and the 'Luca Franceschini aka Lupin3rd' author line — all in English."
-  - "No Italian UI string remains: an audit grep over viseq.py label/themed-text strings finds none (regression test asserting the English labels)."
-  - "help_window is not in LAYOUT_WINDOW_TAGS; test_layout_window_tags_cover_all_fixed_windows stays green unchanged."
-  - "Full regression suite green (129 existing tests + new ones); preflight green; manual acceptance on the real rig."
+  - "A user-learned binding {device, channel, type, number, action, params} persisted in the config round-trips load/save and dispatches the right action with the right params (unit tests)."
+  - "A CC binding dispatches with its controller value; a note binding dispatches on note-on edges (unit tests)."
+  - "The learn flow creates a binding from 'click GUI control -> press MIDI button' without manual JSON editing, and the Mappings window shows it with working Delete (stub tests + manual acceptance)."
+  - "With a Launchpad connected, pressing pad (r,c) toggles step (r,c), and the pad LEDs mirror the sequencer (step active/empty/playhead/beat) (manual acceptance on the user's real hardware; protocol tables unit-tested headless)."
+  - "Existing configs without a midi section load unchanged; full regression suite green; preflight green."
 
 references:
-  - "specs/epics/e03-window-manager-restructure/e03s02-show-logs.md (prior hidden-window + menubar pattern)"
-  - "specs/epics/e06-settings-window-features/e06s01-window-layout.md (LAYOUT_WINDOW_TAGS / LAYOUT_ALWAYS_HIDDEN_TAGS contract)"
+  - "Novation Launchpad MK2 Programmers Reference Manual v1.03 (grid notes row*10+col, velocity = color, SysEx header F0 00 20 29 02 0C)"
+  - "Novation Launchpad X user guide (programmer mode for MK3-family)"
   - "specs/tech-architecture/tech-stack.md"
+  - "specs/epics/e06-settings-window-features/e06s01-window-layout.md (config merge pattern)"
+  - "specs/epics/e08-help-window/ (menubar + window patterns)"

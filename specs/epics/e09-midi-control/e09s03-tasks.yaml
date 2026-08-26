@@ -1,0 +1,29 @@
+story_id: e09s03
+title: "Novation Launchpad adapter: model detection, 8x8 grid bindings, sequencer LED mirror"
+status: failing
+bcps: 4
+tasks:
+- id: 1
+  description: "Adapter core: port-name model detection (MK2/Mini MK2/Pro -> native note mode; 'Launchpad X'/'Mini MK3' -> programmer-mode SysEx F0 00 20 29 02 0C ... on connect), launchpad note table (grid r,c -> note, top/right controls), launchpad_led(r, c, color) via note-on velocity with a send lock, no-op when no output port"
+  verify: ".venv/bin/python -m pytest tests/ -q -k 'launchpad_model or launchpad_led'"
+  risk: P0
+  status: failing
+  allure:
+    severity: critical
+    categories: ["midi", "hardware"]
+- id: 2
+  description: "Grid -> sequencer: auto-bindings pad (r,c) -> seq_toggle(r,c) (internal, not stored in user config), resolved through the same engine path as learned bindings"
+  verify: ".venv/bin/python -m pytest tests/ -q -k 'launchpad_grid'"
+  risk: P0
+  status: failing
+  allure:
+    severity: critical
+    categories: ["midi", "sequencer"]
+- id: 3
+  description: "LED mirror: step state colors (active=green, empty=off, playhead=white/amber, beat flash) pushed from update_step_theme / sequencer tick / toggle paths on the main thread"
+  verify: ".venv/bin/python -m pytest tests/ -q -k 'launchpad_mirror'"
+  risk: P0
+  status: failing
+  allure:
+    severity: critical
+    categories: ["midi", "sequencer"]
