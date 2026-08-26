@@ -1,38 +1,38 @@
 # specs/epics/e10-thumbnail-pipeline-v2/e10s03-tasks.yaml
 story_id: e10s03
 title: "viseq multi-thumb pipeline — idx propagation, 3 textures per source, L-1 pruning"
-status: failing
+status: passing
 bcps: 3
 tasks:
   - id: 1
     description: "RED: decoder + main-loop test asserting the reply index propagates into tex_<name>_<idx> and thumbnails_data[name] becomes a list with 1..3 entries"
-    verify: ".venv/bin/python -m pytest tests/ -q -k thumb"
+    verify: ".venv/bin/python -m pytest tests/ -q -k 'e10s03 or thumb'"
     risk: P1
-    status: failing
+    status: passing
     allure:
       severity: high
       categories: ["unit", "viseq"]
   - id: 2
     description: "GREEN: thread idx through incoming_osc_handler -> blob_queue -> thumbnail_decoder_worker -> texture_queue -> main-loop texture path; build the per-source list (thumbnails_data[target_id] = list)"
-    verify: ".venv/bin/python -m pytest tests/ -q -k thumb"
+    verify: ".venv/bin/python -m pytest tests/ -q -k 'e10s03 or thumb'"
     risk: P1
-    status: failing
+    status: passing
     allure:
       severity: high
       categories: ["unit", "viseq"]
   - id: 3
     description: "RED: grid tile test — image created on first texture (idx 0) only; later indices append without widget churn; 'Loading...' text removed exactly once"
-    verify: ".venv/bin/python -m pytest tests/ -q -k thumb"
+    verify: ".venv/bin/python -m pytest tests/ -q -k 'e10s03 or thumb'"
     risk: P1
-    status: failing
+    status: passing
     allure:
       severity: high
       categories: ["unit", "viseq"]
   - id: 4
     description: "GREEN: first-texture-wins image creation in the tile build + append-only for idx 1/2 (no delete/recreate of image or container)"
-    verify: ".venv/bin/python -m pytest tests/ -q -k thumb"
+    verify: ".venv/bin/python -m pytest tests/ -q -k 'e10s03 or thumb'"
     risk: P1
-    status: failing
+    status: passing
     allure:
       severity: high
       categories: ["unit", "viseq"]
@@ -40,7 +40,7 @@ tasks:
     description: "RED: L-1 prune test — a removed source drops all 3 texture tags (tex_<name>_0/1/2) and the list entry"
     verify: ".venv/bin/python -m pytest tests/ -q -k l1"
     risk: P1
-    status: failing
+    status: passing
     allure:
       severity: high
       categories: ["unit", "viseq"]
@@ -48,7 +48,7 @@ tasks:
     description: "GREEN: L-1 prune deletes the whole per-source texture set; signature-gated rebuild (e07 P0) regression stays green; regen callback pops the list entry"
     verify: ".venv/bin/python -m pytest tests/ -q"
     risk: P1
-    status: failing
+    status: passing
     allure:
       severity: high
       categories: ["unit", "viseq", "regression"]
