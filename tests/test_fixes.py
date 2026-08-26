@@ -2498,8 +2498,13 @@ class FakeMidiOut:
 
 
 def test_launchpad_model_detection():
+    assert viseq.launchpad_model_from_name("Launchpad MIDI 1") == viseq.LAUNCHPAD_MK1
+    assert viseq.launchpad_model_from_name("Launchpad S MIDI 1") == viseq.LAUNCHPAD_MK1, (
+        "the S is an MK1-generation device"
+    )
     assert viseq.launchpad_model_from_name("Launchpad MK2 MIDI 1") == viseq.LAUNCHPAD_NOTE_MODE
     assert viseq.launchpad_model_from_name("Launchpad Mini MK2 MIDI 1") == viseq.LAUNCHPAD_NOTE_MODE
+    assert viseq.launchpad_model_from_name("Launchpad Pro MIDI 1") == viseq.LAUNCHPAD_NOTE_MODE
     assert viseq.launchpad_model_from_name("Launchpad X MIDI 1") == viseq.LAUNCHPAD_PROGRAMMER_MODE
     assert (
         viseq.launchpad_model_from_name("Launchpad Mini MK3 MIDI 1")
@@ -2508,46 +2513,107 @@ def test_launchpad_model_detection():
     assert viseq.launchpad_model_from_name("Akai APC mini") is None, "non-Launchpad -> no adapter"
 
 
-def test_launchpad_grid_note_table():
-    assert viseq.launchpad_grid_note(0, 0) == 0
-    assert viseq.launchpad_grid_note(1, 0) == 10
-    assert viseq.launchpad_grid_note(0, 7) == 7
-    assert viseq.launchpad_grid_note(7, 7) == 77
-    grid = {viseq.launchpad_grid_note(r, c) for r in range(8) for c in range(8)}
-    expected = {r * 10 + c for r in range(8) for c in range(8)}
-    assert grid == expected, "grid notes are row*10+col (0-79, 8 and 9 per row excluded)"
+def test_launchpad_grid_note_table_mk2():
+    saved = viseq.launchpad_protocol
+    viseq.launchpad_protocol = viseq.LAUNCHPAD_NOTE_MODE
+    try:
+        assert viseq.launchpad_grid_note(0, 0) == 0
+        assert viseq.launchpad_grid_note(1, 0) == 10
+        assert viseq.launchpad_grid_note(0, 7) == 7
+        assert viseq.launchpad_grid_note(7, 7) == 77
+        grid = {viseq.launchpad_grid_note(r, c) for r in range(8) for c in range(8)}
+        expected = {r * 10 + c for r in range(8) for c in range(8)}
+        assert grid == expected, "MK2 grid notes are row*10+col (0-79)"
+    finally:
+        viseq.launchpad_protocol = saved
+
+
+def test_launchpad_grid_note_table_mk1():
+    saved = viseq.launchpad_protocol
+    viseq.launchpad_protocol = viseq.LAUNCHPAD_MK1
+    try:
+        assert viseq.launchpad_grid_note(0, 0) == 0
+        assert viseq.launchpad_grid_note(1, 0) == 16
+        assert viseq.launchpad_grid_note(0, 7) == 7
+        assert viseq.launchpad_grid_note(7, 7) == 119
+        grid = {viseq.launchpad_grid_note(r, c) for r in range(8) for c in range(8)}
+        expected = {r * 16 + c for r in range(8) for c in range(8)}
+        assert grid == expected, "MK1 grid notes are row*16+col (0-119 grid)"
+    finally:
+        viseq.launchpad_protocol = saved
 
 
 def test_launchpad_led_sends_note_on(monkeypatch):
     out = FakeMidiOut()
-    saved = viseq.launchpad_out
+    saved_out = viseq.launchpad_out
+    saved_proto = viseq.launchpad_protocol
     viseq.launchpad_out = out
+    viseq.launchpad_protocol = viseq.LAUNCHPAD_NOTE_MODE
     try:
         viseq.launchpad_led(0, 0, viseq.LAUNCHPAD_LED_GREEN)
         assert out.sent and out.sent[0].type == "note_on"
-        assert out.sent[0].note == 0 and out.sent[0].velocity == 60
+        assert out.sent[0].note == 0 and out.sent[0].velocity == 60, "MK2 green = 60"
         out.sent.clear()
         viseq.launchpad_led(7, 7, viseq.LAUNCHPAD_LED_OFF)
         assert out.sent[0].note == 77 and out.sent[0].velocity == 0
+        # MK1: row*16 grid and the official palette (green full = 60, amber full = 63)
+        viseq.launchpad_protocol = viseq.LAUNCHPAD_MK1
+        out.sent.clear()
+        viseq.launchpad_led(1, 0, viseq.LAUNCHPAD_LED_GREEN)
+        assert out.sent[0].note == 16 and out.sent[0].velocity == 60, "MK1 green = 60"
+        out.sent.clear()
+        viseq.launchpad_led(7, 7, viseq.LAUNCHPAD_LED_AMBER)
+        assert out.sent[0].note == 119 and out.sent[0].velocity == 63, "MK1 amber = 63"
+        out.sent.clear()
+        viseq.launchpad_led(0, 0, viseq.LAUNCHPAD_LED_OFF)
+        assert out.sent[0].velocity == 12, "MK1 off = 12"
     finally:
-        viseq.launchpad_out = saved
+        viseq.launchpad_out = saved_out
+        viseq.launchpad_protocol = saved_proto
 
 
 def test_launchpad_mirror_step_colors():
     out = FakeMidiOut()
-    saved = viseq.launchpad_out
+    saved_out = viseq.launchpad_out
+    saved_proto = viseq.launchpad_protocol
     viseq.launchpad_out = out
+    viseq.launchpad_protocol = viseq.LAUNCHPAD_NOTE_MODE
     try:
         viseq.launchpad_mirror_step(2, 3, is_active=True, is_head=False)
-        assert out.sent[0].velocity == viseq.LAUNCHPAD_LED_GREEN
+        assert out.sent[0].velocity == 60, "active step = green"
         out.sent.clear()
         viseq.launchpad_mirror_step(2, 3, is_active=False, is_head=True)
-        assert out.sent[0].velocity == viseq.LAUNCHPAD_LED_AMBER
+        assert out.sent[0].velocity == 12, "playhead = amber"
         out.sent.clear()
         viseq.launchpad_mirror_step(2, 3, is_active=False, is_head=False)
-        assert out.sent[0].velocity == viseq.LAUNCHPAD_LED_OFF
+        assert out.sent[0].velocity == 0, "empty step = off"
     finally:
-        viseq.launchpad_out = saved
+        viseq.launchpad_out = saved_out
+        viseq.launchpad_protocol = saved_proto
+
+
+def test_launchpad_mk1_connect_uses_mk1_grid_no_sysex(monkeypatch):
+    import mido
+
+    out = FakeMidiOut()
+    monkeypatch.setattr(mido, "get_output_names", lambda: ["Launchpad MIDI 1"])
+    monkeypatch.setattr(mido, "open_output", lambda name: out)
+    saved_out = viseq.launchpad_out
+    saved_auto = list(viseq.midi_auto_bindings)
+    viseq.launchpad_out = None
+    try:
+        viseq.launchpad_connect("Launchpad MIDI 1", mido)
+        assert not out.sent, "MK1 needs no programmer-mode SysEx"
+        assert viseq.launchpad_protocol == viseq.LAUNCHPAD_MK1
+        notes = {b["number"] for b in viseq.midi_auto_bindings}
+        assert notes == {r * 16 + c for r in range(8) for c in range(8)}, (
+            "MK1 grid bindings use row*16+col"
+        )
+        assert viseq.launchpad_grid_note(1, 0) == 16
+    finally:
+        viseq.launchpad_disconnect()
+        viseq.launchpad_out = saved_out
+        viseq.midi_auto_bindings[:] = saved_auto
 
 
 def test_launchpad_connect_programmer_mode_sends_sysex(monkeypatch):
@@ -2622,17 +2688,20 @@ def test_launchpad_auto_bindings_not_persisted(monkeypatch, tmp_path):
 def test_launchpad_flash_playhead_restores(monkeypatch):
     out = FakeMidiOut()
     saved_out = viseq.launchpad_out
+    saved_proto = viseq.launchpad_protocol
     saved_step = viseq.current_step
     viseq.launchpad_out = out
+    viseq.launchpad_protocol = viseq.LAUNCHPAD_NOTE_MODE
     viseq.current_step = 4
     try:
         viseq.launchpad_flash_playhead()
-        assert out.sent and all(m.velocity == viseq.LAUNCHPAD_LED_WHITE for m in out.sent), (
-            "the playhead column must flash white"
+        assert out.sent and all(m.velocity == 3 for m in out.sent), (
+            "the playhead column must flash white (MK2 velocity 3)"
         )
         assert all(m.note in (4, 14, 24, 34, 44, 54, 64, 74) for m in out.sent), (
             "flash must hit the playhead column"
         )
     finally:
         viseq.launchpad_out = saved_out
+        viseq.launchpad_protocol = saved_proto
         viseq.current_step = saved_step

@@ -45,6 +45,20 @@ sequencer tick, beat flash) calls `launchpad_mirror_step(r, c)`: active step = g
 empty = off, current playhead = amber, beat flash = brighter pulse. Guarded by
 `launchpad is connected and midi enabled`; a no-op otherwise.
 
+#### ADDED: Three protocol classes (MK1 support — user's device novlpd01)
+The adapter now distinguishes three classes by port name: `mk1` (plain "Launchpad"/
+"Launchpad S" — the original 2009 model, product code novlpd01), `note` (MK2/Mini MK2/Pro)
+and `programmer` (X/Mini MK3/Pro MK3). MK1 uses grid notes `16*row+col` and the official
+velocity palette (16*Green + Red + 12): 12 off, 15 red, 63 amber, 62 yellow, 60 green.
+MK2-family keeps `row*10+col` and the 128-color palette; MK3-family keeps programmer-mode
+SysEx. Verified against the official Launchpad Programmers Reference PDF.
+
+#### MODIFIED: Model detection
+**Before:** two classes (note/programmer); the original MK1 was misdetected as MK2 and its
+grid/colors were wrong (notes row*10+col and MK2 palette).
+**After:** three classes; MK1 detection (plain "Launchpad" name) switches grid notes and
+colors to the MK1 protocol; connect logs the detected class ("Launchpad (mk1) output on …").
+
 ## Steps
 
 1. Model detection + connect + `launchpad_led` → verify:

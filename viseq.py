@@ -240,25 +240,48 @@ midi_learn_mode: bool = False
 midi_learn_pending: tuple[str, dict[str, Any]] | None = None
 
 # --- e09s03: Novation Launchpad adapter constants ---
-# MK2-family (MK2/Mini MK2/Pro): grid buttons are notes row*10+col, LED color = note-on
-# velocity (manual: 0 off, 3 white, 5 red, 12 amber, 60 green). Launchpad X / Mini MK3 /
-# Pro MK3 need programmer mode first (SysEx setup) and then act as the same note grid.
-# MK3-family need programmer mode first (SysEx setup) and then act as the same note grid.
-# Payload WITHOUT the F0/F7 framing bytes — mido adds them when sending a sysex message
-# (verified: data must be 0-127; mido.bytes() yields F0 00 20 29 02 0C 03 01 F7).
+# Three protocol classes (user's device: novlpd01 = original Launchpad MK1):
+#  - MK1 (plain "Launchpad"/"Launchpad S"): grid notes 16*row+col (0-119 grid; official
+#    Programmers Reference), palette velocity = 16*Green + Red + 12 (normal use): 12 off,
+#    15 red full, 63 amber full, 62 yellow full, 60 green full — NO SysEx.
+#  - MK2 family (MK2/Mini MK2/Pro): grid notes row*10+col, 128-color palette (manual:
+#    0 off, 3 white, 5 red, 12 amber, 60 green) — native note mode.
+#  - MK3 family (X/Mini MK3/Pro MK3): programmer mode first (SysEx setup), then the same
+#    note grid as MK2. Payload WITHOUT the F0/F7 framing bytes — mido adds them when
+#    sending a sysex message (verified: data must be 0-127; mido.bytes() yields
+#    F0 00 20 29 02 0C 03 01 F7).
+LAUNCHPAD_MK1 = "mk1"
 LAUNCHPAD_NOTE_MODE = "note"
 LAUNCHPAD_PROGRAMMER_MODE = "programmer"
 LAUNCHPAD_PROGRAMMER_SYSEX: list[int] = [0x00, 0x20, 0x29, 0x02, 0x0C, 0x03, 0x01]
 LAUNCHPAD_GRID_ROWS = 8
 LAUNCHPAD_GRID_COLS = 8
-LAUNCHPAD_LED_OFF = 0
-LAUNCHPAD_LED_WHITE = 3
-LAUNCHPAD_LED_RED = 5
-LAUNCHPAD_LED_AMBER = 12
-LAUNCHPAD_LED_GREEN = 60
+# Semantic LED colors (mirror/flash call sites) mapped per protocol in _launchpad_velocity.
+LAUNCHPAD_LED_OFF = "off"
+LAUNCHPAD_LED_WHITE = "white"
+LAUNCHPAD_LED_RED = "red"
+LAUNCHPAD_LED_AMBER = "amber"
+LAUNCHPAD_LED_GREEN = "green"
 LAUNCHPAD_FLASH_SECONDS = 0.12  # beat flash pulse duration (timer restores the head color)
 
+_LAUNCHPAD_COLOR_MK1: dict[str, int] = {
+    # Official Programmers Reference table (normal use, Flags=12): 16*Green + Red + 12.
+    "off": 12,
+    "red": 15,
+    "amber": 63,
+    "white": 62,  # yellow full — the brightest MK1 color (it has no white)
+    "green": 60,
+}
+_LAUNCHPAD_COLOR_MK2: dict[str, int] = {
+    "off": 0,
+    "red": 5,
+    "amber": 12,
+    "white": 3,
+    "green": 60,
+}
+
 launchpad_out: Any = None  # open mido output port; None = no Launchpad (all mirror calls no-op)
+launchpad_protocol: str | None = None  # protocol class of the connected device (grid/colors)
 _launchpad_lock = threading.Lock()
 
 # Runtime bindings (tag -> palette slot) recorded at widget creation so apply_palette() can
@@ -2395,22 +2418,37 @@ def launchpad_model_from_name(port_name: str) -> str | None:
         return None
     if "mk3" in name or " launchpad x" in name or name.startswith("launchpad x"):
         return LAUNCHPAD_PROGRAMMER_MODE  # X / Mini MK3 / Pro MK3: SysEx first, then note grid
-    return LAUNCHPAD_NOTE_MODE  # MK2 / Mini MK2 / Pro: native note mode
+    if "mk2" in name or "pro" in name:
+        return LAUNCHPAD_NOTE_MODE  # MK2 / Mini MK2 / Pro: native note mode, row*10+col grid
+    return LAUNCHPAD_MK1  # plain "Launchpad"/"Launchpad S" (novlpd01): row*16+col grid
 
 
 def launchpad_grid_note(row: int, col: int) -> int:
-    """MK2-family grid note for pad (row, col): row*10+col (0-79 for the 8x8 grid)."""
+    """Grid note for pad (row, col) under the connected protocol.
+
+    MK1: row*16+col (0-87); MK2 family: row*10+col (0-79).
+    """
+    if launchpad_protocol == LAUNCHPAD_MK1:
+        return row * 16 + col
     return row * 10 + col
 
 
-def launchpad_led(row: int, col: int, velocity: int) -> None:
-    """Set one Launchpad pad LED via note-on velocity (lock-guarded best-effort)."""
+def _launchpad_velocity(color: str) -> int:
+    """Translate a semantic color to the device velocity under the connected protocol."""
+    table = _LAUNCHPAD_COLOR_MK1 if launchpad_protocol == LAUNCHPAD_MK1 else _LAUNCHPAD_COLOR_MK2
+    return table.get(color, 0)
+
+
+def launchpad_led(row: int, col: int, color: str) -> None:
+    """Set one Launchpad pad LED (semantic color; lock-guarded best-effort)."""
     if launchpad_out is None:
         return
     try:
         import mido
 
-        msg = mido.Message("note_on", note=launchpad_grid_note(row, col), velocity=velocity)
+        msg = mido.Message(
+            "note_on", note=launchpad_grid_note(row, col), velocity=_launchpad_velocity(color)
+        )
         with _launchpad_lock:
             launchpad_out.send(msg)
     except Exception as e:
@@ -2466,9 +2504,11 @@ def _launchpad_register_grid_bindings(port_name: str) -> None:
 
 
 def launchpad_connect(input_port_name: str, mido: Any) -> None:
-    """Open the Launchpad output port and, for MK3-family, enable programmer mode."""
+    """Open the Launchpad output port; enable programmer mode for MK3-family."""
+    global launchpad_out, launchpad_protocol
     launchpad_disconnect()
-    if launchpad_model_from_name(input_port_name) is None:
+    launchpad_protocol = launchpad_model_from_name(input_port_name)
+    if launchpad_protocol is None:
         return  # not a Launchpad: no LED output, no grid bindings
     out_names = mido.get_output_names()
     out_name = None
@@ -2486,27 +2526,27 @@ def launchpad_connect(input_port_name: str, mido: Any) -> None:
     if out_name is None:
         return
     try:
-        global launchpad_out
         with _launchpad_lock:
             launchpad_out = mido.open_output(out_name)
-        if launchpad_model_from_name(input_port_name) == LAUNCHPAD_PROGRAMMER_MODE:
+        if launchpad_protocol == LAUNCHPAD_PROGRAMMER_MODE:
             launchpad_out.send(mido.Message("sysex", data=LAUNCHPAD_PROGRAMMER_SYSEX))
         _launchpad_register_grid_bindings(input_port_name)
-        append_log("MIDI", f"Launchpad output on {out_name}")
+        append_log("MIDI", f"Launchpad ({launchpad_protocol}) output on {out_name}")
     except Exception as e:
         log_error("MIDI", f"Launchpad output {out_name}: {e}")
         launchpad_disconnect()
 
 
 def launchpad_disconnect() -> None:
-    """Close the Launchpad output port and drop the grid bindings (idempotent)."""
-    global launchpad_out
+    """Close the Launchpad output port and drop grid bindings/protocol (idempotent)."""
+    global launchpad_out, launchpad_protocol
     with _launchpad_lock:
         if launchpad_out is not None:
             with contextlib.suppress(Exception):
                 launchpad_out.close()
             launchpad_out = None
     midi_auto_bindings.clear()
+    launchpad_protocol = None
 
 
 def midi_clock_loop() -> None:

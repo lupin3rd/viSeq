@@ -31,7 +31,7 @@ summary: >-
 in_scope:
   - e09s01: "MIDI mapping engine: binding schema in viseq_config.json (midi section: enabled, input_port, bindings), pure matching (binding_matches), resolve_midi_message -> actions, action vocabulary for the sequencer (seq_toggle, transport_play/resync/tap/nudge, beat_source, track_assign), midi_control_loop worker routing executions through ui_task_queue, enable/disable."
   - e09s02: "MIDI Learn + single MIDI window: learn mode (click a learnable viseq control -> capture action -> press MIDI button -> create binding), learnable wrappers on sequencer widgets, one 'MIDI' menubar item opening a window with the Enable checkbox, Controller combo + Refresh, Learn button + status, Mappings list with per-binding Delete and Save to config. (User revision: all MIDI features live in the window, no scattered menu items.)"
-  - e09s03: "Novation Launchpad adapter: model detection from port name (MK2/Mini MK2/Pro native note mode; X/Mini MK3 programmer-mode SysEx F0 00 20 29 02 0C ...), 8x8 grid -> seq_toggle auto-bindings, LED mirror of the sequencer (step state colors, playhead, beat flash), output via mido with a lock, safe no-op when no device."
+  - e09s03: "Novation Launchpad adapter: model detection (MK1/MK2-family/programmer-mode classes), 8x8 grid bindings, sequencer LED mirror — MK1 verified against the official Programmers Reference (grid 16*row+col, palette 16*Green+Red+12)"
 
 out_of_scope:
   - "Monitor-player / spectrum-analyzer MIDI control — deferred to a later epic (user: 'iniziare dalla finestra sequencer 8x8, poi vedremo')."
