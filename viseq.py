@@ -2954,7 +2954,8 @@ with dpg.window(
         dpg.add_spacer(width=HELP_LOGO_INDENT)
         dpg.add_text(HELP_ASCII_LOGO, tag="help_logo_text")
         if _help_mono_font is not None:
-            dpg.bind_font("help_logo_text", _help_mono_font)
+            # DPG 2.3.1: bind_item_font(item, font); bind_font() only takes a global font.
+            dpg.bind_item_font("help_logo_text", _help_mono_font)
     dpg.add_spacer(height=6)
     themed_text("viseq — Audio-Reactive VJ Controller per Vimix", slot="text_bright")
     dpg.add_separator()
