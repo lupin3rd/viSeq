@@ -9,7 +9,7 @@ handoff:
   active_epic_id: e10
   active_story_id: e10s04
 
-active_flow: build
+active_flow: verify
 bug_cycle:
   current_step: 0
   completed_steps: [1, 2, 3, 4, 5]
