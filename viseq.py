@@ -68,7 +68,7 @@ MEDIA_TILE_H = 146  # px height of a media tile (title + photo + badge row)
 # e10s06: the tile title fits at most two wrapped lines, truncated with an ellipsis
 MEDIA_TITLE_WRAP = 125  # px wrap width of the media tile title
 MEDIA_TITLE_MAX_LINES = 2
-MEDIA_TITLE_ELLIPSIS = "…"
+MEDIA_TITLE_ELLIPSIS = "..."  # ASCII dots: ProggyClean (default font) has no U+2026 glyph
 MEDIA_TITLE_CHAR_PX = 7  # default-font estimate (ProggyClean 13 px) used before the atlas is built
 
 # Monitor player: compact graphical readout (e07)

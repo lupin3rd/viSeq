@@ -3164,7 +3164,9 @@ def test_e10s06_title_long_name_truncated_to_two_lines():
     )
     # maximality: one more char before the ellipsis would need a third line
     base = out[: -len(viseq.MEDIA_TITLE_ELLIPSIS)]
-    assert len(base) == chars_per_line * viseq.MEDIA_TITLE_MAX_LINES - 1
+    assert len(base) == chars_per_line * viseq.MEDIA_TITLE_MAX_LINES - len(
+        viseq.MEDIA_TITLE_ELLIPSIS
+    )
     assert len(base + "x" + viseq.MEDIA_TITLE_ELLIPSIS) > chars_per_line * 2, (
         "one extra character must exceed the two-line budget"
     )
