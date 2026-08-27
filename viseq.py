@@ -1612,6 +1612,9 @@ def update_vimix_sources_ui(json_string: str) -> None:
                 for tex_tag in tex_tags:
                     if dpg.does_item_exist(tex_tag):
                         dpg.delete_item(tex_tag)
+                click_reg_tag = media_tile_click_registry_tag(target_id)
+                if dpg.does_item_exist(click_reg_tag):
+                    dpg.delete_item(click_reg_tag)  # stale click registry must not linger
         for key in list(request_timestamps):
             if key.startswith("thumb_"):
                 target_id = key[len("thumb_") :]
@@ -1719,11 +1722,14 @@ def update_vimix_sources_ui(json_string: str) -> None:
                         no_scrollbar=True,
                         tag=tile_tag,
                     )
-                    dpg.add_clicked_handler(
-                        parent=tile_tag,
-                        callback=on_media_tile_click,
-                        user_data=target_id,
-                    )
+                    click_reg_tag = media_tile_click_registry_tag(target_id)
+                    if dpg.does_item_exist(click_reg_tag):
+                        dpg.delete_item(click_reg_tag)  # a rebuild must not leak registries
+                    with dpg.item_handler_registry(tag=click_reg_tag):
+                        dpg.add_item_clicked_handler(
+                            0,  # left click selects; right-click keeps the regen popup
+                            callback=lambda s, a, u, t=target_id: on_media_tile_click(s, a, t),
+                        )
 
                     title_tag = f"tile_title_{target_id}"
                     if dpg.does_item_exist(title_tag):
@@ -1750,6 +1756,7 @@ def update_vimix_sources_ui(json_string: str) -> None:
 
                     g_id = dpg.add_group(parent=cw, tag=container_tag, indent=4)
                     img_tag = f"img_{target_id}"
+                    loading_tag = None  # set only in the no-thumbs branch below
                     if target_id in thumbnails_data:
                         tex_tag = thumbnails_data[target_id][0]
                         if dpg.does_item_exist(img_tag):
@@ -1798,6 +1805,18 @@ def update_vimix_sources_ui(json_string: str) -> None:
                         )
                         dpg.bind_item_theme(index_tag, theme_media_badge)
                         dpg.add_text("---", color=(200, 230, 200, 255), tag=alpha_tag)
+
+                    # e10s06: the tile's clickable children select the media on left
+                    # click (child windows can't host clicked handlers in DPG 2.x).
+                    _bind_tile_click_targets(
+                        click_reg_tag,
+                        title_tag,
+                        container_tag,
+                        img_tag,
+                        loading_tag,
+                        index_tag,
+                        alpha_tag,
+                    )
 
                 for _ in range(num_cols - len(row_indices)):
                     dpg.add_text("", parent=r_id)
@@ -3392,6 +3411,22 @@ with dpg.handler_registry():
     # DPG 2.3.1 key handlers have no modifier support: the wrapper checks Ctrl itself
     dpg.add_key_press_handler(dpg.mvKey_C, callback=_on_copy_key)
     dpg.add_key_press_handler(dpg.mvKey_V, callback=_on_paste_key)
+
+
+# e10s06: one click-handler registry per Mediagrid tile. DPG 2.x item handlers
+# live in an item_handler_registry bound to the item(s) they watch; child windows
+# cannot host a clicked handler (verified against 2.3.1), so the registry is bound
+# to the tile's clickable children (title, thumbnail, badge, alpha).
+def media_tile_click_registry_tag(target_id: str) -> str:
+    return f"click_reg_{target_id}"
+
+
+def _bind_tile_click_targets(click_reg_tag: str, *item_tags: str | None) -> None:
+    """Bind one tile's click registry to every clickable child that exists."""
+    for item_tag in item_tags:
+        if item_tag and dpg.does_item_exist(item_tag):
+            dpg.bind_item_handler_registry(item_tag, click_reg_tag)
+
 
 with dpg.theme() as theme_selected_clip, dpg.theme_component(dpg.mvChildWindow):
     theme_color(dpg.mvThemeCol_Border, "border_active")

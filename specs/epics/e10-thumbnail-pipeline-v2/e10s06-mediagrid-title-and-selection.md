@@ -84,6 +84,10 @@ unchanged).
 - The two-line budget relies on the default font measurement; if a custom
   default font is added later the budget is re-derived automatically because
   `get_text_size` measures the live font.
-- Clicking must register on the whole tile; `add_clicked_handler` on the tile
-  child window fires for clicks on its content (manual smoke on the rig
-  confirms the exact hit areas).
+- **DPG 2.3.1 handler constraint (verified on the real rig):** the deprecated
+  `add_clicked_handler` shim crashes the grid build, and child windows cannot
+  host a clicked handler at all (bind raises "inapplicable handler"). The
+  implementation therefore creates one `item_handler_registry` per tile with a
+  single left-click handler bound to the tile's clickable children (title,
+  thumbnail, badge, alpha) — the demo-proven DPG 2.x pattern; right-click
+  keeps the regen popup and never selects.

@@ -3175,14 +3175,23 @@ def test_e10s06_tile_registers_click_handler(monkeypatch):
     dpg.calls.clear()
     try:
         viseq.update_vimix_sources_ui(json.dumps(viseq.global_vimix_state))
+        reg_tag = viseq.media_tile_click_registry_tag("clipA")
+        registries = [
+            c for c in dpg.calls if c[0] == "item_handler_registry" and c[2].get("tag") == reg_tag
+        ]
+        assert registries, "each tile must create its own click-handler registry"
+        binds = [
+            c for c in dpg.calls if c[0] == "bind_item_handler_registry" and c[1][1] == reg_tag
+        ]
+        assert binds, "the registry must bind to the tile's clickable children"
+        assert any(c[1][0] == "tile_title_clipA" for c in binds), "the title must select the tile"
+        assert any(c[1][0] == "tile_index_clipA" for c in binds), "the badge must select the tile"
         handlers = [
             c
             for c in dpg.calls
-            if c[0] == "add_clicked_handler" and c[2].get("parent") == "tile_clipA"
+            if c[0] == "add_item_clicked_handler" and c[2].get("callback") is not None
         ]
-        assert handlers and handlers[0][2].get("user_data") == "clipA", (
-            "each tile must register a click handler selecting its source"
-        )
+        assert handlers, "the registry must contain a left-click handler"
     finally:
         viseq.global_vimix_state = saved_state
         viseq.last_ui_signature = saved_sig
