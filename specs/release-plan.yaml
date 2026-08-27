@@ -153,3 +153,6 @@ epics:
       - id: e10s07
         title: "Beat sources: only Band 1 selectable in the sequencer + deadlock-free source switching (BUG-2026-08-27T213000)"
         bcps: 3
+      - id: e10s08
+        title: "Sequencer: stale BPM never drives the clock + compact single-row beat sources"
+        bcps: 4

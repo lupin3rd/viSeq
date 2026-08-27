@@ -663,6 +663,10 @@ def make_step(active: bool, stype: str, v1: float, v2: float, frames: int, msgs:
 
 
 def test_high2_non_fade_step_cancels_pending_fade():
+    saved_beat = viseq.beat_source
+    viseq.beat_source = (
+        viseq.BEAT_SOURCE_MANUAL
+    )  # live timed tempo (e10s08: analysis needs detection)
     viseq.is_playing = False
     viseq.current_bpm = 120.0  # 0.5s per step
     viseq.current_step = -1
@@ -704,10 +708,15 @@ def test_high2_non_fade_step_cancels_pending_fade():
 
     last_alpha = [m for m in osc_sender.messages if m[0].endswith("/alpha")]
     assert last_alpha and last_alpha[-1][1] == 0.33, "last alpha message must be the AlphaV value"
+    viseq.beat_source = saved_beat
 
 
 def test_high2_uninterrupted_fade_completes():
     # Track A: uninterrupted AlphaF fade completes naturally (no regression)
+    saved_beat = viseq.beat_source
+    viseq.beat_source = (
+        viseq.BEAT_SOURCE_MANUAL
+    )  # live timed tempo (e10s08: analysis needs detection)
     t2 = viseq.tracks_data[1]
     t2["base_address"] = "/vimix/clipB"
     t2["steps"] = [make_step(False, "NONE", 0.0, 1.0, 4, 4) for _ in range(8)]
@@ -721,6 +730,7 @@ def test_high2_uninterrupted_fade_completes():
         assert started and completed, "uninterrupted fade must start and complete (frames=4)"
     finally:
         viseq.is_playing = False
+        viseq.beat_source = saved_beat
 
 
 # ---------- e02s01: larger centered color square in step cells ----------
@@ -1207,10 +1217,40 @@ def test_beat_source_ui_wired():
     assert manual_bpm_hidden and tap_hidden, "manual widgets hidden unless manual mode"
 
 
-def test_beat_lines_alignment_spacer():
-    # Measured on real DPG 2.3.1 with the compact 28px transport: the row renders 312px
-    # wide (buttons render wider than declared), so line 2 starts under line 1.
-    assert viseq.SEQ_TRANSPORT_WIDTH == 312, "line 2 must start under line 1"
+def test_timed_bpm_live_manual_is_always_live():
+    saved = (viseq.beat_source, viseq.is_beat_tracking, viseq.bpm_last_detected)
+    viseq.beat_source = viseq.BEAT_SOURCE_MANUAL
+    viseq.is_beat_tracking = False
+    viseq.bpm_last_detected = 0.0
+    try:
+        assert viseq._timed_bpm_live() is True, "manual BPM is the entered tempo, always live"
+    finally:
+        viseq.beat_source, viseq.is_beat_tracking, viseq.bpm_last_detected = saved
+
+
+def test_timed_bpm_live_analysis_requires_recent_detection(monkeypatch):
+    saved = (viseq.beat_source, viseq.is_beat_tracking, viseq.bpm_last_detected)
+    monkeypatch.setattr(viseq.time, "time", lambda: 100.0)
+    viseq.beat_source = viseq.BEAT_SOURCE_ANALYSIS
+    viseq.is_beat_tracking = True
+    try:
+        viseq.bpm_last_detected = 100.0  # detected just now
+        assert viseq._timed_bpm_live() is True
+        viseq.bpm_last_detected = 97.0  # 3 s ago > 2 s stale window
+        assert viseq._timed_bpm_live() is False, "a stale BPM must not drive the sequencer"
+        viseq.bpm_last_detected = 98.5  # exactly at the stale window boundary
+        assert viseq._timed_bpm_live() is True, "a fresh-enough reading stays live"
+        viseq.is_beat_tracking = False
+        assert viseq._timed_bpm_live() is False, "no tracking -> no tempo even with a fresh time"
+    finally:
+        viseq.beat_source, viseq.is_beat_tracking, viseq.bpm_last_detected = saved
+
+
+def test_essentia_loop_marks_detection_time(monkeypatch):
+    # a successful detection stamps bpm_last_detected so the sequencer can tell
+    # a real tempo from a stale leftover (e10s08)
+    src = Path("viseq.py").read_text()
+    assert "bpm_last_detected = time.time()" in src, "a detection must stamp its timestamp"
 
 
 def test_manual_bpm_live_text_wired():
@@ -2125,9 +2165,11 @@ def test_no_italian_ui_strings_remain():
 
 
 def test_beat_source_labels_english():
-    assert viseq.BEAT_SOURCE_LABELS[viseq.BEAT_SOURCE_ANALYSIS] == "BPM Detection"
-    assert viseq.BEAT_SOURCE_LABELS[viseq.BEAT_SOURCE_MANUAL] == "Manual BPM"
-    assert viseq.BEAT_SOURCE_LABELS[viseq.BEAT_SOURCE_BAND1] == "Beat Band 1"
+    # abbreviated single-row labels (e10s08)
+    assert viseq.BEAT_SOURCE_LABELS[viseq.BEAT_SOURCE_ANALYSIS] == "BPM Det"
+    assert viseq.BEAT_SOURCE_LABELS[viseq.BEAT_SOURCE_BAND1] == "Band 1"
+    assert viseq.BEAT_SOURCE_LABELS[viseq.BEAT_SOURCE_MIDI] == "MIDI"
+    assert viseq.BEAT_SOURCE_LABELS[viseq.BEAT_SOURCE_MANUAL] == "Manual"
 
 
 def test_theme_preset_labels_english():

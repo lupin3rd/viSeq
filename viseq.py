@@ -779,10 +779,10 @@ BEAT_SOURCE_BAND1 = "band1_beat"
 BEAT_SOURCE_MIDI = "midi_sync"
 BEAT_SOURCE_MANUAL = "manual_bpm"
 BEAT_SOURCE_LABELS = {
-    BEAT_SOURCE_ANALYSIS: "BPM Detection",
-    BEAT_SOURCE_BAND1: "Beat Band 1",
-    BEAT_SOURCE_MIDI: "MIDI Sync",
-    BEAT_SOURCE_MANUAL: "Manual BPM",
+    BEAT_SOURCE_ANALYSIS: "BPM Det",
+    BEAT_SOURCE_BAND1: "Band 1",
+    BEAT_SOURCE_MIDI: "MIDI",
+    BEAT_SOURCE_MANUAL: "Manual",
 }
 beat_source: str = BEAT_SOURCE_ANALYSIS  # default: current behavior (essentia BPM)
 sync_event_beat = threading.Event()  # fired once per beat in band/MIDI modes
@@ -793,11 +793,6 @@ band_prev_values: dict[int, float] = {1: 0.0, 2: 0.0, 3: 0.0}  # band rising-edg
 copied_step_data: dict[str, Any] | None = None  # step config copied for paste (e08)
 active_step: tuple[int, int] | None = None  # last touched step (keyboard shortcuts target)
 copied_step_pos: tuple[int, int] | None = None  # where the copied highlight is shown
-# Width of the transport row (PLAY + spacer + < + RESYNC + > + spacer). Measured on real
-# DPG 2.3.1: buttons render wider than their declared widths, so the alignment spacer is
-# 312px with the compact 28px-high transport (audit L-6).
-SEQ_TRANSPORT_WIDTH = 312
-
 # One LED per beat source, shown next to its checkbox on the sequencer (e05)
 BEAT_LED_TAGS = {
     BEAT_SOURCE_ANALYSIS: "led_analysis",
@@ -844,6 +839,11 @@ audio_buffer: np.ndarray = np.zeros(
 )  # preallocated ring buffer (L-2)
 audio_buffer_head: int = 0  # next write position in audio_buffer (modulo its length)
 current_bpm: float = 120.0
+# e10s08: timestamp of the last successful BPM detection — a stale/absent reading
+# means current_bpm is not a real tempo (e.g. the manual value left over from a
+# previous mode), so the sequencer must not advance on it.
+bpm_last_detected: float = 0.0
+BPM_DETECTION_STALE_SECONDS = 2.0  # 2x the 1 s analysis cadence
 beat_confidence: float = 0.0
 rhythm_extractor = es.RhythmExtractor2013(method="multifeature")
 lowpass_filter = es.LowPass(cutoffFrequency=250.0)
@@ -2387,6 +2387,9 @@ def midi_action_beat_source(mode: str) -> None:
     is_manual = beat_source == BEAT_SOURCE_MANUAL
     dpg.configure_item("manual_bpm_input", show=is_manual)
     dpg.configure_item("btn_tap", show=is_manual)
+    dpg.configure_item(
+        "manual_bpm_text", show=is_manual
+    )  # hide the stale readout outside manual mode
     if is_manual:
         current_bpm = float(dpg.get_value("manual_bpm_input"))
         dpg.set_value("testo_bpm", f"BPM: {current_bpm:.1f}")
@@ -3137,7 +3140,7 @@ def spectrum_analyzer_loop() -> None:
 
 
 def essentia_analyzer_loop() -> None:
-    global current_bpm, beat_confidence
+    global current_bpm, beat_confidence, bpm_last_detected
     last_error = ""
     while True:
         if is_beat_tracking and beat_source == BEAT_SOURCE_ANALYSIS:
@@ -3150,6 +3153,7 @@ def essentia_analyzer_loop() -> None:
                     if confidence > 0.2 or beat_confidence == 0.0:
                         current_bpm = float(bpm)
                         beat_confidence = float(confidence)
+                        bpm_last_detected = time.time()  # a real reading, not stale (e10s08)
                         enqueue_set_value(
                             "testo_bpm", f"BPM: {current_bpm:.1f} (Conf: {beat_confidence:.2f})"
                         )
@@ -3166,6 +3170,9 @@ def visual_metronome_loop() -> None:
     global phase_nudge
     while True:
         if is_beat_tracking and current_bpm > 0 and not is_playing:
+            if not _timed_bpm_live():
+                time.sleep(0.05)
+                continue  # no live tempo: don't flash a stale BPM (e10s08)
             base_sleep = 60.0 / current_bpm
             actual_sleep = max(0.0, base_sleep + phase_nudge)
             led_tag = BEAT_LED_TAGS.get(beat_source)
@@ -3256,6 +3263,18 @@ def send_seekr_step(track: dict[str, Any], row: int, col: int) -> None:
     enqueue_set_value(tag_seek, f"{rand_val:.2f}")
 
 
+def _timed_bpm_live() -> bool:
+    """True when the fixed-interval tempo is real (e10s08).
+
+    Manual BPM is always live (current_bpm is the entered value); BPM Analysis
+    is live only while beat tracking is on and a detection arrived within the
+    stale window. Band/MIDI modes never use the timed tempo.
+    """
+    if beat_source == BEAT_SOURCE_MANUAL:
+        return True
+    return is_beat_tracking and time.time() - bpm_last_detected <= BPM_DETECTION_STALE_SECONDS
+
+
 def beat_is_event_driven() -> bool:
     """True when the beat comes from an event (band 1 peak / MIDI clock), not a fixed interval."""
     return beat_source in (BEAT_SOURCE_BAND1, BEAT_SOURCE_MIDI)
@@ -3274,6 +3293,9 @@ def sequencer_tick() -> None:
                 sync_event_beat.clear()
                 phase_nudge = 0.0
             else:
+                if not _timed_bpm_live():
+                    time.sleep(0.05)
+                    continue  # no live tempo: never advance on a stale BPM (e10s08)
                 base_sleep = 60.0 / current_bpm if current_bpm > 0 else 0.5
                 actual_sleep = max(0.0, base_sleep + phase_nudge)
                 phase_nudge = 0.0
@@ -3510,6 +3532,8 @@ with dpg.window(
     no_close=True,
     tag="sequencer_window",
 ):
+    # Single compact row: transport + all beat sources (abbreviated labels, e10s08).
+    # The manual widgets (input/TAP/readout) stay hidden until manual mode is selected.
     with dpg.group(horizontal=True):
         dpg.add_button(
             label="PLAY",
@@ -3538,7 +3562,6 @@ with dpg.window(
             height=28,
         )
         dpg.add_spacer(width=14)
-        # Beat source line 1: BPM detection (with its BPM readout) + band 1
         dpg.add_checkbox(
             label=BEAT_SOURCE_LABELS[BEAT_SOURCE_ANALYSIS],
             tag="cb_beat_bpm_analysis",
@@ -3555,9 +3578,9 @@ with dpg.window(
                 tag="led_analysis",
             )
         dpg.add_text("BPM: ---", tag="testo_bpm")
-        dpg.add_spacer(width=10)
+        dpg.add_spacer(width=8)
         dpg.add_checkbox(
-            label="Beat Band 1",
+            label=BEAT_SOURCE_LABELS[BEAT_SOURCE_BAND1],
             tag=f"cb_beat_{BEAT_SOURCE_BAND1}",
             callback=learnable(on_beat_source, lambda ud: (MIDI_ACTION_BEAT_SOURCE, {"mode": ud})),
             user_data=BEAT_SOURCE_BAND1,
@@ -3570,14 +3593,9 @@ with dpg.window(
                 fill=(50, 50, 50, 255),
                 tag="led_band1",
             )
-        dpg.add_spacer(width=10)
-
-    # Beat source line 2: MIDI + manual (with the numeric input and TAP).
-    # The leading spacer aligns it under line 1 (transport width: PLAY+sp+<+RESYNC+>+sp).
-    with dpg.group(horizontal=True):
-        dpg.add_spacer(width=SEQ_TRANSPORT_WIDTH)
+        dpg.add_spacer(width=8)
         dpg.add_checkbox(
-            label="MIDI Sync",
+            label=BEAT_SOURCE_LABELS[BEAT_SOURCE_MIDI],
             tag=f"cb_beat_{BEAT_SOURCE_MIDI}",
             callback=learnable(on_beat_source, lambda ud: (MIDI_ACTION_BEAT_SOURCE, {"mode": ud})),
             user_data=BEAT_SOURCE_MIDI,
@@ -3590,7 +3608,7 @@ with dpg.window(
                 fill=(50, 50, 50, 255),
                 tag="led_midi",
             )
-        dpg.add_spacer(width=10)
+        dpg.add_spacer(width=8)
         dpg.add_checkbox(
             label=BEAT_SOURCE_LABELS[BEAT_SOURCE_MANUAL],
             tag="cb_beat_manual_bpm",
