@@ -776,15 +776,11 @@ sync_event_led = threading.Event()
 # the sequencer on sync_event_beat instead of sleeping a fixed interval.
 BEAT_SOURCE_ANALYSIS = "bpm_analysis"
 BEAT_SOURCE_BAND1 = "band1_beat"
-BEAT_SOURCE_BAND2 = "band2_beat"
-BEAT_SOURCE_BAND3 = "band3_beat"
 BEAT_SOURCE_MIDI = "midi_sync"
 BEAT_SOURCE_MANUAL = "manual_bpm"
 BEAT_SOURCE_LABELS = {
     BEAT_SOURCE_ANALYSIS: "BPM Detection",
     BEAT_SOURCE_BAND1: "Beat Band 1",
-    BEAT_SOURCE_BAND2: "Beat Band 2",
-    BEAT_SOURCE_BAND3: "Beat Band 3",
     BEAT_SOURCE_MIDI: "MIDI Sync",
     BEAT_SOURCE_MANUAL: "Manual BPM",
 }
@@ -806,8 +802,6 @@ SEQ_TRANSPORT_WIDTH = 312
 BEAT_LED_TAGS = {
     BEAT_SOURCE_ANALYSIS: "led_analysis",
     BEAT_SOURCE_BAND1: "led_band1",
-    BEAT_SOURCE_BAND2: "led_band2",
-    BEAT_SOURCE_BAND3: "led_band3",
     BEAT_SOURCE_MIDI: "led_midi",
     BEAT_SOURCE_MANUAL: "led_manual",
 }
@@ -3074,12 +3068,11 @@ def refresh_band_value(bars: np.ndarray, band_id: int) -> None:
     l_max = float(dpg.get_value(f"band{band_id}_max"))
     value = band_value_from_bars(bars, f_start, f_end, l_min, l_max)
     _set_band_variable(band_id, value)
-    # Beat trigger: any band rising to >= 1.0 flashes its LED; only the selected band mode
-    # fires the sequencer beat event (edge only)
-    band_source = {1: BEAT_SOURCE_BAND1, 2: BEAT_SOURCE_BAND2, 3: BEAT_SOURCE_BAND3}[band_id]
+    # Beat trigger: any band rising to >= 1.0 flashes its LED; only band 1 can
+    # drive the sequencer beat (edge only) — bands 2/3 stay spectrum-only (e10s07)
     if value >= 1.0 and band_prev_values[band_id] < 1.0:
         flash_led(f"led_band{band_id}")
-        if beat_source == band_source:
+        if band_id == 1 and beat_source == BEAT_SOURCE_BAND1:
             sync_event_beat.set()
     band_prev_values[band_id] = value
     dpg.set_value(f"band{band_id}_value_text", f"{value:.2f}")
@@ -3175,7 +3168,9 @@ def visual_metronome_loop() -> None:
         if is_beat_tracking and current_bpm > 0 and not is_playing:
             base_sleep = 60.0 / current_bpm
             actual_sleep = max(0.0, base_sleep + phase_nudge)
-            flash_led(BEAT_LED_TAGS[beat_source])
+            led_tag = BEAT_LED_TAGS.get(beat_source)
+            if led_tag:
+                flash_led(led_tag)
             sync_event_led.wait(actual_sleep)
             if sync_event_led.is_set():
                 sync_event_led.clear()
@@ -3262,13 +3257,8 @@ def send_seekr_step(track: dict[str, Any], row: int, col: int) -> None:
 
 
 def beat_is_event_driven() -> bool:
-    """True when the beat comes from an event (band peak / MIDI clock), not a fixed interval."""
-    return beat_source in (
-        BEAT_SOURCE_BAND1,
-        BEAT_SOURCE_BAND2,
-        BEAT_SOURCE_BAND3,
-        BEAT_SOURCE_MIDI,
-    )
+    """True when the beat comes from an event (band 1 peak / MIDI clock), not a fixed interval."""
+    return beat_source in (BEAT_SOURCE_BAND1, BEAT_SOURCE_MIDI)
 
 
 def sequencer_tick() -> None:
@@ -3276,8 +3266,11 @@ def sequencer_tick() -> None:
     while True:
         if is_playing:
             if beat_is_event_driven():
-                # Band/MIDI modes: wait for the beat event instead of a fixed interval
-                sync_event_beat.wait()
+                # Band/MIDI modes: wait for the beat event. The wait is polled so a
+                # beat-source switch or STOP always breaks through — an unbounded wait
+                # strands the tick thread in a mode that no longer fires (BUG-2026-08-27T213000).
+                if not sync_event_beat.wait(0.1):
+                    continue  # no beat this poll: re-evaluate mode/stop
                 sync_event_beat.clear()
                 phase_nudge = 0.0
             else:
@@ -3355,7 +3348,9 @@ def sequencer_tick() -> None:
                         except Exception as e:
                             print(f"[viseq OSC Error] {e}")
 
-            flash_led(BEAT_LED_TAGS[beat_source])
+            led_tag = BEAT_LED_TAGS.get(beat_source)
+            if led_tag:
+                flash_led(led_tag)
         else:
             time.sleep(0.1)
 
@@ -3543,7 +3538,7 @@ with dpg.window(
             height=28,
         )
         dpg.add_spacer(width=14)
-        # Beat source line 1: BPM detection (with its BPM readout) + bands 1-2
+        # Beat source line 1: BPM detection (with its BPM readout) + band 1
         dpg.add_checkbox(
             label=BEAT_SOURCE_LABELS[BEAT_SOURCE_ANALYSIS],
             tag="cb_beat_bpm_analysis",
@@ -3561,47 +3556,41 @@ with dpg.window(
             )
         dpg.add_text("BPM: ---", tag="testo_bpm")
         dpg.add_spacer(width=10)
-        for mode, label in ((BEAT_SOURCE_BAND1, "Band 1"), (BEAT_SOURCE_BAND2, "Band 2")):
-            dpg.add_checkbox(
-                label=label,
-                tag=f"cb_beat_{mode}",
-                callback=learnable(
-                    on_beat_source, lambda ud: (MIDI_ACTION_BEAT_SOURCE, {"mode": ud})
-                ),
-                user_data=mode,
+        dpg.add_checkbox(
+            label="Beat Band 1",
+            tag=f"cb_beat_{BEAT_SOURCE_BAND1}",
+            callback=learnable(on_beat_source, lambda ud: (MIDI_ACTION_BEAT_SOURCE, {"mode": ud})),
+            user_data=BEAT_SOURCE_BAND1,
+        )
+        with dpg.drawlist(width=14, height=14):
+            dpg.draw_circle(
+                center=[7, 7],
+                radius=5,
+                color=(0, 0, 0, 255),
+                fill=(50, 50, 50, 255),
+                tag="led_band1",
             )
-            with dpg.drawlist(width=14, height=14):
-                dpg.draw_circle(
-                    center=[7, 7],
-                    radius=5,
-                    color=(0, 0, 0, 255),
-                    fill=(50, 50, 50, 255),
-                    tag=BEAT_LED_TAGS[mode],
-                )
-            dpg.add_spacer(width=10)
+        dpg.add_spacer(width=10)
 
-    # Beat source line 2: band 3 + MIDI + manual (with the numeric input and TAP).
+    # Beat source line 2: MIDI + manual (with the numeric input and TAP).
     # The leading spacer aligns it under line 1 (transport width: PLAY+sp+<+RESYNC+>+sp).
     with dpg.group(horizontal=True):
         dpg.add_spacer(width=SEQ_TRANSPORT_WIDTH)
-        for mode, label in ((BEAT_SOURCE_BAND3, "Band 3"), (BEAT_SOURCE_MIDI, "MIDI Sync")):
-            dpg.add_checkbox(
-                label=label,
-                tag=f"cb_beat_{mode}",
-                callback=learnable(
-                    on_beat_source, lambda ud: (MIDI_ACTION_BEAT_SOURCE, {"mode": ud})
-                ),
-                user_data=mode,
+        dpg.add_checkbox(
+            label="MIDI Sync",
+            tag=f"cb_beat_{BEAT_SOURCE_MIDI}",
+            callback=learnable(on_beat_source, lambda ud: (MIDI_ACTION_BEAT_SOURCE, {"mode": ud})),
+            user_data=BEAT_SOURCE_MIDI,
+        )
+        with dpg.drawlist(width=14, height=14):
+            dpg.draw_circle(
+                center=[7, 7],
+                radius=5,
+                color=(0, 0, 0, 255),
+                fill=(50, 50, 50, 255),
+                tag="led_midi",
             )
-            with dpg.drawlist(width=14, height=14):
-                dpg.draw_circle(
-                    center=[7, 7],
-                    radius=5,
-                    color=(0, 0, 0, 255),
-                    fill=(50, 50, 50, 255),
-                    tag=BEAT_LED_TAGS[mode],
-                )
-            dpg.add_spacer(width=10)
+        dpg.add_spacer(width=10)
         dpg.add_checkbox(
             label=BEAT_SOURCE_LABELS[BEAT_SOURCE_MANUAL],
             tag="cb_beat_manual_bpm",

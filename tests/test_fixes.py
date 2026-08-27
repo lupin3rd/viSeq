@@ -1061,8 +1061,6 @@ def test_beat_is_event_driven():
     for source, event_driven in [
         (viseq.BEAT_SOURCE_ANALYSIS, False),
         (viseq.BEAT_SOURCE_BAND1, True),
-        (viseq.BEAT_SOURCE_BAND2, True),
-        (viseq.BEAT_SOURCE_BAND3, True),
         (viseq.BEAT_SOURCE_MIDI, True),
         (viseq.BEAT_SOURCE_MANUAL, False),
     ]:
@@ -1088,14 +1086,24 @@ def test_band_rising_edge_triggers_beat():
 
 
 def test_band_beat_ignored_when_not_selected():
-    viseq.beat_source = viseq.BEAT_SOURCE_BAND2
+    # only band 1 can drive the beat, and only when it is the selected source
+    viseq.beat_source = viseq.BEAT_SOURCE_ANALYSIS
     viseq.bands_enabled[1] = True
     viseq.band_prev_values[1] = 0.9
     viseq.sync_event_beat.clear()
     viseq.refresh_band_value(np.full(16, 1.0), 1)
-    assert not viseq.sync_event_beat.is_set(), "only the selected band drives the beat"
+    assert not viseq.sync_event_beat.is_set(), (
+        "a band peak must not fire without the band source selected"
+    )
+    # bands 2/3 are spectrum-only: their peaks never fire the sequencer beat (e10s07)
+    viseq.beat_source = viseq.BEAT_SOURCE_BAND1
+    viseq.sync_event_beat.clear()
+    viseq.band_prev_values[2] = 0.9
+    viseq.refresh_band_value(np.full(16, 1.0), 2)
+    assert not viseq.sync_event_beat.is_set(), "band 2 must never drive the sequencer beat"
     viseq.bands_enabled[1] = False
     viseq.band_prev_values[1] = 0.0
+    viseq.band_prev_values[2] = 0.0
 
 
 def test_tap_bpm_averages_intervals(monkeypatch):
@@ -1186,16 +1194,12 @@ def test_beat_source_ui_wired():
     assert beat_checkbox_tags == {
         "cb_beat_bpm_analysis",
         "cb_beat_band1_beat",
-        "cb_beat_band2_beat",
-        "cb_beat_band3_beat",
         "cb_beat_midi_sync",
         "cb_beat_manual_bpm",
-    }, "one checkbox per beat source"
+    }, "one checkbox per beat source (bands 2/3 removed, e10s07)"
     assert beat_led_tags == {
         "led_analysis",
         "led_band1",
-        "led_band2",
-        "led_band3",
         "led_midi",
         "led_manual",
     }, "one LED per beat source"
@@ -2123,9 +2127,7 @@ def test_no_italian_ui_strings_remain():
 def test_beat_source_labels_english():
     assert viseq.BEAT_SOURCE_LABELS[viseq.BEAT_SOURCE_ANALYSIS] == "BPM Detection"
     assert viseq.BEAT_SOURCE_LABELS[viseq.BEAT_SOURCE_MANUAL] == "Manual BPM"
-    band_keys = {1: viseq.BEAT_SOURCE_BAND1, 2: viseq.BEAT_SOURCE_BAND2, 3: viseq.BEAT_SOURCE_BAND3}
-    for band, key in band_keys.items():
-        assert viseq.BEAT_SOURCE_LABELS[key] == f"Beat Band {band}"
+    assert viseq.BEAT_SOURCE_LABELS[viseq.BEAT_SOURCE_BAND1] == "Beat Band 1"
 
 
 def test_theme_preset_labels_english():
@@ -3359,3 +3361,19 @@ def test_e10s06_title_truncation_falls_back_when_font_unmeasured(monkeypatch):
     )
     assert viseq.truncate_media_title("") == ""
     assert viseq.truncate_media_title("short.mp4") == "short.mp4"
+
+
+def test_sequencer_beat_wait_is_polled():
+    """BUG-2026-08-27T213000: the band/MIDI beat wait must be bounded, so a
+    beat-source switch or STOP always breaks through — an unbounded wait
+    strands the tick thread in a mode that no longer fires."""
+    src = Path("viseq.py").read_text()
+    fn = re.search(r"def sequencer_tick\(.*?\n(?=def |\n# ===)", src, re.S)
+    assert fn, "sequencer_tick not found"
+    m = re.search(r"sync_event_beat\.wait\(([^)]*)\)", fn.group(0))
+    assert m and m.group(1).strip(), (
+        "the band/MIDI wait must be polled with a timeout (BUG-2026-08-27T213000)"
+    )
+    assert "continue" in fn.group(0), (
+        "an idle poll must re-loop so a mode/stop change is re-evaluated"
+    )

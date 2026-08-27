@@ -150,3 +150,6 @@ epics:
       - id: e10s06
         title: "Mediagrid: two-line title truncation + viseq-side primary selection (lighter Vimix indicator)"
         bcps: 5
+      - id: e10s07
+        title: "Beat sources: only Band 1 selectable in the sequencer + deadlock-free source switching (BUG-2026-08-27T213000)"
+        bcps: 3

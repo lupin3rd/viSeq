@@ -46,3 +46,17 @@ bugs:
     approach: Subclass ThreadingOSCUDPServer with max_packet_size >= MAX_THUMBNAIL_BLOB_BYTES + header margin; flip the tile label to the failed state in place when the request loop crosses the threshold (no rebuild required)
     risk_level: medium
     commit_message: "fix(thumb): OSC receiver accepts full thumbnail blobs (> 8 KB) and surfaces the failed tile in place"
+  - bug_id: BUG-2026-08-27T213000
+    date: 2026-08-27
+    severity: high
+    priority: high
+    scope: sequencer
+    summary: Sequencer deadlocks after switching the beat source — the tick thread is stranded in an unbounded sync_event_beat.wait() and STOP/PLAY cannot recover it
+    file: specs/bugs/BUG-2026-08-27T213000-sequencer-beat-source-deadlock.md
+    status: fixed
+    files_changed:
+      - viseq.py
+      - tests/test_fixes.py
+    approach: Poll the band/MIDI wait with a bounded timeout (advance only on a real event, otherwise re-loop so mode/stop are re-evaluated); guard flash_led against unknown beat_source values
+    risk_level: medium
+    commit_message: "fix(seq): poll the beat wait so switching the beat source or STOP never strands the tick thread"
