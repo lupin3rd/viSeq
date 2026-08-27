@@ -65,6 +65,10 @@ SLOT_BUTTON_TOP_SPACER = (SLOT_HEIGHT - SLOT_BUTTON_HEIGHT) // 2 - SLOT_BUTTON_F
 MEDIA_BADGE_W = 28  # px width of the media-index badge button
 MEDIA_BADGE_H = 20  # px height of the media-index badge button
 MEDIA_TILE_H = 146  # px height of a media tile (title + photo + badge row)
+# e10s06: the tile title fits at most two wrapped lines, truncated with an ellipsis
+MEDIA_TITLE_WRAP = 125  # px wrap width of the media tile title
+MEDIA_TITLE_MAX_LINES = 2
+MEDIA_TITLE_ELLIPSIS = "…"
 
 # Monitor player: compact graphical readout (e07)
 MONITOR_THUMB_W = 115  # thumbnail width, same as the Mediagrid/sequencer
@@ -720,6 +724,9 @@ def format_osc_log(history: list[str]) -> str:
 
 # --- GLOBAL VIMIX STATE ---
 global_vimix_state: dict[str, Any] = {"current_source": None, "sources": {}}
+# e10s06: viseq-side primary selection (target_id) — wins over the vimix current
+# source for tile theming and for sequencer/monitor attachment.
+viseq_selected_source: str | None = None
 
 ALL_PROPERTIES = [
     "index",
@@ -932,21 +939,13 @@ def frame_sleep() -> float:
 
 
 def midi_action_track_assign(row: int) -> None:
-    """Assign the current viOSC source to track row — shared by mouse and MIDI (e09)."""
-    current_source = global_vimix_state.get("current_source")
-    if current_source is None:
+    """Assign the currently selected media to track row (e10s06: viseq selection first)."""
+    target_id = get_current_target_id()
+    if target_id is None:
         return
-    data_dict = global_vimix_state.get("sources", {})
-    target_id = None
-    for k, props in data_dict.items():
-        if str(k) == str(current_source):
-            name = props.get("name")
-            target_id = str(name) if name else str(k)
-            break
-    if target_id:
-        tracks_data[row]["target_id"] = target_id
-        tracks_data[row]["base_address"] = f"/vimix/{target_id}"
-        update_track_slot_ui(row)
+    tracks_data[row]["target_id"] = target_id
+    tracks_data[row]["base_address"] = f"/vimix/{target_id}"
+    update_track_slot_ui(row)
 
 
 def assign_clip_to_track(sender: Any, app_data: Any, user_data: Any) -> None:
@@ -1493,6 +1492,69 @@ def _show_failed_tile_label(target_id: str) -> None:
         )
 
 
+def truncate_media_title(name: str) -> str:
+    """Fit a media name into at most two Mediagrid title lines (e10s06).
+
+    Measured with the live default font; when the full name exceeds the
+    two-line budget, the longest prefix that still fits (with the trailing
+    ellipsis) is returned. The full name stays in the raw table and in
+    target_id — only the display is truncated.
+    """
+    if not name:
+        return name
+    text = str(name)
+    budget = MEDIA_TITLE_WRAP * MEDIA_TITLE_MAX_LINES
+    if dpg.get_text_size(text)[0] <= budget:
+        return text
+    lo, hi = 1, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if dpg.get_text_size(text[:mid] + MEDIA_TITLE_ELLIPSIS)[0] <= budget:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo] + MEDIA_TITLE_ELLIPSIS
+
+
+def _tile_theme_for(idx: Any, target_id: str) -> Any:
+    """Pick the Mediagrid tile theme (e10s06).
+
+    The viseq-side primary selection uses the green selection theme; the vimix
+    current source alone uses the lighter non-green theme; everything else is
+    plain. The viseq selection wins when both point at the same source.
+    """
+    if target_id == viseq_selected_source:
+        return theme_selected_clip
+    if str(idx) == str(global_vimix_state.get("current_source")):
+        return theme_vimix_current_clip
+    return theme_normal_clip
+
+
+def refresh_tile_selection_themes() -> None:
+    """Re-apply the selection themes to every Mediagrid tile without a rebuild.
+
+    Called from the tile click handler: the viseq selection changes without
+    touching the grid signature, so the theme binding loop re-runs on the
+    existing tiles instead of rebuilding them.
+    """
+    for idx, props in global_vimix_state.get("sources", {}).items():
+        name = props.get("name")
+        target_id = str(name) if name else str(idx)
+        tile_tag = f"tile_{target_id}"
+        if dpg.does_item_exist(tile_tag):
+            dpg.bind_item_theme(tile_tag, _tile_theme_for(idx, target_id))
+
+
+def on_media_tile_click(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Select a media from the Mediagrid — the viseq-side primary selection (e10s06)."""
+    global viseq_selected_source
+    target_id = user_data
+    if target_id == viseq_selected_source:
+        return
+    viseq_selected_source = target_id
+    refresh_tile_selection_themes()
+
+
 def request_missing_thumbnails(now: float) -> None:
     """Request thumbs for sources that still lack them (3 s throttle, e10s04).
 
@@ -1523,7 +1585,7 @@ def request_missing_thumbnails(now: float) -> None:
 
 
 def update_vimix_sources_ui(json_string: str) -> None:
-    global global_vimix_state, last_ui_signature, last_num_cols
+    global global_vimix_state, last_ui_signature, last_num_cols, viseq_selected_source
     try:
         payload = json.loads(json_string)
         if not isinstance(payload, dict):
@@ -1558,6 +1620,8 @@ def update_vimix_sources_ui(json_string: str) -> None:
         for target_id in list(thumb_fail_count):
             if target_id not in live_ids:
                 thumb_fail_count.pop(target_id)
+        if viseq_selected_source is not None and viseq_selected_source not in live_ids:
+            viseq_selected_source = None  # a pruned source can't stay selected (e10s06)
 
         current_source = global_vimix_state["current_source"]
         data_dict = global_vimix_state["sources"]
@@ -1655,6 +1719,11 @@ def update_vimix_sources_ui(json_string: str) -> None:
                         no_scrollbar=True,
                         tag=tile_tag,
                     )
+                    dpg.add_clicked_handler(
+                        parent=tile_tag,
+                        callback=on_media_tile_click,
+                        user_data=target_id,
+                    )
 
                     title_tag = f"tile_title_{target_id}"
                     if dpg.does_item_exist(title_tag):
@@ -1662,7 +1731,7 @@ def update_vimix_sources_ui(json_string: str) -> None:
                     dpg.add_text(
                         "---",
                         parent=cw,
-                        wrap=125,
+                        wrap=MEDIA_TITLE_WRAP,
                         color=palette_rgba(active_palette["text_bright"]),
                         tag=title_tag,
                     )
@@ -1741,16 +1810,13 @@ def update_vimix_sources_ui(json_string: str) -> None:
             for idx in sorted_keys:
                 props = data_dict[idx]
                 name = props.get("name")
-                is_selected = str(idx) == str(current_source)
                 target_id = str(name) if name else str(idx)
                 display_name = str(name) if name else f"Idx: {idx}"
                 tile_tag = f"tile_{target_id}"
 
                 if dpg.does_item_exist(tile_tag):
-                    dpg.bind_item_theme(
-                        tile_tag, theme_selected_clip if is_selected else theme_normal_clip
-                    )
-                _set_media_cell(f"tile_title_{target_id}", f"{display_name}")
+                    dpg.bind_item_theme(tile_tag, _tile_theme_for(idx, target_id))
+                _set_media_cell(f"tile_title_{target_id}", truncate_media_title(display_name))
                 if dpg.does_item_exist(f"tile_index_{target_id}"):
                     idx_val = props.get("index")
                     idx_str = str(idx_val) if idx_val is not None else str(idx)
@@ -1807,7 +1873,13 @@ monitor_player_counter = 0
 
 
 def get_current_target_id() -> str | None:
-    """Return the name (or index) of the source currently selected in vimix."""
+    """Return the target id of the currently selected media (e10s06).
+
+    The viseq Mediagrid selection is primary; before the first click (or after
+    the selected source is removed) it falls back to the vimix current source.
+    """
+    if viseq_selected_source is not None:
+        return viseq_selected_source
     current_source = global_vimix_state.get("current_source")
     if current_source is None:
         return None
@@ -3328,6 +3400,13 @@ with dpg.theme() as theme_selected_clip, dpg.theme_component(dpg.mvChildWindow):
 
 with dpg.theme() as theme_normal_clip, dpg.theme_component(dpg.mvChildWindow):
     theme_color(dpg.mvThemeCol_Border, "border")
+    theme_color(dpg.mvThemeCol_ChildBg, "panel_bg")
+    dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 5)
+
+with dpg.theme() as theme_vimix_current_clip, dpg.theme_component(dpg.mvChildWindow):
+    # Vimix's current source in a lighter, non-green border (e10s06): clearly
+    # distinct from the green viseq primary selection and the plain tile.
+    theme_color(dpg.mvThemeCol_Border, "text_dim")
     theme_color(dpg.mvThemeCol_ChildBg, "panel_bg")
     dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 5)
 

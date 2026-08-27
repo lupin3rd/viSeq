@@ -1,0 +1,46 @@
+# specs/epics/e10-thumbnail-pipeline-v2/e10s06-tasks.yaml
+story_id: e10s06
+title: "Mediagrid: two-line title truncation + viseq-side primary selection (lighter Vimix indicator)"
+status: passing
+bcps: 5
+tasks:
+  - id: 1
+    description: "RED: title truncation tests — short names untouched; long names truncated to the two-line budget with a trailing ellipsis (stub get_text_size measures width deterministically)"
+    verify: ".venv/bin/python -m pytest tests/ -q -k title"
+    risk: P2
+    status: passing
+    allure:
+      severity: normal
+      categories: ["unit", "viseq"]
+  - id: 2
+    description: "GREEN: truncate_media_title() (binary-search the longest fitting prefix) + use it in the Mediagrid structural title update"
+    verify: ".venv/bin/python -m pytest tests/ -q -k title"
+    risk: P2
+    status: passing
+    allure:
+      severity: normal
+      categories: ["unit", "viseq"]
+  - id: 3
+    description: "RED: selection tests — tile click sets viseq_selected_source and re-binds themes; theme precedence (viseq green > vimix light > plain); get_current_target_id() prefers the viseq selection; track assign uses it; L-1 prune clears a stale selection"
+    verify: ".venv/bin/python -m pytest tests/ -q -k 'select or current_target or track_assign'"
+    risk: P2
+    status: passing
+    allure:
+      severity: normal
+      categories: ["unit", "viseq"]
+  - id: 4
+    description: "GREEN: viseq_selected_source state, theme_vimix_current_clip, on_media_tile_click + refresh_tile_selection_themes, _tile_theme_for() shared picker, prune clear, get_current_target_id() preference, midi_action_track_assign refactor"
+    verify: ".venv/bin/python -m pytest tests/ -q && .venv/bin/ruff check . && .venv/bin/mypy"
+    risk: P2
+    status: passing
+    allure:
+      severity: normal
+      categories: ["unit", "viseq"]
+  - id: 5
+    description: "Full-suite verification (title + selection + prior thumb/cycle behavior stay green)"
+    verify: ".venv/bin/python -m pytest tests/ -q"
+    risk: P2
+    status: passing
+    allure:
+      severity: normal
+      categories: ["unit", "viseq"]

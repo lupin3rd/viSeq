@@ -101,6 +101,11 @@ class DpgStub:
         self.calls.append(("get_item_pos", (item,), {}))
         return self.positions.get(item, [0, 0])
 
+    def get_text_size(self, text):
+        """Deterministic stand-in: 8 px per char, 13 px height (default-font model)."""
+        self.calls.append(("get_text_size", (text,), {}))
+        return (len(text) * 8, 13)
+
     def get_item_width(self, item):
         self.calls.append(("get_item_width", (item,), {}))
         return self.sizes.get(item, (0, 0))[0]
@@ -3138,3 +3143,154 @@ def test_e10s05_cycle_gate_covers_sequencer_and_monitors(monkeypatch):
         viseq.monitor_players.clear()
         del viseq.thumb_cycle_state["clipA"]
         del viseq.thumbnails_data["clipA"]
+
+
+# ---------- e10s06: Mediagrid two-line title + viseq-side primary selection ----------
+def test_e10s06_title_short_name_untouched():
+    assert viseq.truncate_media_title("short.mp4") == "short.mp4"
+    assert viseq.truncate_media_title("") == ""
+
+
+def test_e10s06_title_long_name_truncated_to_two_lines():
+    long_name = "07-Ritual-giardino_bidir_crf19_noaudio_bidir_crf19_noaudio.mp4"
+    out = viseq.truncate_media_title(long_name)
+    assert out.endswith(viseq.MEDIA_TITLE_ELLIPSIS), "a too-long name must end with the ellipsis"
+    budget = viseq.MEDIA_TITLE_WRAP * viseq.MEDIA_TITLE_MAX_LINES
+    assert dpg.get_text_size(out)[0] <= budget, "the truncated title must fit two lines"
+    # maximality: one more char after the prefix would exceed the two-line budget
+    base = out[: -len(viseq.MEDIA_TITLE_ELLIPSIS)]
+    assert dpg.get_text_size(base + viseq.MEDIA_TITLE_ELLIPSIS + "x")[0] > budget, (
+        "the truncation must keep the longest prefix that fits"
+    )
+
+
+def test_e10s06_tile_registers_click_handler(monkeypatch):
+    saved_state = viseq.global_vimix_state
+    saved_sig = viseq.last_ui_signature
+    viseq.last_ui_signature = None
+    viseq.global_vimix_state = {
+        "current_source": 0,
+        "sources": {"0": {"name": "clipA", "index": 0}},
+    }
+    dpg.calls.clear()
+    try:
+        viseq.update_vimix_sources_ui(json.dumps(viseq.global_vimix_state))
+        handlers = [
+            c
+            for c in dpg.calls
+            if c[0] == "add_clicked_handler" and c[2].get("parent") == "tile_clipA"
+        ]
+        assert handlers and handlers[0][2].get("user_data") == "clipA", (
+            "each tile must register a click handler selecting its source"
+        )
+    finally:
+        viseq.global_vimix_state = saved_state
+        viseq.last_ui_signature = saved_sig
+
+
+def test_e10s06_tile_click_sets_viseq_selection(monkeypatch):
+    saved_state = viseq.global_vimix_state
+    saved_sel = viseq.viseq_selected_source
+    viseq.viseq_selected_source = None
+    viseq.global_vimix_state = {
+        "current_source": 0,
+        "sources": {"0": {"name": "clipA", "index": 0}},
+    }
+    dpg.calls.clear()
+    try:
+        viseq.on_media_tile_click(None, None, "clipA")
+        assert viseq.viseq_selected_source == "clipA"
+        binds = [c for c in dpg.calls if c[0] == "bind_item_theme"]
+        assert binds, "clicking a tile must refresh the selection themes"
+    finally:
+        viseq.global_vimix_state = saved_state
+        viseq.viseq_selected_source = saved_sel
+
+
+def test_e10s06_theme_precedence_viseq_green_vimix_light(monkeypatch):
+    saved_state = viseq.global_vimix_state
+    saved_sig = viseq.last_ui_signature
+    saved_sel = viseq.viseq_selected_source
+    viseq.last_ui_signature = None
+    viseq.viseq_selected_source = "clipB"
+    viseq.global_vimix_state = {
+        "current_source": 0,
+        "sources": {
+            "0": {"name": "clipA", "index": 0},
+            "1": {"name": "clipB", "index": 1},
+            "2": {"name": "clipC", "index": 2},
+        },
+    }
+    dpg.calls.clear()
+    try:
+        viseq.update_vimix_sources_ui(json.dumps(viseq.global_vimix_state))
+        binds = {
+            c[1][0]: c[1][1]
+            for c in dpg.calls
+            if c[0] == "bind_item_theme" and c[1][0].startswith("tile_")
+        }
+        assert binds.get("tile_clipB") is viseq.theme_selected_clip, (
+            "the viseq-selected tile must use the green selection theme"
+        )
+        assert binds.get("tile_clipA") is viseq.theme_vimix_current_clip, (
+            "the vimix current source alone must use the lighter (non-green) theme"
+        )
+        assert binds.get("tile_clipC") is viseq.theme_normal_clip, (
+            "unselected tiles keep the plain theme"
+        )
+    finally:
+        viseq.global_vimix_state = saved_state
+        viseq.last_ui_signature = saved_sig
+        viseq.viseq_selected_source = saved_sel
+
+
+def test_e10s06_current_target_prefers_viseq_selection():
+    saved_state = viseq.global_vimix_state
+    saved_sel = viseq.viseq_selected_source
+    viseq.global_vimix_state = {"current_source": 0, "sources": {"0": {"name": "clipA"}}}
+    viseq.viseq_selected_source = None
+    try:
+        assert viseq.get_current_target_id() == "clipA", "fallback: vimix current source"
+        viseq.viseq_selected_source = "clipB"
+        assert viseq.get_current_target_id() == "clipB", "the viseq selection is primary"
+    finally:
+        viseq.global_vimix_state = saved_state
+        viseq.viseq_selected_source = saved_sel
+
+
+def test_e10s06_track_assign_uses_viseq_selection():
+    saved_state = viseq.global_vimix_state
+    saved_sel = viseq.viseq_selected_source
+    saved_target = viseq.tracks_data[0]["target_id"]
+    viseq.global_vimix_state = {"current_source": 0, "sources": {"0": {"name": "clipA"}}}
+    viseq.viseq_selected_source = "clipB"
+    try:
+        viseq.midi_action_track_assign(0)
+        assert viseq.tracks_data[0]["target_id"] == "clipB", (
+            "the sequencer must attach the viseq-selected media"
+        )
+    finally:
+        viseq.tracks_data[0]["target_id"] = saved_target
+        viseq.global_vimix_state = saved_state
+        viseq.viseq_selected_source = saved_sel
+
+
+def test_e10s06_prune_clears_stale_viseq_selection():
+    saved_state = viseq.global_vimix_state
+    saved_sig = viseq.last_ui_signature
+    saved_sel = viseq.viseq_selected_source
+    viseq.last_ui_signature = None
+    viseq.viseq_selected_source = "ghost"
+    viseq.thumbnails_data.clear()
+    viseq.request_timestamps.clear()
+    viseq.global_vimix_state = {
+        "current_source": 0,
+        "sources": {"0": {"name": "clipA", "index": 0}},
+    }
+    try:
+        viseq.update_vimix_sources_ui(json.dumps(viseq.global_vimix_state))
+        assert viseq.viseq_selected_source is None, "a pruned selection must clear"
+    finally:
+        viseq.global_vimix_state = saved_state
+        viseq.last_ui_signature = saved_sig
+        viseq.viseq_selected_source = saved_sel
