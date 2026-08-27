@@ -856,6 +856,18 @@ SPECTRUM_BARS = 16
 NUM_BANDS = 3  # independent selectable bands (band1/band2/band3)
 SPECTRUM_FPS = 30.0  # spectrum redraw rate while analyzing
 SPECTRUM_DB_FLOOR = 60.0  # dB below full scale mapped to bar level 0
+# e10s09: perceptual spectrum — log-spaced bars over the musical range, level-
+# independent AGC and peak-aware band values so every band responds to music.
+SPECTRUM_F_MIN = 40.0  # Hz: bottom of the perceptual bar range (sub-bass edge)
+SPECTRUM_F_MAX = 20000.0  # Hz: top of the perceptual bar range (below Nyquist)
+SPECTRUM_PEAK_TARGET = 0.9  # AGC: the recent spectral peak maps to this level
+SPECTRUM_PEAK_FLOOR = 0.06  # AGC: below this peak the gain stays flat (silence guard)
+SPECTRUM_PEAK_DECAY = 0.995  # AGC release per frame (~-0.04 dB/frame, ≈ -1.3 dB/s):
+# slow enough that quiet content between transients stays quiet (beat edges re-arm)
+BAND_AGG_WEIGHT = 0.6  # band value = weight*peak + (1-weight)*mean of the band bars
+# A kick/bass transient lands around 0.6-0.9 after AGC+blend (measured); 0.6 fires
+# on strong band transients while the edge semantics ignore sustained content.
+BAND_BEAT_THRESHOLD = 0.6
 SPEC_DRAWLIST_W = 330  # spectrum drawlist width (px)
 SPEC_DRAWLIST_H = 66  # spectrum drawlist height (px) — tall enough to read the bars
 BAND_RECT_COLORS = {
@@ -868,6 +880,7 @@ BAND_DEFAULT_RANGES = {1: (0.0, 0.33), 2: (0.33, 0.66), 3: (0.66, 1.0)}  # equal
 # Last computed spectrum bars + per-band state. All written on the main thread inside the
 # queued spectrum task; future features read band1/band2/band3 (0..1, 0 while disabled).
 spectrum_bars_cache: np.ndarray = np.zeros(SPECTRUM_BARS, dtype=np.float32)
+spec_peak_hold: float = 0.0  # AGC running spectral peak (spectrum worker only, e10s09)
 bands_enabled: dict[int, bool] = {1: False, 2: False, 3: False}
 band1: float = 0.0
 band2: float = 0.0
@@ -3001,23 +3014,54 @@ def get_audio_snapshot() -> np.ndarray:
     return np.concatenate((audio_buffer[head:], audio_buffer[:head]))
 
 
-def compute_spectrum_bars(samples: np.ndarray, n_bars: int = SPECTRUM_BARS) -> np.ndarray:
+def _bar_freq_edges(n_bars: int, sr: float) -> np.ndarray:
+    """Log-spaced frequency edges for n_bars perceptual bars (Hz, e10s09).
+
+    Equal log steps spread musical energy across the bars — linear binning
+    piled almost everything into the low bars and left the high ones dead.
+    """
+    ratio = (SPECTRUM_F_MAX / SPECTRUM_F_MIN) ** (1.0 / n_bars)
+    edges = SPECTRUM_F_MIN * ratio ** np.arange(n_bars + 1)
+    edges[-1] = SPECTRUM_F_MAX  # snap: the pow chain drifts by float epsilon
+    return edges
+
+
+def compute_spectrum_bars(
+    samples: np.ndarray, n_bars: int = SPECTRUM_BARS, sr: float = samplerate
+) -> np.ndarray:
     """Magnitude spectrum of the latest samples, binned into n_bars levels (0..1).
 
-    Hann-windowed rfft, dB scale with a -SPECTRUM_DB_FLOOR floor; a full-scale sine
-    reaches ~1.0, silence ~0.0.
+    Hann-windowed rfft, dB scale with a -SPECTRUM_DB_FLOOR floor; the bars are
+    log-spaced over SPECTRUM_F_MIN..SPECTRUM_F_MAX (e10s09) so music energy is
+    spread perceptually; a full-scale sine reaches ~1.0, silence ~0.0.
     """
     if samples.size < SPECTRUM_FFT_SIZE:
         samples = np.pad(samples, (0, SPECTRUM_FFT_SIZE - samples.size))
     frame = samples[-SPECTRUM_FFT_SIZE:] * np.hanning(SPECTRUM_FFT_SIZE)
-    mag = np.abs(np.fft.rfft(frame))[1:]  # drop DC
+    mag = np.abs(np.fft.rfft(frame))[1:]  # drop DC; bin k = k*sr/FFT_SIZE
+    bin_edges = np.floor(_bar_freq_edges(n_bars, sr) / (sr / SPECTRUM_FFT_SIZE)).astype(int)
+    levels = np.zeros(n_bars, dtype=np.float32)
+    for i in range(n_bars):
+        lo = bin_edges[i]
+        hi = min(bin_edges[i + 1], len(mag))
+        if hi > lo:
+            levels[i] = float(np.max(mag[lo:hi]))
     # max per bar: averaging in dB would drown a narrow peak among quiet bins
-    mag_bins = np.array_split(mag, n_bars)
-    db = 20.0 * np.log10(
-        np.array([np.max(b) for b in mag_bins]) / (SPECTRUM_FFT_SIZE / 4.0) + 1e-12
-    )
-    levels = (db + SPECTRUM_DB_FLOOR) / SPECTRUM_DB_FLOOR
-    return np.clip(levels, 0.0, 1.0)
+    db = 20.0 * np.log10(levels / (SPECTRUM_FFT_SIZE / 4.0) + 1e-12)
+    return np.clip((db + SPECTRUM_DB_FLOOR) / SPECTRUM_DB_FLOOR, 0.0, 1.0).astype(np.float32)
+
+
+def apply_spectrum_agc(bars: np.ndarray, peak_hold: float) -> tuple[np.ndarray, float]:
+    """Normalize bars against a slow-decaying spectral peak (level-independent, e10s09).
+
+    A loud transient raises the hold instantly; the hold decays each frame so the
+    display and bands track the recent loudest content instead of requiring a
+    fixed full-scale input. Silence (peak below the floor) keeps a flat gain.
+    """
+    current = float(np.max(bars)) if bars.size else 0.0
+    peak_hold = current if current > peak_hold else max(current, peak_hold * SPECTRUM_PEAK_DECAY)
+    gain = SPECTRUM_PEAK_TARGET / max(peak_hold, SPECTRUM_PEAK_FLOOR)
+    return np.clip(bars * gain, 0.0, 1.0).astype(np.float32), peak_hold
 
 
 def band_value_from_bars(
@@ -3026,13 +3070,18 @@ def band_value_from_bars(
     end: float,
     min_level: float = 0.0,
     max_level: float = 1.0,
+    agg: str = "mean",
 ) -> float:
-    """Mean fill (0..1) of the selection rectangle over the bars.
+    """Fill (0..1) of the selection rectangle over the bars.
 
     The horizontal window [start, end) picks the bars; the vertical window
     [min_level, max_level] maps each bar's level so 0 = at/below min and
     1 = at/above max. An inverted/empty level window falls back to the plain
     bar mean (backward compatible with the frequency-only usage).
+
+    agg selects the aggregation over the mapped bars (e10s09): "mean" (default,
+    steady fill), "peak" (loudest bar — transient detection) or "blend"
+    (peak-dominant, used by the live band values and the beat edge).
     """
     if bars.size == 0:
         return 0.0
@@ -3047,6 +3096,10 @@ def band_value_from_bars(
     if max_level <= min_level:
         return float(np.mean(selected))
     mapped = np.clip((selected - min_level) / (max_level - min_level), 0.0, 1.0)
+    if agg == "peak":
+        return float(np.max(mapped))
+    if agg == "blend":
+        return float(BAND_AGG_WEIGHT * np.max(mapped) + (1.0 - BAND_AGG_WEIGHT) * np.mean(mapped))
     return float(np.mean(mapped))
 
 
@@ -3069,11 +3122,11 @@ def refresh_band_value(bars: np.ndarray, band_id: int) -> None:
     f_end = float(dpg.get_value(f"band{band_id}_end"))
     l_min = float(dpg.get_value(f"band{band_id}_min"))
     l_max = float(dpg.get_value(f"band{band_id}_max"))
-    value = band_value_from_bars(bars, f_start, f_end, l_min, l_max)
+    value = band_value_from_bars(bars, f_start, f_end, l_min, l_max, agg="blend")
     _set_band_variable(band_id, value)
-    # Beat trigger: any band rising to >= 1.0 flashes its LED; only band 1 can
+    # Beat trigger: any band rising to the threshold flashes its LED; only band 1 can
     # drive the sequencer beat (edge only) — bands 2/3 stay spectrum-only (e10s07)
-    if value >= 1.0 and band_prev_values[band_id] < 1.0:
+    if value >= BAND_BEAT_THRESHOLD and band_prev_values[band_id] < BAND_BEAT_THRESHOLD:
         flash_led(f"led_band{band_id}")
         if band_id == 1 and beat_source == BEAT_SOURCE_BAND1:
             sync_event_beat.set()
@@ -3128,11 +3181,13 @@ def on_band_change(sender: Any, app_data: Any, user_data: Any) -> None:
 
 
 def spectrum_analyzer_loop() -> None:
-    """Compute the spectrum ~30x/s and enqueue the main-thread redraw (HIGH-1)."""
+    """Compute the spectrum ~30x/s, AGC-normalize it, enqueue the redraw (HIGH-1)."""
+    global spec_peak_hold
     while True:
         if is_audio_analyzing:
             try:
                 bars = compute_spectrum_bars(get_audio_snapshot())
+                bars, spec_peak_hold = apply_spectrum_agc(bars, spec_peak_hold)
                 ui_task(partial(update_spectrum_ui, bars))
             except Exception as e:
                 log_error("Spectrum", str(e))

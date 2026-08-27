@@ -949,12 +949,60 @@ def test_spectrum_bars_tone_peaks_near_bin():
     t = np.arange(2048) / sr
     tone = (0.8 * np.sin(2 * np.pi * 5000.0 * t)).astype(np.float32)
     bars = viseq.compute_spectrum_bars(tone)
-    expected_bin = int(5000.0 / (sr / 2) * viseq.SPECTRUM_BARS)
+    # perceptual log mapping (e10s09): the 5 kHz tone lands on its log bar, not the
+    # linear one (linear binning piled music energy into the low bars)
+    expected_bin = int(
+        np.log(5000.0 / viseq.SPECTRUM_F_MIN)
+        / np.log(viseq.SPECTRUM_F_MAX / viseq.SPECTRUM_F_MIN)
+        * viseq.SPECTRUM_BARS
+    )
     assert abs(int(np.argmax(bars)) - expected_bin) <= 2, (
-        f"5kHz tone must peak near bin {expected_bin}, got {int(np.argmax(bars))}"
+        f"5kHz tone must peak near log bar {expected_bin}, got {int(np.argmax(bars))}"
     )
     assert float(np.max(bars)) > 0.5, "a loud tone must light its bars"
     assert bool(np.all(bars >= 0.0)) and bool(np.all(bars <= 1.0)), "bars stay in 0..1"
+
+
+def test_bar_freq_edges_log_spaced():
+    edges = viseq._bar_freq_edges(viseq.SPECTRUM_BARS, 44100.0)
+    assert len(edges) == viseq.SPECTRUM_BARS + 1
+    assert edges[0] == viseq.SPECTRUM_F_MIN
+    assert edges[-1] == viseq.SPECTRUM_F_MAX
+    assert bool(np.all(np.diff(edges) > 0)), "edges must be strictly increasing"
+
+
+def test_apply_spectrum_agc_level_independent():
+    loud = np.array([0.0, 0.6, 0.2, 0.1], dtype=np.float32)
+    quiet = np.array([0.0, 0.06, 0.02, 0.01], dtype=np.float32)
+    loud_out, hold1 = viseq.apply_spectrum_agc(loud, 0.0)
+    quiet_out, _ = viseq.apply_spectrum_agc(quiet, 0.0)
+    assert abs(float(np.max(loud_out)) - float(np.max(quiet_out))) < 0.05, (
+        "AGC must make loud and quiet input reach the same normalized peak"
+    )
+    assert hold1 > 0.0 and abs(float(np.max(loud_out)) - viseq.SPECTRUM_PEAK_TARGET) < 0.02
+    # silence stays zero (no noise amplification)
+    silent_out, _ = viseq.apply_spectrum_agc(np.zeros(4, dtype=np.float32), hold1)
+    assert float(np.max(silent_out)) == 0.0
+    # the hold decays slowly
+    _, hold4 = viseq.apply_spectrum_agc(np.zeros(4, dtype=np.float32), hold1)
+    assert hold4 < hold1 and hold4 > hold1 * 0.9, "release must be slow, not instant"
+
+
+def test_band_value_agg_peak_and_blend():
+    bars = np.array([0.1, 0.5, 0.9, 0.4])
+    assert viseq.band_value_from_bars(bars, 0.0, 1.0, agg="peak") == 0.9
+    blend = viseq.band_value_from_bars(bars, 0.0, 1.0, agg="blend")
+    expected = viseq.BAND_AGG_WEIGHT * 0.9 + (1 - viseq.BAND_AGG_WEIGHT) * 0.475
+    assert abs(blend - expected) < 1e-9
+    # the default stays the plain mean (backward compatible)
+    assert viseq.band_value_from_bars(bars, 0.0, 1.0) == 0.475
+
+
+def test_band_beat_threshold_constant_used():
+    # the beat edge must use the named threshold, not a magic number
+    src = Path("viseq.py").read_text()
+    fn = re.search(r"def refresh_band_value\(.*?\n(?=def |\n# ===)", src, re.S)
+    assert fn and "BAND_BEAT_THRESHOLD" in fn.group(0), "beat edge must use the threshold"
 
 
 def test_spectrum_bars_short_input_padded():
@@ -1082,15 +1130,15 @@ def test_beat_is_event_driven():
 def test_band_rising_edge_triggers_beat():
     viseq.beat_source = viseq.BEAT_SOURCE_BAND1
     viseq.bands_enabled[1] = True
-    viseq.band_prev_values[1] = 0.9
+    viseq.band_prev_values[1] = viseq.BAND_BEAT_THRESHOLD - 0.1  # below the edge
     viseq.sync_event_beat.clear()
     bars = np.full(16, 1.0)
     viseq.refresh_band_value(bars, 1)
-    assert viseq.sync_event_beat.is_set(), "band reaching 1.0 must fire the beat"
-    # no re-fire while it stays at 1.0 (edge only)
+    assert viseq.sync_event_beat.is_set(), "band crossing the threshold must fire the beat"
+    # no re-fire while it stays above the threshold (edge only)
     viseq.sync_event_beat.clear()
     viseq.refresh_band_value(bars, 1)
-    assert not viseq.sync_event_beat.is_set(), "no re-trigger on a sustained 1.0"
+    assert not viseq.sync_event_beat.is_set(), "no re-trigger on a sustained level"
     viseq.bands_enabled[1] = False
     viseq.band_prev_values[1] = 0.0
 

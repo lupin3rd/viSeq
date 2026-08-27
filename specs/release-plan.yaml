@@ -156,3 +156,6 @@ epics:
       - id: e10s08
         title: "Sequencer: stale BPM never drives the clock + compact single-row beat sources"
         bcps: 4
+      - id: e10s09
+        title: "Perceptual spectrum analysis: log bars, level-independent AGC, peak-aware bands"
+        bcps: 4

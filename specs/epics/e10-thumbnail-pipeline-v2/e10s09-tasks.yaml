@@ -1,0 +1,46 @@
+# specs/epics/e10-thumbnail-pipeline-v2/e10s09-tasks.yaml
+story_id: e10s09
+title: "Perceptual spectrum analysis: log bars, level-independent AGC, peak-aware bands"
+status: passing
+bcps: 4
+tasks:
+  - id: 1
+    description: "RED: log-bar tests — 5 kHz tone lands on its log bar; edges strictly increasing 40..20000 Hz"
+    verify: ".venv/bin/python -m pytest tests/ -q -k 'spectrum or bar_freq'"
+    risk: P1
+    status: passing
+    allure:
+      severity: high
+      categories: ["unit", "viseq"]
+  - id: 2
+    description: "GREEN: _bar_freq_edges + log mapping in compute_spectrum_bars"
+    verify: ".venv/bin/python -m pytest tests/ -q -k 'spectrum or bar_freq'"
+    risk: P1
+    status: passing
+    allure:
+      severity: high
+      categories: ["unit", "viseq"]
+  - id: 3
+    description: "RED: AGC tests — loud/quiet reach the same normalized peak, silence stays zero, the hold releases slowly; agg param (peak/blend) and BAND_BEAT_THRESHOLD usage"
+    verify: ".venv/bin/python -m pytest tests/ -q -k 'agc or band_value_agg or beat_threshold'"
+    risk: P1
+    status: passing
+    allure:
+      severity: high
+      categories: ["unit", "viseq"]
+  - id: 4
+    description: "GREEN: apply_spectrum_agc + wiring in spectrum_analyzer_loop; agg support in band_value_from_bars; blend + BAND_BEAT_THRESHOLD in refresh_band_value"
+    verify: ".venv/bin/python -m pytest tests/ -q -k 'agc or band_value_agg or beat_threshold'"
+    risk: P1
+    status: passing
+    allure:
+      severity: high
+      categories: ["unit", "viseq"]
+  - id: 5
+    description: "Full-suite verification"
+    verify: ".venv/bin/python -m pytest tests/ -q && .venv/bin/ruff check . && .venv/bin/mypy"
+    risk: P2
+    status: passing
+    allure:
+      severity: normal
+      categories: ["unit", "viseq"]
