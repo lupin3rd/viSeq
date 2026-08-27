@@ -3155,7 +3155,8 @@ def essentia_analyzer_loop() -> None:
                         beat_confidence = float(confidence)
                         bpm_last_detected = time.time()  # a real reading, not stale (e10s08)
                         enqueue_set_value(
-                            "testo_bpm", f"BPM: {current_bpm:.1f} (Conf: {beat_confidence:.2f})"
+                            "testo_bpm",
+                            f"BPM: {current_bpm:.0f}",  # compact readout, no confidence (e10s08)
                         )
             except Exception as e:
                 # Log each distinct failure once, not every second
@@ -3515,6 +3516,11 @@ with dpg.theme() as theme_media_badge, dpg.theme_component(dpg.mvButton):
     theme_color(dpg.mvThemeCol_Text, "text_bright")
     dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 2)
 
+with dpg.theme() as theme_seq_row_compact, dpg.theme_component(dpg.mvAll):
+    # Tighter item spacing for the sequencer transport/beat-source row (e10s08):
+    # the default 8 px between ~19 items pushed the row past the window width.
+    dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 4, 4)
+
 with dpg.theme() as theme_step_copied, dpg.theme_component(dpg.mvChildWindow):
     # copied-step highlight: warm border on the source cell (e08); the bg stays dark in
     # every theme because the flash state must stand out on both light and dark panels
@@ -3534,34 +3540,34 @@ with dpg.window(
 ):
     # Single compact row: transport + all beat sources (abbreviated labels, e10s08).
     # The manual widgets (input/TAP/readout) stay hidden until manual mode is selected.
-    with dpg.group(horizontal=True):
+    with dpg.group(horizontal=True, tag="seq_transport_row"):
+        dpg.bind_item_theme("seq_transport_row", theme_seq_row_compact)
         dpg.add_button(
             label="PLAY",
             tag="btn_play",
             callback=learnable(toggle_play, lambda ud: (MIDI_ACTION_TRANSPORT_PLAY, {})),
-            width=100,
-            height=28,
+            width=60,
+            height=26,
         )
-        dpg.add_spacer(width=14)
         dpg.add_button(
             label="<",
             callback=learnable(callback_nudge_backward, lambda ud: (MIDI_ACTION_NUDGE_BACK, {})),
-            width=36,
-            height=28,
+            width=28,
+            height=26,
         )
         dpg.add_button(
             label="RESYNC",
             callback=learnable(callback_resync, lambda ud: (MIDI_ACTION_TRANSPORT_RESYNC, {})),
-            width=72,
-            height=28,
+            width=50,
+            height=26,
         )
         dpg.add_button(
             label=">",
             callback=learnable(callback_nudge_forward, lambda ud: (MIDI_ACTION_NUDGE_FORWARD, {})),
-            width=36,
-            height=28,
+            width=28,
+            height=26,
         )
-        dpg.add_spacer(width=14)
+        dpg.add_spacer(width=8)
         dpg.add_checkbox(
             label=BEAT_SOURCE_LABELS[BEAT_SOURCE_ANALYSIS],
             tag="cb_beat_bpm_analysis",
@@ -3577,8 +3583,8 @@ with dpg.window(
                 fill=(50, 50, 50, 255),
                 tag="led_analysis",
             )
-        dpg.add_text("BPM: ---", tag="testo_bpm")
-        dpg.add_spacer(width=8)
+        dpg.add_text("BPM: ---", tag="testo_bpm", color=(150, 255, 150, 255))
+        dpg.add_spacer(width=6)
         dpg.add_checkbox(
             label=BEAT_SOURCE_LABELS[BEAT_SOURCE_BAND1],
             tag=f"cb_beat_{BEAT_SOURCE_BAND1}",
@@ -3593,7 +3599,7 @@ with dpg.window(
                 fill=(50, 50, 50, 255),
                 tag="led_band1",
             )
-        dpg.add_spacer(width=8)
+        dpg.add_spacer(width=6)
         dpg.add_checkbox(
             label=BEAT_SOURCE_LABELS[BEAT_SOURCE_MIDI],
             tag=f"cb_beat_{BEAT_SOURCE_MIDI}",
@@ -3608,7 +3614,7 @@ with dpg.window(
                 fill=(50, 50, 50, 255),
                 tag="led_midi",
             )
-        dpg.add_spacer(width=8)
+        dpg.add_spacer(width=6)
         dpg.add_checkbox(
             label=BEAT_SOURCE_LABELS[BEAT_SOURCE_MANUAL],
             tag="cb_beat_manual_bpm",
@@ -3623,12 +3629,12 @@ with dpg.window(
                 fill=(50, 50, 50, 255),
                 tag="led_manual",
             )
-        dpg.add_spacer(width=6)
+        dpg.add_spacer(width=4)
         dpg.add_input_int(
             default_value=120,
             min_value=30,
             max_value=300,
-            width=84,
+            width=70,
             tag="manual_bpm_input",
             callback=on_manual_bpm,
             show=False,
@@ -3637,7 +3643,7 @@ with dpg.window(
             label="TAP",
             tag="btn_tap",
             callback=learnable(tap_bpm, lambda ud: (MIDI_ACTION_TRANSPORT_TAP, {})),
-            width=36,
+            width=32,
             height=22,
             show=False,
         )
