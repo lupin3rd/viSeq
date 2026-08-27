@@ -3155,12 +3155,18 @@ def test_e10s06_title_long_name_truncated_to_two_lines():
     long_name = "07-Ritual-giardino_bidir_crf19_noaudio_bidir_crf19_noaudio.mp4"
     out = viseq.truncate_media_title(long_name)
     assert out.endswith(viseq.MEDIA_TITLE_ELLIPSIS), "a too-long name must end with the ellipsis"
-    budget = viseq.MEDIA_TITLE_WRAP * viseq.MEDIA_TITLE_MAX_LINES
-    assert dpg.get_text_size(out)[0] <= budget, "the truncated title must fit two lines"
-    # maximality: one more char after the prefix would exceed the two-line budget
+    # per-line budget: the wrap breaks every MEDIA_TITLE_WRAP px, so a total-width
+    # budget alone would allow a 245 px string that still needs three lines (17+17+1)
+    char_px = 8  # stub get_text_size model
+    chars_per_line = viseq.MEDIA_TITLE_WRAP // char_px
+    assert len(out) <= chars_per_line * viseq.MEDIA_TITLE_MAX_LINES, (
+        "the truncated name must fit two wrapped lines"
+    )
+    # maximality: one more char before the ellipsis would need a third line
     base = out[: -len(viseq.MEDIA_TITLE_ELLIPSIS)]
-    assert dpg.get_text_size(base + viseq.MEDIA_TITLE_ELLIPSIS + "x")[0] > budget, (
-        "the truncation must keep the longest prefix that fits"
+    assert len(base) == chars_per_line * viseq.MEDIA_TITLE_MAX_LINES - 1
+    assert len(base + "x" + viseq.MEDIA_TITLE_ELLIPSIS) > chars_per_line * 2, (
+        "one extra character must exceed the two-line budget"
     )
 
 
@@ -3345,8 +3351,9 @@ def test_e10s06_title_truncation_falls_back_when_font_unmeasured(monkeypatch):
     long_name = "07-Ritual-giardino_bidir_crf19_noaudio_bidir_crf19_noaudio.mp4"
     out = viseq.truncate_media_title(long_name)
     assert out.endswith(viseq.MEDIA_TITLE_ELLIPSIS), "must truncate with the fallback"
-    assert (
-        len(out) * viseq.MEDIA_TITLE_CHAR_PX <= viseq.MEDIA_TITLE_WRAP * viseq.MEDIA_TITLE_MAX_LINES
-    ), "the fallback budget must keep the title within two lines"
+    chars_per_line = viseq.MEDIA_TITLE_WRAP // viseq.MEDIA_TITLE_CHAR_PX
+    assert len(out) <= chars_per_line * viseq.MEDIA_TITLE_MAX_LINES, (
+        "the fallback budget must keep the title within two wrapped lines"
+    )
     assert viseq.truncate_media_title("") == ""
     assert viseq.truncate_media_title("short.mp4") == "short.mp4"

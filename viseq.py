@@ -1493,44 +1493,41 @@ def _show_failed_tile_label(target_id: str) -> None:
         )
 
 
-def _text_width(text: str) -> int:
-    """Measure text with the live default font (e10s06).
+def _char_width_px() -> int:
+    """Width of a single character in the live default font (e10s06).
 
-    get_text_size returns None until the font atlas is built (first rendered
-    frame), so a per-char estimate keeps the two-line budget working headless
-    and during the boot race instead of raising.
+    The default font is monospace (ProggyClean, 7 px); measuring 'M' (the
+    widest glyph) keeps the budget conservative if a proportional font is ever
+    loaded. Falls back to a constant until the font atlas is built
+    (get_text_size -> None).
     """
     try:
-        size = dpg.get_text_size(text)
+        size = dpg.get_text_size("M")
         if size and size[0]:
-            return int(size[0])
+            return max(1, int(size[0]))
     except Exception:
         pass
-    return len(text) * MEDIA_TITLE_CHAR_PX
+    return MEDIA_TITLE_CHAR_PX
 
 
 def truncate_media_title(name: str) -> str:
     """Fit a media name into at most two Mediagrid title lines (e10s06).
 
-    Measured with the live default font (per-char estimate until the atlas is
-    built); when the full name exceeds the two-line budget, the longest prefix
-    that still fits (with the trailing ellipsis) is returned. The full name
-    stays in the raw table and in target_id — only the display is truncated.
+    The budget is PER WRAPPED LINE (MEDIA_TITLE_WRAP / char width), not a
+    total-width budget: a 245 px string at a 125 px wrap still needs three
+    lines (17 + 17 + 1 chars). The longest prefix that keeps
+    prefix+ellipsis within two lines is returned; the full name stays in the
+    raw table and in target_id — only the display is truncated.
     """
     if not name:
         return name
     text = str(name)
-    budget = MEDIA_TITLE_WRAP * MEDIA_TITLE_MAX_LINES
-    if _text_width(text) <= budget:
+    chars_per_line = max(1, MEDIA_TITLE_WRAP // _char_width_px())
+    max_chars = chars_per_line * MEDIA_TITLE_MAX_LINES
+    if len(text) <= max_chars:
         return text
-    lo, hi = 1, len(text)
-    while lo < hi:
-        mid = (lo + hi + 1) // 2
-        if _text_width(text[:mid] + MEDIA_TITLE_ELLIPSIS) <= budget:
-            lo = mid
-        else:
-            hi = mid - 1
-    return text[:lo] + MEDIA_TITLE_ELLIPSIS
+    keep = max(0, max_chars - len(MEDIA_TITLE_ELLIPSIS))
+    return text[:keep] + MEDIA_TITLE_ELLIPSIS
 
 
 def _tile_theme_for(idx: Any, target_id: str) -> Any:
