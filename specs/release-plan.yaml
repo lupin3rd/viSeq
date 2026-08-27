@@ -144,3 +144,6 @@ epics:
       - id: e10s04
         title: "Mediagrid thumb cycling (750 ms, configure_item, gated) + failed-state retry UX + measured spike"
         bcps: 3
+      - id: e10s05
+        title: "Thumb cycling in the sequencer clip slots and monitor players (stable consumer tags, shared visibility gate)"
+        bcps: 4

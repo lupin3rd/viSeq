@@ -32,3 +32,17 @@ bugs:
     risk_level: medium
     commit_message: "fix(thumb): never lose thumbnails silently — viosc cache hardening + viseq failed-state retry"
     notes: "Root cause verified live via process memory forensics + OSC probes (2026-08-26). Folded into epic e10 thumbnail-pipeline-v2 story e10s01."
+  - bug_id: BUG-2026-08-27T201742
+    date: 2026-08-27
+    severity: high
+    priority: high
+    scope: thumbnail-pipeline
+    summary: OSC server drops thumbnail blobs > 8 KB (socketserver recv buffer truncates the datagram) — tile stuck on "Loading..." forever, failed state never visible
+    file: specs/bugs/BUG-2026-08-27T201742-osc-server-8kb-drops-thumbnails.md
+    status: fixed
+    files_changed:
+      - viseq.py
+      - tests/test_fixes.py
+    approach: Subclass ThreadingOSCUDPServer with max_packet_size >= MAX_THUMBNAIL_BLOB_BYTES + header margin; flip the tile label to the failed state in place when the request loop crosses the threshold (no rebuild required)
+    risk_level: medium
+    commit_message: "fix(thumb): OSC receiver accepts full thumbnail blobs (> 8 KB) and surfaces the failed tile in place"

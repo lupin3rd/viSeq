@@ -2971,3 +2971,170 @@ def test_e10s04_grid_cycling_does_not_force_full_rate():
         )
         viseq.thumbnails_data.clear()
         viseq.thumbnails_data.update(saved_thumbs)
+
+
+# ---------- BUG-2026-08-27T201742: OSC recv buffer drops > 8 KB thumbnail blobs ----------
+def test_e10s05_osc_server_recv_buffer_fits_full_thumbnail_blobs():
+    # socketserver.UDPServer defaults max_packet_size to 8192, which truncates
+    # thumbnail datagrams larger than 8 KB before python-osc can parse them
+    # (the daemon's 320x180 mjpeg frames are typically 10-17 KB). The viseq
+    # server class must accept the largest allowed blob plus the OSC header
+    # (address + typetag + size + padding) margin.
+    assert viseq.ViseqOSCUDPServer.max_packet_size >= viseq.MAX_THUMBNAIL_BLOB_BYTES + 4096, (
+        "the OSC receiver buffer must fit the max accepted thumbnail blob"
+    )
+
+
+def test_start_osc_server_instantiates_viseq_server_class():
+    _reset_osc_state()
+    viseq.start_osc_server("127.0.0.1", 6667)
+    assert isinstance(viseq.local_osc_server, viseq.ViseqOSCUDPServer), (
+        "start_osc_server must use the large-buffer server class"
+    )
+
+
+def test_e10s05_failed_label_flips_in_place_at_threshold(monkeypatch):
+    """BUG fix: the failed tile label must appear when the request loop crosses
+    the threshold, without waiting for a Mediagrid rebuild."""
+    monkeypatch.setattr(
+        dpg,
+        "does_item_exist",
+        lambda item: item.startswith("thumb_container_") or item.startswith("loading_txt_"),
+    )
+    fake = FakeVioscClient()
+    monkeypatch.setattr(viseq, "viosc_client", fake)
+    monkeypatch.setattr(viseq, "request_timestamps", {})
+    monkeypatch.setattr(viseq, "thumb_fail_count", {})
+    saved_state = viseq.global_vimix_state
+    viseq.global_vimix_state = {"sources": {"0": {"name": "clipA", "uri": "file:///x.mp4"}}}
+    dpg.calls.clear()
+    try:
+        for i in range(viseq.THUMB_FAIL_THRESHOLD + 1):
+            viseq.request_missing_thumbnails(now=1000.0 + i * 10.0)
+    finally:
+        viseq.global_vimix_state = saved_state
+    failed_texts = [
+        a[1][0]
+        for c in dpg.calls
+        if c[0] == "add_text"
+        for a in [c]
+        if a[1] and a[1][0] == viseq.THUMB_FAIL_LABEL
+    ]
+    assert failed_texts, (
+        "crossing the unanswered-request threshold must flip the tile label in place"
+    )
+
+
+# ---------- e10s05: thumb cycling in sequencer slots + monitor players ----------
+def test_e10s05_slot_thumb_button_has_stable_tag():
+    viseq.tracks_data[0]["target_id"] = "clipA"
+    viseq.thumbnails_data["clipA"] = ["tex_clipA_0", "tex_clipA_1", "tex_clipA_2"]
+    dpg.calls.clear()
+    try:
+        viseq.update_track_slot_ui(0)
+        slot_imgs = [c for c in dpg.calls if c[0] == "add_image_button"]
+        assert slot_imgs, "the slot must render the assigned clip thumbnail"
+        assert slot_imgs[0][2].get("tag") == "seq_thumb_0", (
+            "the slot image button needs a stable tag so the cycle can switch it"
+        )
+    finally:
+        viseq.tracks_data[0]["target_id"] = None
+        del viseq.thumbnails_data["clipA"]
+
+
+def _make_monitor_player(player_id: int, target_id: str) -> dict:
+    player = {
+        "id": player_id,
+        "tag": f"monitor_player_{player_id}",
+        "target_id": target_id,
+        "props": list(viseq.DEFAULT_MONITOR_PROPS),
+        "disc_angle": 0.0,
+        "disc_last": 0.0,
+    }
+    viseq.monitor_players.append(player)
+    return player
+
+
+def test_e10s05_monitor_thumb_image_has_stable_tag():
+    _make_monitor_player(99, "clipA")
+    viseq.thumbnails_data["clipA"] = ["tex_clipA_0", "tex_clipA_1", "tex_clipA_2"]
+    dpg.calls.clear()
+    try:
+        viseq.update_monitor_player_ui(99)
+        mon_imgs = [c for c in dpg.calls if c[0] == "add_image"]
+        assert mon_imgs, "the monitor body must render the assigned clip thumbnail"
+        assert mon_imgs[0][2].get("tag") == "mon_thumb_99", (
+            "the monitor thumbnail needs a stable tag so the cycle can switch it"
+        )
+    finally:
+        viseq.monitor_players.clear()
+        del viseq.thumbnails_data["clipA"]
+
+
+def test_e10s05_tick_switches_all_consumers_of_a_source(monkeypatch):
+    monkeypatch.setattr(
+        dpg,
+        "does_item_exist",
+        lambda item: (
+            item.startswith(("img_", "seq_thumb_", "mon_thumb_"))
+            or item in ("vimix_media_window", "sequencer_window")
+        ),
+    )
+    viseq.thumbnails_data["clipA"] = ["tex_clipA_0", "tex_clipA_1", "tex_clipA_2"]
+    viseq.thumb_cycle_state["clipA"] = (0, 0.0)
+    viseq.tracks_data[0]["target_id"] = "clipA"
+    _make_monitor_player(99, "clipA")
+    dpg.calls.clear()
+    try:
+        viseq.tick_thumb_cycle(0.75)
+        switches = {
+            c[1][0]: c[2].get("texture_tag")
+            for c in dpg.calls
+            if c[0] == "configure_item" and "texture_tag" in c[2]
+        }
+        assert switches.get("img_clipA") == "tex_clipA_1", (
+            "the Mediagrid tile must switch to the next frame"
+        )
+        assert switches.get("seq_thumb_0") == "tex_clipA_1", (
+            "the sequencer slot must switch to the same frame"
+        )
+        assert switches.get("mon_thumb_99") == "tex_clipA_1", (
+            "the monitor player must switch to the same frame"
+        )
+    finally:
+        viseq.tracks_data[0]["target_id"] = None
+        viseq.monitor_players.clear()
+        del viseq.thumb_cycle_state["clipA"]
+        del viseq.thumbnails_data["clipA"]
+
+
+def test_e10s05_cycle_gate_covers_sequencer_and_monitors(monkeypatch):
+    shown = {"sequencer_window": True, "vimix_media_window": False}
+    monkeypatch.setattr(dpg, "is_item_shown", lambda item: shown.get(item, False))
+    monkeypatch.setattr(
+        dpg,
+        "does_item_exist",
+        lambda item: (
+            item in shown
+            or item.startswith(("img_", "seq_thumb_", "mon_thumb_", "monitor_player_"))
+        ),
+    )
+    viseq.thumbnails_data["clipA"] = ["tex_clipA_0", "tex_clipA_1", "tex_clipA_2"]
+    viseq.thumb_cycle_state["clipA"] = (0, 0.0)
+    _make_monitor_player(99, "clipA")
+    try:
+        # Mediagrid hidden, sequencer visible -> cycling continues
+        dpg.calls.clear()
+        viseq.tick_thumb_cycle(0.75)
+        switches = [c for c in dpg.calls if c[0] == "configure_item"]
+        assert switches, "cycling must continue while the sequencer is visible"
+        # every consumer window hidden -> cycling pauses
+        shown.update({"sequencer_window": False})
+        dpg.calls.clear()
+        viseq.tick_thumb_cycle(1.5)
+        switches = [c for c in dpg.calls if c[0] == "configure_item"]
+        assert switches == [], "cycling must pause when all consumer windows are hidden"
+    finally:
+        viseq.monitor_players.clear()
+        del viseq.thumb_cycle_state["clipA"]
+        del viseq.thumbnails_data["clipA"]

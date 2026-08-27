@@ -970,6 +970,7 @@ def update_track_slot_ui(row: int) -> None:
                 width=SLOT_BUTTON_WIDTH,
                 height=SLOT_BUTTON_HEIGHT,
                 indent=SLOT_BUTTON_INDENT,
+                tag=f"seq_thumb_{row}",  # stable tag: the thumb cycle switches it (e10s05)
                 callback=learnable(
                     assign_clip_to_track, lambda ud: (MIDI_ACTION_TRACK_ASSIGN, {"row": ud})
                 ),
@@ -1406,26 +1407,90 @@ def advance_thumb_cycle(
     return (cur + 1) % thumbs_count, now
 
 
-def tick_thumb_cycle(now: float) -> None:
-    """Advance Mediagrid thumb frames once per main-loop frame (e10s04).
+def _thumb_cycle_active() -> bool:
+    """True while any thumbnail consumer window is visible (e10s05 gate).
 
-    Gated: no cycling while the Mediagrid window is hidden or gone. Tiles with
-    >=2 stored textures switch texture_tag via configure_item on the cadence;
-    the switch reuses pre-loaded static textures (SPIKE-thumb-cycle: ~1.6 us
-    per call — negligible).
+    The Mediagrid, the sequencer and every monitor player window each show
+    per-source thumbnails; cycling runs while at least one of them is open so
+    the animation follows the media wherever it is applied.
     """
-    if not dpg.does_item_exist("vimix_media_window"):
-        return
-    if not dpg.is_item_shown("vimix_media_window"):
+    for tag in ("vimix_media_window", "sequencer_window"):
+        if dpg.does_item_exist(tag) and dpg.is_item_shown(tag):
+            return True
+    for p in monitor_players:
+        if p.get("target_id") and dpg.does_item_exist(p["tag"]) and dpg.is_item_shown(p["tag"]):
+            return True
+    return False
+
+
+def _apply_cycle_frame(target_id: str, tex_tag: str) -> None:
+    """Switch every visible consumer of a source to the cycled frame (e10s05).
+
+    The Mediagrid tile, every sequencer slot and every monitor player assigned
+    to the source switch together on the same cadence; consumers whose widget
+    is gone (window closed, slot unassigned) are skipped.
+    """
+    img_tag = f"img_{target_id}"
+    if dpg.does_item_exist(img_tag):
+        dpg.configure_item(img_tag, texture_tag=tex_tag)
+    for r, track in enumerate(tracks_data):
+        if track.get("target_id") == target_id:
+            slot_tag = f"seq_thumb_{r}"
+            if dpg.does_item_exist(slot_tag):
+                dpg.configure_item(slot_tag, texture_tag=tex_tag)
+    for p in monitor_players:
+        if p.get("target_id") == target_id:
+            mon_tag = f"mon_thumb_{p['id']}"
+            if dpg.does_item_exist(mon_tag):
+                dpg.configure_item(mon_tag, texture_tag=tex_tag)
+
+
+def tick_thumb_cycle(now: float) -> None:
+    """Advance thumb frames once per main-loop frame (e10s04 + e10s05).
+
+    Gated: no cycling while every consumer window (Mediagrid, sequencer,
+    monitor players) is hidden or gone. Tiles with >=2 stored textures switch
+    texture_tag via configure_item on the cadence; the switch reuses
+    pre-loaded static textures (SPIKE-thumb-cycle: ~1.6 us per call).
+    """
+    if not _thumb_cycle_active():
         return
     for target_id, thumbs in list(thumbnails_data.items()):
         state = thumb_cycle_state.get(target_id, (0, now))
         new_state = advance_thumb_cycle(len(thumbs), now, state)
         thumb_cycle_state[target_id] = new_state
         if new_state[0] != state[0]:
-            img_tag = f"img_{target_id}"
-            if dpg.does_item_exist(img_tag):
-                dpg.configure_item(img_tag, texture_tag=thumbs[new_state[0]])
+            _apply_cycle_frame(target_id, thumbs[new_state[0]])
+
+
+def _show_failed_tile_label(target_id: str) -> None:
+    """Flip the tile's pending label to the failed state in place.
+
+    The request loop runs on the main thread; when the unanswered-request
+    counter crosses the threshold the existing "Loading..." label is replaced
+    by the failed label + retry popup without waiting for a grid rebuild
+    (BUG-2026-08-27T201742: the rebuild-only rendering kept the tile on
+    "Loading..." forever).
+    """
+    container_tag = f"thumb_container_{target_id}"
+    loading_tag = f"loading_txt_{target_id}"
+    if not dpg.does_item_exist(container_tag) or dpg.does_item_exist(f"img_{target_id}"):
+        return
+    if dpg.does_item_exist(loading_tag):
+        dpg.delete_item(loading_tag)
+    dpg.add_text(
+        THUMB_FAIL_LABEL,
+        parent=container_tag,
+        color=palette_rgba(active_palette["warning"]),
+        tag=loading_tag,
+    )
+    _text_color_bindings[loading_tag] = "text_dim"
+    with dpg.popup(loading_tag, mousebutton=dpg.mvMouseButton_Right):
+        dpg.add_menu_item(
+            label="Regenerate Thumbnail (Random)",
+            callback=regen_thumb_callback,
+            user_data=target_id,
+        )
 
 
 def request_missing_thumbnails(now: float) -> None:
@@ -1454,6 +1519,7 @@ def request_missing_thumbnails(now: float) -> None:
                     regen_addr = f"/viosc/regen_thumb/{target_id}"
                     viosc_client.send_message(regen_addr, [])
                     append_log("OUT", regen_addr)
+                    _show_failed_tile_label(target_id)
 
 
 def update_vimix_sources_ui(json_string: str) -> None:
@@ -1868,6 +1934,7 @@ def update_monitor_player_ui(player_id: int) -> None:
                             texture_tag=thumbnails_data[target_id][0],
                             width=MONITOR_THUMB_W,
                             height=MONITOR_THUMB_H,
+                            tag=f"mon_thumb_{player_id}",  # stable tag: cycled by tick_thumb_cycle
                         )
                     else:
                         themed_text("Loading thumbnail...", slot="text_dim", wrap=MONITOR_THUMB_W)
@@ -2139,6 +2206,18 @@ def incoming_osc_handler(address: str, *args: Any) -> None:
         log_error("OSC input", str(e))
 
 
+class ViseqOSCUDPServer(osc_server.ThreadingOSCUDPServer):
+    """OSC receiver with a recv buffer large enough for full thumbnail blobs.
+
+    socketserver.UDPServer defaults max_packet_size to 8192, which truncates
+    thumbnail datagrams larger than 8 KB before python-osc can parse them
+    (BUG-2026-08-27T201742); the buffer must fit the largest accepted blob plus
+    the OSC header (address + typetag + size + padding) margin.
+    """
+
+    max_packet_size = MAX_THUMBNAIL_BLOB_BYTES + 4096
+
+
 def start_osc_server(ip: str, port: int) -> bool:
     """Start the local OSC listening server (main thread); True when it is up."""
     global local_osc_server, local_server_thread, is_server_running
@@ -2147,7 +2226,7 @@ def start_osc_server(ip: str, port: int) -> bool:
     try:
         disp = dispatcher.Dispatcher()
         disp.set_default_handler(incoming_osc_handler)
-        local_osc_server = osc_server.ThreadingOSCUDPServer((ip, port), disp)
+        local_osc_server = ViseqOSCUDPServer((ip, port), disp)
         local_server_thread = threading.Thread(target=local_osc_server.serve_forever, daemon=True)
         local_server_thread.start()
         is_server_running = True
