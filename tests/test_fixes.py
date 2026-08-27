@@ -3303,3 +3303,50 @@ def test_e10s06_prune_clears_stale_viseq_selection():
         viseq.global_vimix_state = saved_state
         viseq.last_ui_signature = saved_sig
         viseq.viseq_selected_source = saved_sel
+
+
+def test_e10s06_click_callback_survives_extra_dpg_args(monkeypatch):
+    """DPG 2.3.1 calls item-handler callbacks with co_argcount args — Python
+    3.13 counts defaults, so the captured lambda receives an extra None arg
+    that must NOT clobber the captured target id."""
+    saved_state = viseq.global_vimix_state
+    saved_sig = viseq.last_ui_signature
+    saved_sel = viseq.viseq_selected_source
+    viseq.last_ui_signature = None
+    viseq.viseq_selected_source = None
+    viseq.global_vimix_state = {
+        "current_source": 0,
+        "sources": {"0": {"name": "clipA", "index": 0}},
+    }
+    dpg.calls.clear()
+    try:
+        viseq.update_vimix_sources_ui(json.dumps(viseq.global_vimix_state))
+        handler = next(
+            c[2]["callback"]
+            for c in dpg.calls
+            if c[0] == "add_item_clicked_handler" and c[2].get("callback") is not None
+        )
+        # DPG passes (sender, app_data, user_data, None) — the 4th arg used to
+        # override the captured target and silently deselect.
+        handler(28, (0, "tile_title_clipA"), None, None)
+        assert viseq.viseq_selected_source == "clipA", (
+            "the extra None arg must not clobber the captured target id"
+        )
+    finally:
+        viseq.global_vimix_state = saved_state
+        viseq.last_ui_signature = saved_sig
+        viseq.viseq_selected_source = saved_sel
+
+
+def test_e10s06_title_truncation_falls_back_when_font_unmeasured(monkeypatch):
+    """get_text_size returns None until the font atlas is built (first frame);
+    the two-line budget must still apply via the per-char fallback, no raise."""
+    monkeypatch.setattr(dpg, "get_text_size", lambda text: None)
+    long_name = "07-Ritual-giardino_bidir_crf19_noaudio_bidir_crf19_noaudio.mp4"
+    out = viseq.truncate_media_title(long_name)
+    assert out.endswith(viseq.MEDIA_TITLE_ELLIPSIS), "must truncate with the fallback"
+    assert (
+        len(out) * viseq.MEDIA_TITLE_CHAR_PX <= viseq.MEDIA_TITLE_WRAP * viseq.MEDIA_TITLE_MAX_LINES
+    ), "the fallback budget must keep the title within two lines"
+    assert viseq.truncate_media_title("") == ""
+    assert viseq.truncate_media_title("short.mp4") == "short.mp4"

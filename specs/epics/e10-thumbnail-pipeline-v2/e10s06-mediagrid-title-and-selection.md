@@ -91,3 +91,13 @@ unchanged).
   single left-click handler bound to the tile's clickable children (title,
   thumbnail, badge, alpha) — the demo-proven DPG 2.x pattern; right-click
   keeps the regen popup and never selects.
+- **Callback arity (fixed):** DPG 2.3.1 calls item-handler callbacks with
+  `co_argcount` positional args; Python 3.13 counts parameters with defaults,
+  so `lambda s, a, u, t=...` received a 4th None arg that silently deselected
+  every tile. The callback is now variadic (`lambda *_, t=...`) and the target
+  is captured, never received — verified with real clicks in dpg 2.3.1.
+- **Font measurement (fixed):** `get_text_size` returns None until the first
+  rendered frame builds the font atlas; a per-char fallback budget keeps the
+  two-line truncation working during the boot race instead of raising, and
+  the grid signature is committed only after the structural loop finishes so
+  a mid-loop failure retries the rebuild instead of locking a half-built grid.

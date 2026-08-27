@@ -69,6 +69,7 @@ MEDIA_TILE_H = 146  # px height of a media tile (title + photo + badge row)
 MEDIA_TITLE_WRAP = 125  # px wrap width of the media tile title
 MEDIA_TITLE_MAX_LINES = 2
 MEDIA_TITLE_ELLIPSIS = "…"
+MEDIA_TITLE_CHAR_PX = 7  # default-font estimate (ProggyClean 13 px) used before the atlas is built
 
 # Monitor player: compact graphical readout (e07)
 MONITOR_THUMB_W = 115  # thumbnail width, same as the Mediagrid/sequencer
@@ -1492,24 +1493,40 @@ def _show_failed_tile_label(target_id: str) -> None:
         )
 
 
+def _text_width(text: str) -> int:
+    """Measure text with the live default font (e10s06).
+
+    get_text_size returns None until the font atlas is built (first rendered
+    frame), so a per-char estimate keeps the two-line budget working headless
+    and during the boot race instead of raising.
+    """
+    try:
+        size = dpg.get_text_size(text)
+        if size and size[0]:
+            return int(size[0])
+    except Exception:
+        pass
+    return len(text) * MEDIA_TITLE_CHAR_PX
+
+
 def truncate_media_title(name: str) -> str:
     """Fit a media name into at most two Mediagrid title lines (e10s06).
 
-    Measured with the live default font; when the full name exceeds the
-    two-line budget, the longest prefix that still fits (with the trailing
-    ellipsis) is returned. The full name stays in the raw table and in
-    target_id — only the display is truncated.
+    Measured with the live default font (per-char estimate until the atlas is
+    built); when the full name exceeds the two-line budget, the longest prefix
+    that still fits (with the trailing ellipsis) is returned. The full name
+    stays in the raw table and in target_id — only the display is truncated.
     """
     if not name:
         return name
     text = str(name)
     budget = MEDIA_TITLE_WRAP * MEDIA_TITLE_MAX_LINES
-    if dpg.get_text_size(text)[0] <= budget:
+    if _text_width(text) <= budget:
         return text
     lo, hi = 1, len(text)
     while lo < hi:
         mid = (lo + hi + 1) // 2
-        if dpg.get_text_size(text[:mid] + MEDIA_TITLE_ELLIPSIS)[0] <= budget:
+        if _text_width(text[:mid] + MEDIA_TITLE_ELLIPSIS) <= budget:
             lo = mid
         else:
             hi = mid - 1
@@ -1726,9 +1743,12 @@ def update_vimix_sources_ui(json_string: str) -> None:
                     if dpg.does_item_exist(click_reg_tag):
                         dpg.delete_item(click_reg_tag)  # a rebuild must not leak registries
                     with dpg.item_handler_registry(tag=click_reg_tag):
+                        # DPG 2.3.1 calls item-handler callbacks with co_argcount
+                        # args (Python 3.13 counts defaults -> 4 args, extras are
+                        # None), so the target id must be captured, never received.
                         dpg.add_item_clicked_handler(
                             0,  # left click selects; right-click keeps the regen popup
-                            callback=lambda s, a, u, t=target_id: on_media_tile_click(s, a, t),
+                            callback=lambda *_, t=target_id: on_media_tile_click(None, None, t),
                         )
 
                     title_tag = f"tile_title_{target_id}"
@@ -1821,11 +1841,11 @@ def update_vimix_sources_ui(json_string: str) -> None:
                 for _ in range(num_cols - len(row_indices)):
                     dpg.add_text("", parent=r_id)
 
-            last_ui_signature = current_signature
-
             # Structural per-source updates: theme/title/index depend only on signature
             # fields (name/index/current_source/columns), so they run only on a real change
-            # (perf e07 P0: an unchanged push used to re-write them every time).
+            # (perf e07 P0: an unchanged push used to re-write them every time). The
+            # signature is committed AFTER the loop: a mid-loop failure must not lock the
+            # grid to a half-built state (the next push retries the rebuild).
             for idx in sorted_keys:
                 props = data_dict[idx]
                 name = props.get("name")
@@ -1840,6 +1860,7 @@ def update_vimix_sources_ui(json_string: str) -> None:
                     idx_val = props.get("index")
                     idx_str = str(idx_val) if idx_val is not None else str(idx)
                     dpg.configure_item(f"tile_index_{target_id}", label=idx_str)
+            last_ui_signature = current_signature
 
         # Value per-source updates: every cell write goes through the per-cell cache, so a
         # push that changes nothing performs zero dpg calls (perf e07 P0; measured ~20
