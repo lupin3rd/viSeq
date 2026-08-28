@@ -6,8 +6,8 @@ workflow_mode: solo-git
 
 handoff:
   next_skill: verify-work
-  active_epic_id: e11
-  active_story_id: e11s04
+  active_epic_id: e13
+  active_story_id: e13s02
 
 active_flow: verify
 bug_cycle:
