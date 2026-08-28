@@ -3553,3 +3553,104 @@ def test_project_capture_strips_runtime_state_and_records_audio(monkeypatch):
     }
     assert audio["bands"]["2"]["enabled"] is False
     assert audio["bands"]["3"]["enabled"] is False
+
+
+def _project_state_fixture():
+    """A complete, valid project state dict (as capture_project_state would produce)."""
+    steps = [
+        {
+            "active": False,
+            "type": "NONE",
+            "v1": 0.0,
+            "v2": 1.0,
+            "frames": 4,
+            "msgs": 1,
+            "color": [1.0, 1.0, 1.0],
+        }
+        for _ in range(viseq.NUM_STEPS)
+    ]
+    steps[2]["type"] = "AlphaR"
+    steps[2]["active"] = True
+    return {
+        "layout": {
+            "windows": [
+                {"tag": "sequencer_window", "shown": True, "pos": [15, 25], "size": [900, 700]}
+            ]
+        },
+        "theme": {"preset": "chiaro", "colors": copy.deepcopy(viseq.DEFAULT_PALETTE)},
+        "sequencer": {
+            "beat_source": viseq.BEAT_SOURCE_MANUAL,
+            "manual_bpm": 128.0,
+            "tracks": [
+                {
+                    "target_id": "media_9",
+                    "base_address": "/vimix/media_9",
+                    "steps": copy.deepcopy(steps),
+                },
+                {"target_id": None, "base_address": "", "steps": copy.deepcopy(steps)},
+            ],
+            "audio": {
+                "device": "0: Mock In",
+                "lowpass": False,
+                "bands": {
+                    "1": {"enabled": True, "start": 0.0, "end": 0.33, "min": 0.0, "max": 1.0},
+                    "2": {"enabled": False, "start": 0.33, "end": 0.66, "min": 0.0, "max": 1.0},
+                    "3": {"enabled": False, "start": 0.66, "end": 1.0, "min": 0.0, "max": 1.0},
+                },
+            },
+        },
+    }
+
+
+def test_project_apply_restores_tracks_globals_and_widgets():
+    """apply_project_state() re-applies tracks, globals, widgets and layout."""
+    state = _project_state_fixture()
+    dpg.calls.clear()
+    dpg.values.clear()
+    viseq.apply_project_state(state)
+
+    assert viseq.beat_source == viseq.BEAT_SOURCE_MANUAL
+    assert viseq.current_bpm == 128.0
+    assert viseq.lowpass_enabled is False
+    assert viseq.tracks_data[0]["target_id"] == "media_9"
+    assert viseq.tracks_data[0]["base_address"] == "/vimix/media_9"
+    assert viseq.tracks_data[0]["steps"][2]["type"] == "AlphaR"
+    assert viseq.tracks_data[0]["steps"][2]["active"] is True
+    assert len(viseq.tracks_data[0]["steps"]) == viseq.NUM_STEPS
+    assert viseq.tracks_data[1]["target_id"] is None
+    assert viseq.bands_enabled[1] is True
+    assert viseq.bands_enabled[2] is False
+
+    assert dpg.values["manual_bpm_input"] == 128
+    assert dpg.values["cb_beat_manual_bpm"] is True
+    assert dpg.values["cb_beat_bpm_analysis"] is False
+    assert dpg.values["cb_lowpass"] is False
+    assert dpg.values["combo_devices"] == "0: Mock In"
+    assert dpg.values["band1_enabled"] is True
+    assert dpg.values["band1_start"] == 0.0
+    assert dpg.values["band1_max"] == 1.0
+    assert dpg.values["theme_preset"] == "Light"
+
+    assert any(
+        n == "set_item_pos" and a == ("sequencer_window", [15, 25]) for n, a, kw in dpg.calls
+    ), "the window layout must be re-applied"
+    assert any(n == "delete_item" and a == ("seq_slot_0",) for n, a, kw in dpg.calls), (
+        "the clip slot UI must be rebuilt"
+    )
+    assert any(n == "delete_item" and a == ("seq_cell_0_2",) for n, a, kw in dpg.calls), (
+        "the step cell UI must be rebuilt"
+    )
+
+
+def test_project_apply_tolerates_missing_sections_and_unknown_device():
+    """Missing sections and an unknown audio device must not crash the restore."""
+    state = _project_state_fixture()
+    state["sequencer"]["audio"]["device"] = "Ghost Device"
+    state["layout"] = {}
+    state["sequencer"].pop("manual_bpm")
+    dpg.calls.clear()
+    dpg.values.clear()
+    viseq.apply_project_state(state)  # must not raise
+
+    assert "combo_devices" not in dpg.values, "an unknown device must be skipped"
+    assert viseq.tracks_data[0]["steps"][2]["type"] == "AlphaR"
