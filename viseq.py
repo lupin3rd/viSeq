@@ -4259,6 +4259,17 @@ with dpg.window(
 with dpg.window(
     label="Settings", width=340, height=320, pos=(370, 820), tag="settings_window", show=False
 ):
+    # e11s04: Project section first — restore-last-project-at-boot replaces the
+    # removed Windows layout save/restore section.
+    themed_text("Project", slot="text")
+    dpg.add_separator()
+    dpg.add_checkbox(
+        label="Restore last project at startup",
+        tag="cb_restore_project_boot",
+        default_value=True,
+        callback=on_restore_project_boot_toggle,
+    )
+    dpg.add_spacer(height=8)
     themed_text("OSC", slot="text")
     dpg.add_separator()
     dpg.add_text("1. Setup Client (to viOSC):")
@@ -4280,21 +4291,6 @@ with dpg.window(
 
     with dpg.group(tag="vimix_raw_group"):
         pass
-
-    # --- Windows section (e06s01): window layout save/restore ---
-    dpg.add_spacer(height=8)
-    themed_text("Windows", slot="text")
-    dpg.add_separator()
-    with dpg.group(horizontal=True):
-        dpg.add_button(label="Save layout", callback=save_layout_to_config, width=110)
-        dpg.add_button(label="Restore layout", callback=restore_layout_from_config, width=130)
-    dpg.add_checkbox(
-        label="Restore at startup",
-        tag="cb_restore_layout_boot",
-        default_value=True,
-        callback=on_restore_layout_boot_toggle,
-    )
-    dpg.add_spacer(height=8)
 
     # --- Tema section (e06s02): preset combo + five custom color pickers ---
     themed_text("Theme", slot="text")

@@ -314,6 +314,20 @@ band_rect_tags = {
     if n == "draw_rectangle" and str(kw.get("tag", "")).startswith("band")
 }
 
+# e11s04: settings Project section (restore-last-project checkbox), captured
+# before any calls-list clears; the order marker proves the section sits above OSC.
+import_time_project_restore_cb = [
+    kw
+    for n, a, kw in dpg.calls
+    if n == "add_checkbox" and kw.get("tag") == "cb_restore_project_boot"
+]
+import_time_project_cb_order = [
+    kw.get("tag")
+    for n, a, kw in dpg.calls
+    if (n == "add_checkbox" and kw.get("tag") == "cb_restore_project_boot")
+    or (n == "add_input_text" and kw.get("tag") == "viosc_ip")
+]
+
 # e11s03: project file dialogs, captured before any calls-list clears
 import_time_file_dialogs = [kw for n, a, kw in dpg.calls if n == "file_dialog"]
 
@@ -3895,26 +3909,18 @@ def test_project_dialogs_created_with_stable_tags():
 # ---------- e11s04: settings restructure + boot restore ----------
 def test_settings_project_section_replaces_windows_section():
     # the new restore-last-project checkbox exists, default ON, project callback
-    cbs = [
-        kw
-        for n, a, kw in dpg.calls
-        if n == "add_checkbox" and kw.get("tag") == "cb_restore_project_boot"
-    ]
-    assert cbs, "the restore-last-project checkbox must exist in Settings"
-    assert cbs[0].get("default_value") is True
-    assert cbs[0].get("callback") == viseq.on_restore_project_boot_toggle
+    assert import_time_project_restore_cb, (
+        "the restore-last-project checkbox must exist in Settings"
+    )
+    cb = import_time_project_restore_cb[0]
+    assert cb.get("default_value") is True
+    assert cb.get("callback") == viseq.on_restore_project_boot_toggle
     # the old windows widgets are gone
     labels = [kw.get("label") for kw in import_time_settings_buttons]
     assert "Save layout" not in labels, "the Save layout button must be gone"
     assert "Restore layout" not in labels, "the Restore layout button must be gone"
     assert not import_time_restore_checkbox, "the restore-layout checkbox must be gone"
     # the project checkbox precedes the OSC section (first input of the OSC block)
-    order = [
-        kw.get("tag")
-        for n, a, kw in dpg.calls
-        if (n == "add_checkbox" and kw.get("tag") == "cb_restore_project_boot")
-        or (n == "add_input_text" and kw.get("tag") == "viosc_ip")
-    ]
-    assert order.index("cb_restore_project_boot") < order.index("viosc_ip"), (
-        "the Project section must sit above the OSC section"
-    )
+    assert import_time_project_cb_order.index("cb_restore_project_boot") < (
+        import_time_project_cb_order.index("viosc_ip")
+    ), "the Project section must sit above the OSC section"
