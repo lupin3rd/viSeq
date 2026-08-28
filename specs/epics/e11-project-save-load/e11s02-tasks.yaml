@@ -1,14 +1,14 @@
 # specs/epics/e11-project-save-load/e11s02-tasks.yaml
 story_id: e11s02
 title: "Config integration — recent projects list + restore-last-project flag + legacy layout-key migration"
-status: failing
+status: passing
 bcps: 2
 tasks:
   - id: 1
     description: "RED: config schema tests — projects defaults, legacy layout key dropped on load, round trip preserves projects"
     verify: ".venv/bin/python -m pytest tests/ -q -k 'projects_section or legacy_layout or preserves_projects'"
     risk: P2
-    status: failing
+    status: passing
     allure:
       severity: normal
       categories: ["unit", "viseq"]
@@ -16,7 +16,7 @@ tasks:
     description: "GREEN: DEFAULT_CONFIG projects section + load_config unknown-key drop"
     verify: ".venv/bin/python -m pytest tests/ -q -k 'project_config'"
     risk: P2
-    status: failing
+    status: passing
     allure:
       severity: normal
       categories: ["unit", "viseq"]
@@ -24,7 +24,7 @@ tasks:
     description: "RED: recent-list + flag tests — insert front/dedupe/cap 5/prune missing; default True; toggle persists"
     verify: ".venv/bin/python -m pytest tests/ -q -k 'remember_recent or recent_project_paths or restore_last_project_flag'"
     risk: P2
-    status: failing
+    status: passing
     allure:
       severity: normal
       categories: ["unit", "viseq"]
@@ -32,7 +32,7 @@ tasks:
     description: "GREEN: remember_recent_project / recent_project_paths / should_restore_last_project_on_boot / on_restore_project_boot_toggle"
     verify: ".venv/bin/python -m pytest tests/ -q -k 'remember_recent or recent_project_paths or restore_last_project_flag'"
     risk: P2
-    status: failing
+    status: passing
     allure:
       severity: normal
       categories: ["unit", "viseq"]
@@ -40,7 +40,7 @@ tasks:
     description: "Update six legacy layout config tests (defaults/corrupt/round-trip -> projects; save/restore-layout removed; boot toggle -> project flag); full suite green"
     verify: ".venv/bin/python -m pytest tests/ -q && .venv/bin/ruff check . && .venv/bin/mypy"
     risk: P2
-    status: failing
+    status: passing
     allure:
       severity: normal
       categories: ["unit", "viseq"]
