@@ -4033,3 +4033,26 @@ def test_boot_without_recents_applies_theme_only(monkeypatch, tmp_path):
     viseq.apply_boot_config()
     assert viseq.active_palette == viseq.LIGHT_PALETTE, "the fallback theme still applies"
     assert not any(n == "delete_item" and a == ("seq_cell_0_2",) for n, a, kw in dpg.calls)
+
+
+# ---------- e12s01: menubar shell (viSeq | Windows | Settings) ----------
+def test_menubar_shell_windows_and_settings_menus():
+    labels = [m.get("label") for m in import_time_menus]
+    assert labels == ["viSeq", "Last project", "Windows", "Settings"], (
+        "the menubar must be exactly viSeq | Windows | Settings"
+    )
+    items = {kw.get("label"): kw.get("callback") for kw in import_time_menu_items}
+    assert items.get("New Monitor Player") == viseq.new_monitor_player
+    assert items.get("Show Logs") == viseq.show_logs_window
+    assert items.get("Show Info") == viseq.show_help_window
+    assert items.get("General") == viseq.show_settings_window
+    assert items.get("MIDI") == viseq.show_midi_window
+    assert not any(m.get("label") == "Monitor" for m in import_time_menus), (
+        "the Monitor menu must be gone"
+    )
+    assert not any(m.get("label") == "Show" for m in import_time_menus), (
+        "the Show menu must be gone"
+    )
+    assert "Help" not in items, "the Help entry moved to Windows > Show Info"
+    assert "Logs" not in items, "the Logs entry moved to Windows > Show Logs"
+    assert "Settings" not in items, "Settings is a menu now, not a bare item"
