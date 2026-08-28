@@ -4059,3 +4059,29 @@ def test_menubar_shell_windows_and_settings_menus():
     assert "Help" not in items, "the Help entry moved to Windows > Show Info"
     assert "Logs" not in items, "the Logs entry moved to Windows > Show Logs"
     assert "Settings" not in items, "Settings is a menu now, not a bare item"
+
+
+# ---------- e13s01: window renames + glyph fix + version 0.1.0 ----------
+def test_window_labels_general_logs_info():
+    assert import_time_windows["settings_window"].get("label") == "General", (
+        "the Settings window must be titled General (e13s01)"
+    )
+    assert import_time_windows["logs_window"].get("label") == "Logs", (
+        "the OSC Logs window must be titled Logs (e13s01)"
+    )
+    assert import_time_windows["help_window"].get("label") == "Info", (
+        "the Help window must be titled Info (e13s01)"
+    )
+
+
+def test_no_em_dash_in_visible_ui_strings():
+    labels = [t for t in import_time_ui_labels if isinstance(t, str)]
+    texts = [t for t in import_time_texts if isinstance(t, str)]
+    joined = "\n".join(labels + texts)
+    assert "\u2014" not in joined, (
+        "U+2014 em dash renders as a fallback glyph in ProggyClean — use ASCII '-' (e13s01)"
+    )
+
+
+def test_app_version_is_0_1_0():
+    assert viseq.APP_VERSION == "0.1.0", "this is version 0.1 of viSeq (e13s01)"
