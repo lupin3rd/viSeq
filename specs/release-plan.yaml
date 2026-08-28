@@ -188,3 +188,16 @@ epics:
       - id: e12s01
         title: "Menubar restructure — Windows and Settings menus; Monitor/Show/top-level items removed"
         bcps: 2
+
+  - id: e13
+    slug: window-polish
+    title: "Window polish — General/Logs/Info renames, em-dash glyph fix, project dialogs show files, version 0.1.0"
+    wsjf: 30
+    baseline_bcps: 4
+    stories:
+      - id: e13s01
+        title: "Window renames (General/Logs/Info) + em-dash glyph fix + APP_VERSION 0.1.0"
+        bcps: 2
+      - id: e13s02
+        title: "Project dialogs show existing .viseq files — extension filters + recreate-on-demand"
+        bcps: 2

@@ -1,0 +1,30 @@
+# specs/epics/e13-window-polish/e13s02-tasks.yaml
+story_id: e13s02
+title: "Project dialogs show existing .viseq files — extension filters + recreate-on-demand"
+status: failing
+bcps: 2
+tasks:
+  - id: 1
+    description: "RED: dialog tests — .viseq and .* extension filters present; show functions recreate + show; save keeps default filename"
+    verify: ".venv/bin/python -m pytest tests/ -q -k 'project_dialog'"
+    risk: P1
+    status: failing
+    allure:
+      severity: high
+      categories: ["unit", "viseq"]
+  - id: 2
+    description: "GREEN: recreate-on-demand in show_open_project_dialog / show_save_project_dialog + extension filters"
+    verify: ".venv/bin/python -m pytest tests/ -q -k 'project_dialog'"
+    risk: P1
+    status: failing
+    allure:
+      severity: high
+      categories: ["unit", "viseq"]
+  - id: 3
+    description: "Full-suite verification"
+    verify: ".venv/bin/python -m pytest tests/ -q && .venv/bin/ruff check . && .venv/bin/mypy"
+    risk: P2
+    status: failing
+    allure:
+      severity: normal
+      categories: ["unit", "viseq"]
