@@ -955,12 +955,14 @@ def test_logs_window_hidden_closable():
     assert not w.get("no_close"), "logs window must be closable with X"
 
 
-def test_menubar_show_menu_and_settings_entry():
-    assert any(kw.get("label") == "Show" for kw in import_time_menus), "Show menu must exist"
+def test_menubar_windows_menu_and_settings_menu():
+    # e12s01: Show/Monitor are gone; the Windows menu hosts Show Logs, the
+    # Settings menu hosts General.
+    assert not any(kw.get("label") == "Show" for kw in import_time_menus), "Show menu must be gone"
     items = {kw.get("label"): kw.get("callback") for kw in import_time_menu_items}
-    assert items.get("Logs") == viseq.show_logs_window, "Show > Logs must open the logs window"
-    assert items.get("Settings") == viseq.show_settings_window, (
-        "Settings menubar entry must open the settings window"
+    assert items.get("Show Logs") == viseq.show_logs_window, "Windows > Show Logs must open logs"
+    assert items.get("General") == viseq.show_settings_window, (
+        "Settings > General must open settings"
     )
 
 
@@ -2157,11 +2159,12 @@ def test_help_window_hidden_closable_not_in_layout():
     )
 
 
-def test_menubar_help_entry_wired():
+def test_menubar_show_info_entry_wired():
     items = {kw.get("label"): kw.get("callback") for kw in import_time_menu_items}
-    assert items.get("Help") == viseq.show_help_window, (
-        "Help menubar entry must open the help window"
+    assert items.get("Show Info") == viseq.show_help_window, (
+        "Windows > Show Info must open the About window"
     )
+    assert "Help" not in items, "the old top-level Help entry is gone"
 
 
 def test_help_window_content():
@@ -3829,8 +3832,8 @@ def test_restore_last_project_flag_defaults_and_toggle(monkeypatch, tmp_path):
 def test_viseq_menu_is_first_with_open_last_save_exit():
     labels = [m.get("label") for m in import_time_menus]
     assert labels[0] == "viSeq", "viSeq must be the first menubar menu"
-    assert labels[1:4] == ["Last project", "Monitor", "Show"], (
-        "viSeq must precede the existing Monitor/Show menus"
+    assert labels[1:4] == ["Last project", "Windows", "Settings"], (
+        "viSeq must precede the Windows/Settings menus (e12s01)"
     )
     items = {kw.get("label"): kw.get("callback") for kw in import_time_menu_items}
     assert items.get("Open project") == viseq.show_open_project_dialog

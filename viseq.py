@@ -4396,13 +4396,13 @@ with dpg.viewport_menu_bar():
         dpg.add_separator()
         dpg.add_menu_item(label="Save project", callback=show_save_project_dialog)
         dpg.add_menu_item(label="Exit", callback=exit_app)
-    with dpg.menu(label="Monitor"):
+    with dpg.menu(label="Windows"):  # e12s01: window management consolidated here
         dpg.add_menu_item(label="New Monitor Player", callback=new_monitor_player)
-    with dpg.menu(label="Show"):
-        dpg.add_menu_item(label="Logs", callback=show_logs_window)
-    dpg.add_menu_item(label="Settings", callback=show_settings_window)
-    dpg.add_menu_item(label="MIDI", callback=show_midi_window)
-    dpg.add_menu_item(label="Help", callback=show_help_window)
+        dpg.add_menu_item(label="Show Logs", callback=show_logs_window)
+        dpg.add_menu_item(label="Show Info", callback=show_help_window)
+    with dpg.menu(label="Settings"):  # e12s01: config panels under one menu
+        dpg.add_menu_item(label="General", callback=show_settings_window)
+        dpg.add_menu_item(label="MIDI", callback=show_midi_window)
 
 # e11s03: native file dialogs (DPG 2.3.1 add_file_dialog contract: callback app_data
 # carries file_path_name/file_name/current_path), created hidden, shown on demand.
