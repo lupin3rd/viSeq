@@ -622,7 +622,7 @@ def snapshot_window_layout() -> list[dict[str, Any]]:
     """Record shown/pos/size for every existing layout-tracked window (main thread only).
 
     LAYOUT_ALWAYS_HIDDEN_TAGS (the Settings window) are always recorded as closed: they
-    stay open while the user clicks "Save layout", and must not come back at boot.
+    stay open while the user saves a project, and must not come back at boot.
     """
     records: list[dict[str, Any]] = []
     for tag in _existing_layout_window_tags():
@@ -665,35 +665,6 @@ def apply_window_layout(records: list[dict[str, Any]]) -> None:
                 dpg.hide_item(tag)
         except Exception as e:
             log_error("Layout", f"apply {tag}: {e}")
-
-
-def save_layout_to_config(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Settings 'Save layout': snapshot the current layout and persist it."""
-    cfg = load_config()
-    cfg["layout"]["windows"] = snapshot_window_layout()
-    save_config(cfg)
-
-
-def restore_layout_from_config(
-    sender: Any = None, app_data: Any = None, user_data: Any = None
-) -> None:
-    """Settings 'Restore layout': re-apply the saved layout from the config."""
-    cfg = load_config()
-    apply_window_layout(cfg["layout"]["windows"])
-
-
-def should_restore_layout_on_boot(cfg: dict[str, Any]) -> bool:
-    """Whether boot should re-apply the saved layout (default True when unset)."""
-    return bool(cfg["layout"].get("restore_on_boot", True))
-
-
-def on_restore_layout_boot_toggle(
-    sender: Any = None, app_data: Any = None, user_data: Any = None
-) -> None:
-    """Settings 'Restore at startup' checkbox: persist the flag."""
-    cfg = load_config()
-    cfg["layout"]["restore_on_boot"] = bool(app_data)
-    save_config(cfg)
 
 
 # ==============================================================================
@@ -1091,19 +1062,18 @@ def exit_app(sender: Any = None, app_data: Any = None, user_data: Any = None) ->
 
 
 def apply_boot_config() -> None:
-    """Boot: apply the persisted theme and (optionally) the saved window layout (e06).
-
-    e11s02: the legacy layout block is skipped once the schema drops the key;
-    e11s04 replaces it with restore-last-project-at-boot.
-    """
+    """Boot: apply the fallback theme, then restore the last project when flagged (e11s04)."""
     cfg = load_config()
     midi_init_from_config(cfg)  # e09: MIDI control mirrors (enabled, port, bindings)
     _apply_theme_config(cfg["theme"])
-    if cfg.get("layout"):
-        if dpg.does_item_exist("cb_restore_layout_boot"):
-            dpg.set_value("cb_restore_layout_boot", cfg["layout"]["restore_on_boot"])
-        if should_restore_layout_on_boot(cfg):
-            apply_window_layout(cfg["layout"]["windows"])
+    if dpg.does_item_exist("cb_restore_project_boot"):
+        dpg.set_value("cb_restore_project_boot", cfg["projects"]["restore_last_on_boot"])
+    if should_restore_last_project_on_boot(cfg):
+        recent = recent_project_paths(cfg)
+        if recent:
+            state = load_project_file(recent[0])
+            if state is not None:
+                apply_project_state(state)
 
 
 def enqueue_set_value(tag: str, value: Any) -> None:

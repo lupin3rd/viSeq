@@ -3941,6 +3941,7 @@ def test_boot_restores_last_project_when_flagged(monkeypatch, tmp_path):
     p = tmp_path / "config.json"
     p.write_text(json.dumps(_boot_cfg_fixture([str(proj)], True)))
     monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    monkeypatch.setattr(viseq, "tracks_data", _fresh_tracks_data())
     dpg.calls.clear()
     viseq.apply_boot_config()
     assert viseq.tracks_data[0]["steps"][2]["type"] == "AlphaR", "the last project must be applied"
@@ -3958,6 +3959,7 @@ def test_boot_skips_project_restore_when_flag_off(monkeypatch, tmp_path):
     p = tmp_path / "config.json"
     p.write_text(json.dumps(_boot_cfg_fixture([str(proj)], False)))
     monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    monkeypatch.setattr(viseq, "tracks_data", _fresh_tracks_data())
     dpg.calls.clear()
     viseq.apply_boot_config()
     assert viseq.tracks_data[0]["steps"][2]["type"] == "NONE", (
@@ -3977,3 +3979,34 @@ def test_boot_without_recents_applies_theme_only(monkeypatch, tmp_path):
     viseq.apply_boot_config()
     assert viseq.active_palette == viseq.LIGHT_PALETTE, "the fallback theme still applies"
     assert not any(n == "delete_item" and a == ("seq_cell_0_2",) for n, a, kw in dpg.calls)
+
+
+def _fresh_tracks_data():
+    """Pristine tracks_data, matching the module import-time construction (e11s04)."""
+    tracks = []
+    for _ in range(viseq.NUM_TRACKS):
+        steps = []
+        for _ in range(viseq.NUM_STEPS):
+            steps.append(
+                {
+                    "active": False,
+                    "type": "NONE",
+                    "v1": 0.0,
+                    "v2": 1.0,
+                    "frames": 4,
+                    "msgs": 1,
+                    "color": [1.0, 1.0, 1.0],
+                    "last_rand_v1": 0.0,
+                    "last_rand_seek": 0.0,
+                    "last_rand_color": [0, 0, 0],
+                }
+            )
+        tracks.append(
+            {
+                "target_id": None,
+                "base_address": "",
+                "active_fade": {"active": False},
+                "steps": steps,
+            }
+        )
+    return tracks
