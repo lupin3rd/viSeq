@@ -314,6 +314,9 @@ band_rect_tags = {
     if n == "draw_rectangle" and str(kw.get("tag", "")).startswith("band")
 }
 
+# e11s03: project file dialogs, captured before any calls-list clears
+import_time_file_dialogs = [kw for n, a, kw in dpg.calls if n == "file_dialog"]
+
 # e06: settings-window layout/theme sections, captured before any calls-list clears
 import_time_settings_buttons = [
     kw
@@ -3880,7 +3883,7 @@ def test_project_exit_app_stops_dearpygui():
 
 
 def test_project_dialogs_created_with_stable_tags():
-    dialogs = [kw for n, a, kw in dpg.calls if n == "file_dialog"]
+    dialogs = import_time_file_dialogs
     tags = {kw.get("tag") for kw in dialogs}
     assert "open_project_dialog" in tags, "the open dialog must exist with a stable tag"
     assert "save_project_dialog" in tags, "the save dialog must exist with a stable tag"

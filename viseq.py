@@ -1001,6 +1001,95 @@ def on_restore_project_boot_toggle(
     save_config(cfg)
 
 
+# --- e11s03: viSeq menu flows (Open / Last / Save / Exit + file dialogs) ---
+def _ensure_project_extension(path: str) -> str:
+    """Append the .viseq extension when the chosen name has none (e11s03)."""
+    if path.lower().endswith(PROJECT_FILE_EXTENSION):
+        return path
+    return f"{path}{PROJECT_FILE_EXTENSION}"
+
+
+def save_project_file(path: str) -> bool:
+    """Capture + write a project, then remember it; False + logged on failure (e11s03)."""
+    path = _ensure_project_extension(path)
+    if not save_project_to_file(path, capture_project_state()):
+        return False
+    cfg = load_config()
+    remember_recent_project(cfg, path)
+    save_config(cfg)
+    rebuild_last_project_menu()
+    return True
+
+
+def open_project_file(path: str) -> bool:
+    """Load + apply a project, sync the fallback theme, remember it (e11s03)."""
+    state = load_project_file(path)
+    if state is None:
+        return False
+    apply_project_state(state)
+    cfg = load_config()
+    cfg["theme"] = state["theme"]
+    remember_recent_project(cfg, path)
+    save_config(cfg)
+    rebuild_last_project_menu()
+    return True
+
+
+def rebuild_last_project_menu() -> None:
+    """Rebuild the Last-project submenu from the recent list (e11s03)."""
+    if not dpg.does_item_exist("menu_last_project"):
+        return
+    dpg.delete_item("menu_last_project", children_only=True)
+    recent = recent_project_paths(load_config())
+    if not recent:
+        dpg.add_menu_item(label="No recent projects", enabled=False, parent="menu_last_project")
+        return
+    for path in recent:
+        dpg.add_menu_item(
+            label=os.path.basename(path),
+            callback=open_recent_project,
+            user_data=path,
+            parent="menu_last_project",
+        )
+
+
+def open_recent_project(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Last-project submenu entry -> open that project file (e11s03)."""
+    if isinstance(user_data, str):
+        open_project_file(user_data)
+
+
+def show_open_project_dialog() -> None:
+    """Show the Open-project file dialog, defaulting to the projects folder (e11s03)."""
+    os.makedirs(PROJECTS_DIR, exist_ok=True)
+    dpg.show_item("open_project_dialog")
+
+
+def show_save_project_dialog() -> None:
+    """Show the Save-project file dialog, defaulting to the projects folder (e11s03)."""
+    os.makedirs(PROJECTS_DIR, exist_ok=True)
+    dpg.show_item("save_project_dialog")
+
+
+def on_open_project_picked(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Open-dialog result -> open the chosen project file (e11s03)."""
+    path = app_data.get("file_path_name") if isinstance(app_data, dict) else None
+    if path:
+        open_project_file(path)
+
+
+def on_save_project_picked(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Save-dialog result -> save a project, forcing the .viseq extension (e11s03)."""
+    path = app_data.get("file_path_name") if isinstance(app_data, dict) else None
+    if path:
+        save_project_file(path)
+
+
+def exit_app(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """viSeq > Exit: close the application (e11s03)."""
+    dpg.stop_dearpygui()
+
+
 def apply_boot_config() -> None:
     """Boot: apply the persisted theme and (optionally) the saved window layout (e06).
 
@@ -4334,6 +4423,13 @@ threading.Thread(target=thumbnail_decoder_worker, daemon=True).start()
 dpg.create_viewport(title="viSeq - Audio-Reactive VJ Controller", width=1700, height=1080)
 apply_boot_config()  # e06: apply the saved theme + (optionally) the saved window layout
 with dpg.viewport_menu_bar():
+    with dpg.menu(label="viSeq"):  # e11s03: first menubar menu — project file flows
+        dpg.add_menu_item(label="Open project", callback=show_open_project_dialog)
+        with dpg.menu(label="Last project", tag="menu_last_project"):
+            pass  # children rebuilt by rebuild_last_project_menu() (boot + after every save/open)
+        dpg.add_separator()
+        dpg.add_menu_item(label="Save project", callback=show_save_project_dialog)
+        dpg.add_menu_item(label="Exit", callback=exit_app)
     with dpg.menu(label="Monitor"):
         dpg.add_menu_item(label="New Monitor Player", callback=new_monitor_player)
     with dpg.menu(label="Show"):
@@ -4341,6 +4437,31 @@ with dpg.viewport_menu_bar():
     dpg.add_menu_item(label="Settings", callback=show_settings_window)
     dpg.add_menu_item(label="MIDI", callback=show_midi_window)
     dpg.add_menu_item(label="Help", callback=show_help_window)
+
+# e11s03: native file dialogs (DPG 2.3.1 add_file_dialog contract: callback app_data
+# carries file_path_name/file_name/current_path), created hidden, shown on demand.
+with dpg.file_dialog(
+    tag="open_project_dialog",
+    show=False,
+    width=480,
+    height=360,
+    callback=on_open_project_picked,
+    default_path=PROJECTS_DIR,
+    modal=True,
+):
+    pass
+with dpg.file_dialog(
+    tag="save_project_dialog",
+    show=False,
+    width=480,
+    height=360,
+    callback=on_save_project_picked,
+    default_path=PROJECTS_DIR,
+    default_filename="project.viseq",
+    modal=True,
+):
+    pass
+rebuild_last_project_menu()  # e11s03: populate the Last-project submenu for boot
 dpg.setup_dearpygui()
 dpg.show_viewport()
 autostart_osc()  # boot: auto-connect OSC client + start listening server (no manual clicks)
