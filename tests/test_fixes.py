@@ -3728,3 +3728,38 @@ def test_project_sanitize_heals_audio_section():
     assert audio["lowpass"] is True
     assert audio["bands"]["1"]["start"] == 0.0, "garbage start heals to the default range start"
     assert audio["bands"]["2"]["end"] == 0.66
+
+
+# ---------- e11s02: config integration (recent projects + restore flag) ----------
+def test_config_defaults_have_projects_section(monkeypatch):
+    monkeypatch.setattr(viseq, "CONFIG_PATH", "/nonexistent/viseq_config.json")
+    cfg = viseq.load_config()
+    assert cfg["projects"]["recent"] == []
+    assert cfg["projects"]["restore_last_on_boot"] is True
+    assert "layout" not in cfg, "the legacy layout key must be gone"
+
+
+def test_load_config_drops_legacy_layout_key(monkeypatch, tmp_path):
+    p = tmp_path / "config.json"
+    legacy = {
+        "layout": {"restore_on_boot": True, "windows": [{"tag": "x"}]},
+        "theme": {"preset": "scuro", "colors": viseq.DEFAULT_PALETTE},
+        "midi": {"enabled": False, "input_port": None, "bindings": []},
+    }
+    p.write_text(json.dumps(legacy))
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    cfg = viseq.load_config()
+    assert "layout" not in cfg, "legacy layout must not survive the load"
+    assert cfg["projects"]["recent"] == []
+
+
+def test_config_round_trip_preserves_projects(monkeypatch, tmp_path):
+    p = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    cfg = viseq.load_config()
+    cfg["projects"]["restore_last_on_boot"] = False
+    cfg["projects"]["recent"] = ["/tmp/a.viseq"]
+    viseq.save_config(cfg)
+    loaded = viseq.load_config()
+    assert loaded["projects"]["restore_last_on_boot"] is False
+    assert loaded["projects"]["recent"] == ["/tmp/a.viseq"]

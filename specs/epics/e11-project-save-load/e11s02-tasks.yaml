@@ -6,7 +6,7 @@ bcps: 2
 tasks:
   - id: 1
     description: "RED: config schema tests — projects defaults, legacy layout key dropped on load, round trip preserves projects"
-    verify: ".venv/bin/python -m pytest tests/ -q -k 'project_config'"
+    verify: ".venv/bin/python -m pytest tests/ -q -k 'projects_section or legacy_layout or preserves_projects'"
     risk: P2
     status: failing
     allure:
@@ -22,7 +22,7 @@ tasks:
       categories: ["unit", "viseq"]
   - id: 3
     description: "RED: recent-list + flag tests — insert front/dedupe/cap 5/prune missing; default True; toggle persists"
-    verify: ".venv/bin/python -m pytest tests/ -q -k 'recent_project'"
+    verify: ".venv/bin/python -m pytest tests/ -q -k 'remember_recent or recent_project_paths or restore_last_project_flag'"
     risk: P2
     status: failing
     allure:
@@ -30,7 +30,7 @@ tasks:
       categories: ["unit", "viseq"]
   - id: 4
     description: "GREEN: remember_recent_project / recent_project_paths / should_restore_last_project_on_boot / on_restore_project_boot_toggle"
-    verify: ".venv/bin/python -m pytest tests/ -q -k 'recent_project'"
+    verify: ".venv/bin/python -m pytest tests/ -q -k 'remember_recent or recent_project_paths or restore_last_project_flag'"
     risk: P2
     status: failing
     allure:
