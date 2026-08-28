@@ -3684,3 +3684,47 @@ def test_project_file_io_rejects_bad_input(tmp_path):
     corrupt = tmp_path / "corrupt.viseq"
     corrupt.write_text("{ not json")
     assert viseq.load_project_file(str(corrupt)) is None
+
+
+def test_project_sanitize_heals_partial_step_and_bad_beat_source():
+    """A hand-edited step loses keys -> defaults; a bad beat source falls back."""
+    raw = _project_state_fixture()
+    raw["sequencer"]["beat_source"] = "nonsense"
+    step = raw["sequencer"]["tracks"][0]["steps"][0]
+    step.pop("v1")
+    step.pop("frames")
+    step.pop("color")
+    step["type"] = "SeekR"
+    state = viseq._sanitize_project_state(raw)
+    assert state["sequencer"]["beat_source"] == viseq.BEAT_SOURCE_ANALYSIS
+    healed = state["sequencer"]["tracks"][0]["steps"][0]
+    assert healed["v1"] == 0.0
+    assert healed["frames"] == 4
+    assert healed["color"] == [1.0, 1.0, 1.0]
+    assert healed["active"] is False
+    assert healed["type"] == "SeekR", "present keys must survive the heal"
+
+
+def test_project_sanitize_drops_unknown_keys_and_heals_missing_sections():
+    """Unknown top-level keys drop; a missing theme falls back to defaults."""
+    raw = _project_state_fixture()
+    raw["format"] = viseq.PROJECT_FORMAT
+    raw["version"] = viseq.PROJECT_VERSION
+    raw["hacker_key"] = "x"
+    raw.pop("theme")
+    state = viseq._sanitize_project_state(raw)
+    assert set(state.keys()) == {"layout", "theme", "sequencer"}
+    assert state["theme"]["preset"] == "scuro"
+    assert state["theme"]["colors"]["accent"] == list(viseq.DEFAULT_PALETTE["accent"])
+
+
+def test_project_sanitize_heals_audio_section():
+    """Garbage band values and missing band configs heal to defaults."""
+    raw = _project_state_fixture()
+    raw["sequencer"]["audio"] = {"device": "X", "bands": {"1": {"enabled": True, "start": "abc"}}}
+    state = viseq._sanitize_project_state(raw)
+    audio = state["sequencer"]["audio"]
+    assert audio["device"] == "X"
+    assert audio["lowpass"] is True
+    assert audio["bands"]["1"]["start"] == 0.0, "garbage start heals to the default range start"
+    assert audio["bands"]["2"]["end"] == 0.66
