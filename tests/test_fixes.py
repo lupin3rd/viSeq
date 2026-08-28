@@ -3752,3 +3752,47 @@ def test_restore_last_project_flag_defaults_and_toggle(monkeypatch, tmp_path):
     viseq.on_restore_project_boot_toggle(None, True)
     cfg = viseq.load_config()
     assert cfg["projects"]["restore_last_on_boot"] is True
+
+
+# ---------- e11s03: viSeq menu ----------
+def test_viseq_menu_is_first_with_open_last_save_exit():
+    labels = [m.get("label") for m in import_time_menus]
+    assert labels[0] == "viSeq", "viSeq must be the first menubar menu"
+    assert labels[1:4] == ["Last project", "Monitor", "Show"], (
+        "viSeq must precede the existing Monitor/Show menus"
+    )
+    items = {kw.get("label"): kw.get("callback") for kw in import_time_menu_items}
+    assert items.get("Open project") == viseq.show_open_project_dialog
+    assert items.get("Save project") == viseq.show_save_project_dialog
+    assert items.get("Exit") == viseq.exit_app
+    assert any(m.get("tag") == "menu_last_project" for m in import_time_menus), (
+        "the Last project submenu must exist"
+    )
+
+
+def test_last_project_menu_shows_recent_files(monkeypatch, tmp_path):
+    proj = tmp_path / "set.viseq"
+    proj.write_text("{}")
+    monkeypatch.setattr(
+        viseq,
+        "load_config",
+        lambda: {"projects": {"recent": [str(proj)], "restore_last_on_boot": True}},
+    )
+    dpg.calls.clear()
+    viseq.rebuild_last_project_menu()
+    added = [kw for n, a, kw in dpg.calls if n == "add_menu_item"]
+    assert [kw.get("label") for kw in added] == ["set.viseq"]
+    assert any(kw.get("user_data") == str(proj) for kw in added)
+    assert all(kw.get("parent") == "menu_last_project" for kw in added)
+
+
+def test_last_project_menu_empty_shows_disabled_placeholder(monkeypatch):
+    monkeypatch.setattr(
+        viseq, "load_config", lambda: {"projects": {"recent": [], "restore_last_on_boot": True}}
+    )
+    dpg.calls.clear()
+    viseq.rebuild_last_project_menu()
+    added = [kw for n, a, kw in dpg.calls if n == "add_menu_item"]
+    assert added, "an empty list must still render a placeholder item"
+    assert added[0].get("label") == "No recent projects"
+    assert added[0].get("enabled") is False
