@@ -3713,3 +3713,42 @@ def test_config_round_trip_preserves_projects(monkeypatch, tmp_path):
     loaded = viseq.load_config()
     assert loaded["projects"]["restore_last_on_boot"] is False
     assert loaded["projects"]["recent"] == ["/tmp/a.viseq"]
+
+
+def test_remember_recent_project_dedupes_caps_and_orders():
+    """Most recent first, no duplicates, capped at RECENT_PROJECTS_MAX."""
+    cfg = {"projects": {"recent": [], "restore_last_on_boot": True}}
+    cfg["projects"]["recent"] = viseq.remember_recent_project(cfg, "/tmp/a.viseq")
+    cfg["projects"]["recent"] = viseq.remember_recent_project(cfg, "/tmp/b.viseq")
+    cfg["projects"]["recent"] = viseq.remember_recent_project(cfg, "/tmp/a.viseq")
+    assert cfg["projects"]["recent"] == ["/tmp/a.viseq", "/tmp/b.viseq"]
+    for i in range(6):
+        cfg["projects"]["recent"] = viseq.remember_recent_project(cfg, f"/tmp/p{i}.viseq")
+    assert len(cfg["projects"]["recent"]) == viseq.RECENT_PROJECTS_MAX
+    assert cfg["projects"]["recent"][0] == "/tmp/p5.viseq"
+
+
+def test_recent_project_paths_prunes_missing_files(tmp_path):
+    keep = tmp_path / "keep.viseq"
+    keep.write_text("{}")
+    cfg = {
+        "projects": {
+            "recent": [str(keep), str(tmp_path / "gone.viseq"), str(tmp_path / "also_gone.viseq")],
+            "restore_last_on_boot": True,
+        }
+    }
+    assert viseq.recent_project_paths(cfg) == [str(keep)]
+
+
+def test_restore_last_project_flag_defaults_and_toggle(monkeypatch, tmp_path):
+    monkeypatch.setattr(viseq, "CONFIG_PATH", "/nonexistent/viseq_config.json")
+    cfg = viseq.load_config()
+    assert viseq.should_restore_last_project_on_boot(cfg) is True
+    p = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    viseq.on_restore_project_boot_toggle(None, False)
+    cfg = viseq.load_config()
+    assert cfg["projects"]["restore_last_on_boot"] is False
+    viseq.on_restore_project_boot_toggle(None, True)
+    cfg = viseq.load_config()
+    assert cfg["projects"]["restore_last_on_boot"] is True
