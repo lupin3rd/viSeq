@@ -972,6 +972,35 @@ def _sanitize_project_state(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def remember_recent_project(cfg: dict[str, Any], path: str) -> list[str]:
+    """Insert a project path at the front of the recent list (dedupe + cap) (e11s02)."""
+    recent = cfg.setdefault("projects", {}).setdefault("recent", [])
+    if path in recent:
+        recent.remove(path)
+    recent.insert(0, path)
+    del recent[RECENT_PROJECTS_MAX:]
+    return recent
+
+
+def recent_project_paths(cfg: dict[str, Any]) -> list[str]:
+    """The recent project list with entries whose files no longer exist pruned (e11s02)."""
+    return [p for p in cfg.get("projects", {}).get("recent", []) if os.path.exists(p)]
+
+
+def should_restore_last_project_on_boot(cfg: dict[str, Any]) -> bool:
+    """Whether boot should re-apply the most recent project (default True) (e11s02)."""
+    return bool(cfg.get("projects", {}).get("restore_last_on_boot", True))
+
+
+def on_restore_project_boot_toggle(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Settings 'Restore last project at startup' checkbox: persist the flag (e11s02)."""
+    cfg = load_config()
+    cfg.setdefault("projects", {})["restore_last_on_boot"] = bool(app_data)
+    save_config(cfg)
+
+
 def apply_boot_config() -> None:
     """Boot: apply the persisted theme and (optionally) the saved window layout (e06).
 
