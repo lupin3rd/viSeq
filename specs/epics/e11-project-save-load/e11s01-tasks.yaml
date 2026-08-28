@@ -1,0 +1,62 @@
+# specs/epics/e11-project-save-load/e11s01-tasks.yaml
+story_id: e11s01
+title: "Project file core — capture_project_state / apply_project_state / JSON save+load / sanitization"
+status: failing
+bcps: 4
+tasks:
+  - id: 1
+    description: "RED: capture tests — seeded stub values + known tracks_data/beat_source; layout+theme+sequencer sections, no last_rand_* keys"
+    verify: ".venv/bin/python -m pytest tests/ -q -k 'project_capture'"
+    risk: P0
+    status: failing
+    allure:
+      severity: critical
+      categories: ["unit", "viseq"]
+  - id: 2
+    description: "GREEN: capture_project_state() + STEP_PERSISTED_KEYS strip"
+    verify: ".venv/bin/python -m pytest tests/ -q -k 'project_capture'"
+    risk: P0
+    status: failing
+    allure:
+      severity: critical
+      categories: ["unit", "viseq"]
+  - id: 3
+    description: "RED: apply tests — mutated tracks_data/globals, set_value calls, slot+cell UI rebuild"
+    verify: ".venv/bin/python -m pytest tests/ -q -k 'project_apply'"
+    risk: P0
+    status: failing
+    allure:
+      severity: critical
+      categories: ["unit", "viseq"]
+  - id: 4
+    description: "GREEN: apply_project_state() reusing apply_window_layout / _apply_theme_config / midi_action_beat_source"
+    verify: ".venv/bin/python -m pytest tests/ -q -k 'project_apply'"
+    risk: P0
+    status: failing
+    allure:
+      severity: critical
+      categories: ["unit", "viseq"]
+  - id: 5
+    description: "RED: file IO tests — round trip, missing/wrong-format/wrong-version/corrupt -> None"
+    verify: ".venv/bin/python -m pytest tests/ -q -k 'project_file'"
+    risk: P1
+    status: failing
+    allure:
+      severity: high
+      categories: ["unit", "viseq"]
+  - id: 6
+    description: "GREEN: save_project_to_file (atomic) + load_project_file + _sanitize_project_state (heals partials, falls back on bad beat_source)"
+    verify: ".venv/bin/python -m pytest tests/ -q -k 'project_file or project_sanitize'"
+    risk: P1
+    status: failing
+    allure:
+      severity: high
+      categories: ["unit", "viseq"]
+  - id: 7
+    description: "Full-suite verification"
+    verify: ".venv/bin/python -m pytest tests/ -q && .venv/bin/ruff check . && .venv/bin/mypy"
+    risk: P2
+    status: failing
+    allure:
+      severity: normal
+      categories: ["unit", "viseq"]

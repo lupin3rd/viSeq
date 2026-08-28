@@ -1,0 +1,29 @@
+# specs/epics/e11-project-save-load/epic.yaml — epic capsule manifest
+epic_id: e11
+slug: project-save-load
+title: "Project save/load — viSeq menu, .viseq project files (layout + theme + sequencer state), last-project restore at boot"
+wsjf: 60
+baseline_bcps: 13
+delta:
+  - ADDED: "viSeq menubar entry as the FIRST item on the left, hosting Open project / Last project (submenu of recent .viseq files) / Save project / Exit"
+  - ADDED: "Project files (*.viseq, JSON text): capture and restore window positions/sizes, theme preset + colors, and all sequencer configuration (beat source, manual BPM, 8x8 step cells, per-track clip assignment, audio device, band sliders, low-pass)"
+  - ADDED: "Settings window 'Restore last project at startup' checkbox (first section, default ON): boot re-applies the most recent project"
+  - REMOVED: "Settings Windows section (Save layout / Restore layout / Restore at startup)"
+    before: "Settings window has a Windows section with Save layout, Restore layout buttons and a 'Restore at startup' checkbox persisting cfg['layout']['restore_on_boot']; layout+theme live in viseq_config.json"
+    after: "Removed — window layout, theme and sequencer state now live in project files; viseq_config.json keeps only midi, theme fallback, recent projects list and the restore-last-project flag"
+  - MODIFIED: "viseq_config.json schema: top-level 'layout' key removed, 'projects' key added"
+    before: "viseq_config.json holds layout (restore_on_boot, windows), theme, midi"
+    after: "viseq_config.json holds theme (fallback look), midi, projects (recent list capped at 5, restore_last_on_boot default true); legacy 'layout' keys are dropped on load"
+stories:
+  - id: e11s01
+    title: "Project file core — capture_project_state / apply_project_state / JSON save+load / sanitization"
+    bcps: 4
+  - id: e11s02
+    title: "Config integration — recent projects list + restore-last-project flag + legacy layout-key migration"
+    bcps: 2
+  - id: e11s03
+    title: "viSeq menu — Open/Last/Save/Exit + native file dialogs + Last-project submenu rebuild"
+    bcps: 4
+  - id: e11s04
+    title: "Settings restructure — 'Restore last project at startup' on top, Windows section removed, boot restore in apply_boot_config"
+    bcps: 3

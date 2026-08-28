@@ -159,3 +159,22 @@ epics:
       - id: e10s09
         title: "Perceptual spectrum analysis: log bars, level-independent AGC, peak-aware bands"
         bcps: 4
+
+  - id: e11
+    slug: project-save-load
+    title: "Project save/load — viSeq menu, .viseq project files (layout + theme + sequencer state), last-project restore at boot"
+    wsjf: 60
+    baseline_bcps: 13
+    stories:
+      - id: e11s01
+        title: "Project file core — capture_project_state / apply_project_state / JSON save+load / sanitization"
+        bcps: 4
+      - id: e11s02
+        title: "Config integration — recent projects list + restore-last-project flag + legacy layout-key migration"
+        bcps: 2
+      - id: e11s03
+        title: "viSeq menu — Open/Last/Save/Exit + native file dialogs + Last-project submenu rebuild"
+        bcps: 4
+      - id: e11s04
+        title: "Settings restructure — 'Restore last project at startup' on top, Windows section removed, boot restore in apply_boot_config"
+        bcps: 3
