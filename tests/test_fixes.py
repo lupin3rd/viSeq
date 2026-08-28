@@ -19,6 +19,7 @@ Run:  .venv/bin/python -m pytest tests/ -q
 # ModuleType model cannot express that, so these two codes are disabled for
 # this harness file only. viseq.py itself is fully type-checked.
 
+import copy
 import io
 import json
 import os
@@ -3467,3 +3468,88 @@ def test_sequencer_beat_wait_is_polled():
     assert "continue" in fn.group(0), (
         "an idle poll must re-loop so a mode/stop change is re-evaluated"
     )
+
+
+# ---------- e11s01: project file core (capture/apply/io) ----------
+def _seed_project_ui_values():
+    """Seed the DpgStub value table with a known project-like UI state."""
+    dpg.values["manual_bpm_input"] = 132
+    dpg.values["combo_devices"] = "Mock In"
+    dpg.values["cb_lowpass"] = False
+    dpg.values["theme_preset"] = "Dark"
+    dpg.values["band1_enabled"] = True
+    dpg.values["band1_start"] = 0.0
+    dpg.values["band1_end"] = 0.33
+    dpg.values["band1_min"] = 0.0
+    dpg.values["band1_max"] = 1.0
+    dpg.values["band2_enabled"] = False
+    dpg.values["band3_enabled"] = False
+
+
+def _known_tracks():
+    return copy.deepcopy(viseq.tracks_data)
+
+
+def test_project_capture_includes_layout_theme_sequencer(monkeypatch):
+    """capture_project_state() snapshots layout + theme + full sequencer state."""
+    _seed_project_ui_values()
+    monkeypatch.setattr(
+        dpg, "get_item_pos", lambda tag: {"sequencer_window": [10, 10]}.get(tag, [0, 0])
+    )
+    monkeypatch.setattr(dpg, "get_item_width", lambda tag: 1050)
+    monkeypatch.setattr(dpg, "get_item_height", lambda tag: 800)
+    monkeypatch.setattr(dpg, "is_item_shown", lambda tag: True)
+
+    monkeypatch.setattr(viseq, "beat_source", viseq.BEAT_SOURCE_MANUAL)
+    monkeypatch.setattr(viseq, "active_palette", copy.deepcopy(viseq.DEFAULT_PALETTE))
+    viseq.active_palette["accent"] = [10, 20, 30]
+    tracks = _known_tracks()
+    tracks[0]["target_id"] = "media_42"
+    tracks[0]["base_address"] = "/vimix/media_42"
+    tracks[0]["steps"][3]["type"] = "AlphaV"
+    tracks[0]["steps"][3]["v1"] = 0.42
+    tracks[0]["steps"][3]["active"] = True
+    tracks[0]["steps"][3]["color"] = [0.9, 0.1, 0.5]
+    monkeypatch.setattr(viseq, "tracks_data", tracks)
+
+    state = viseq.capture_project_state()
+
+    assert state["layout"]["windows"], "layout section must carry the window records"
+    assert state["theme"]["preset"] == "scuro", "'Dark' combo label maps to the scuro key"
+    assert state["theme"]["colors"]["accent"] == [10, 20, 30]
+    assert state["sequencer"]["beat_source"] == viseq.BEAT_SOURCE_MANUAL
+    assert state["sequencer"]["manual_bpm"] == 132
+    step = state["sequencer"]["tracks"][0]["steps"][3]
+    assert step["type"] == "AlphaV"
+    assert step["v1"] == 0.42
+    assert step["active"] is True
+    assert step["color"] == [0.9, 0.1, 0.5]
+    assert "last_rand_v1" not in step, "runtime-only keys must not be persisted"
+    assert "last_rand_seek" not in step
+    assert "last_rand_color" not in step
+
+
+def test_project_capture_strips_runtime_state_and_records_audio(monkeypatch):
+    """Only persisted step keys survive; audio section mirrors the widgets."""
+    _seed_project_ui_values()
+    monkeypatch.setattr(viseq, "beat_source", viseq.BEAT_SOURCE_ANALYSIS)
+    monkeypatch.setattr(viseq, "active_palette", copy.deepcopy(viseq.DEFAULT_PALETTE))
+    state = viseq.capture_project_state()
+
+    persisted_keys = {"active", "type", "v1", "v2", "frames", "msgs", "color"}
+    for track in state["sequencer"]["tracks"]:
+        for step in track["steps"]:
+            assert set(step.keys()) == persisted_keys, "only persisted step keys may be saved"
+
+    audio = state["sequencer"]["audio"]
+    assert audio["device"] == "Mock In"
+    assert audio["lowpass"] is False
+    assert audio["bands"]["1"] == {
+        "enabled": True,
+        "start": 0.0,
+        "end": 0.33,
+        "min": 0.0,
+        "max": 1.0,
+    }
+    assert audio["bands"]["2"]["enabled"] is False
+    assert audio["bands"]["3"]["enabled"] is False
