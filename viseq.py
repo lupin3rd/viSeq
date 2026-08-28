@@ -692,6 +692,64 @@ def on_restore_layout_boot_toggle(
     save_config(cfg)
 
 
+# ==============================================================================
+# PROJECT SAVE/LOAD (e11) — .viseq files capture window layout + theme + every
+# sequencer configuration; the viSeq menu (e11s03) drives the file dialogs.
+# ==============================================================================
+PROJECT_FORMAT = "viseq-project"
+PROJECT_VERSION = 1
+PROJECT_FILE_EXTENSION = ".viseq"
+PROJECTS_DIR = os.path.join(CONFIG_DIR, "projects")
+RECENT_PROJECTS_MAX = 5  # cap for the Last-project submenu / config list (e11s02)
+# Step fields that belong in a project file; the last_rand_* keys are runtime-only.
+STEP_PERSISTED_KEYS: tuple[str, ...] = ("active", "type", "v1", "v2", "frames", "msgs", "color")
+
+
+def _step_persisted(step: dict[str, Any]) -> dict[str, Any]:
+    """Reduce a runtime step dict to its persisted fields (e11s01)."""
+    return {key: copy.deepcopy(step[key]) for key in STEP_PERSISTED_KEYS if key in step}
+
+
+def _capture_audio_state() -> dict[str, Any]:
+    """Snapshot the audio-analyzer section from its widgets (e11s01)."""
+    bands: dict[str, dict[str, Any]] = {}
+    for band_id in BAND_DEFAULT_RANGES:
+        bands[str(band_id)] = {
+            "enabled": bool(dpg.get_value(f"band{band_id}_enabled")),
+            "start": float(dpg.get_value(f"band{band_id}_start")),
+            "end": float(dpg.get_value(f"band{band_id}_end")),
+            "min": float(dpg.get_value(f"band{band_id}_min")),
+            "max": float(dpg.get_value(f"band{band_id}_max")),
+        }
+    return {
+        "device": str(dpg.get_value("combo_devices")),
+        "lowpass": bool(dpg.get_value("cb_lowpass")),
+        "bands": bands,
+    }
+
+
+def capture_project_state() -> dict[str, Any]:
+    """Snapshot layout + theme + sequencer state into a project dict (e11s01)."""
+    preset_label = str(dpg.get_value("theme_preset"))
+    return {
+        "layout": {"windows": snapshot_window_layout()},
+        "theme": {"preset": _preset_key(preset_label), "colors": copy.deepcopy(active_palette)},
+        "sequencer": {
+            "beat_source": beat_source,
+            "manual_bpm": float(dpg.get_value("manual_bpm_input")),
+            "tracks": [
+                {
+                    "target_id": track.get("target_id"),
+                    "base_address": track.get("base_address", ""),
+                    "steps": [_step_persisted(step) for step in track["steps"]],
+                }
+                for track in tracks_data
+            ],
+            "audio": _capture_audio_state(),
+        },
+    }
+
+
 def apply_boot_config() -> None:
     """Boot: apply the persisted theme and (optionally) the saved window layout (e06)."""
     cfg = load_config()
