@@ -1,14 +1,14 @@
 # specs/epics/e12-menu-shell/e12s01-tasks.yaml
 story_id: e12s01
 title: "Menubar restructure — Windows and Settings menus; Monitor/Show/top-level items removed"
-status: failing
+status: passing
 bcps: 2
 tasks:
   - id: 1
     description: "RED: menubar-shell tests — labels [viSeq, Last project, Windows, Settings]; Windows hosts 3 items; Settings hosts General+MIDI; no Monitor/Show menus; no top-level Settings/MIDI/Help"
     verify: ".venv/bin/python -m pytest tests/ -q -k 'menubar_shell'"
     risk: P2
-    status: failing
+    status: passing
     allure:
       severity: normal
       categories: ["unit", "viseq"]
@@ -16,7 +16,7 @@ tasks:
     description: "GREEN: restructure the viewport_menu_bar block (Windows + Settings menus, remove Monitor/Show and top-level items)"
     verify: ".venv/bin/python -m pytest tests/ -q -k 'menubar_shell'"
     risk: P2
-    status: failing
+    status: passing
     allure:
       severity: normal
       categories: ["unit", "viseq"]
@@ -24,7 +24,7 @@ tasks:
     description: "Update four legacy menu tests (Show-menu, Help-entry, MIDI-item, viSeq-order); full suite green"
     verify: ".venv/bin/python -m pytest tests/ -q && .venv/bin/ruff check . && .venv/bin/mypy"
     risk: P2
-    status: failing
+    status: passing
     allure:
       severity: normal
       categories: ["unit", "viseq"]
