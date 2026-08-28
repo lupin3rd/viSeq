@@ -750,6 +750,77 @@ def capture_project_state() -> dict[str, Any]:
     }
 
 
+def _restore_step(row: int, col: int, step_data: dict[str, Any]) -> None:
+    """Apply one persisted step onto the live cell and rebuild its UI (e11s01)."""
+    step = tracks_data[row]["steps"][col]
+    for key in STEP_PERSISTED_KEYS:
+        if key in step_data:
+            step[key] = copy.deepcopy(step_data[key])
+    update_step_ui(row, col)
+
+
+def _restore_track(row: int, track_data: dict[str, Any]) -> None:
+    """Apply one persisted track (clip assignment + steps) and rebuild its UI (e11s01)."""
+    target_id = track_data.get("target_id")
+    tracks_data[row]["target_id"] = target_id
+    tracks_data[row]["base_address"] = f"/vimix/{target_id}" if target_id else ""
+    for col, step_data in enumerate(track_data.get("steps", [])):
+        if col >= NUM_STEPS:
+            break
+        _restore_step(row, col, step_data)
+    update_track_slot_ui(row)
+
+
+def _apply_audio_state(audio: dict[str, Any]) -> None:
+    """Re-apply the audio-analyzer section (device, low-pass, bands) (e11s01)."""
+    global lowpass_enabled
+    if audio.get("device") in input_devices_list:
+        dpg.set_value("combo_devices", audio["device"])
+    lowpass_enabled = bool(audio.get("lowpass", True))
+    if dpg.does_item_exist("cb_lowpass"):
+        dpg.set_value("cb_lowpass", lowpass_enabled)
+    bands = audio.get("bands", {})
+    for band_id in BAND_DEFAULT_RANGES:
+        band = bands.get(str(band_id), {})
+        bands_enabled[band_id] = bool(band.get("enabled", False))
+        if dpg.does_item_exist(f"band{band_id}_enabled"):
+            dpg.set_value(f"band{band_id}_enabled", bands_enabled[band_id])
+        for key in ("start", "end", "min", "max"):
+            tag = f"band{band_id}_{key}"
+            if key in band and dpg.does_item_exist(tag):
+                dpg.set_value(tag, float(band[key]))
+        if bands_enabled[band_id]:
+            refresh_band_value(spectrum_bars_cache, band_id)
+
+
+def _apply_sequencer_state(seq: dict[str, Any]) -> None:
+    """Re-apply beat source, manual BPM, tracks and the audio section (e11s01)."""
+    mode = seq.get("beat_source")
+    if mode not in BEAT_SOURCE_LABELS:
+        mode = BEAT_SOURCE_ANALYSIS
+    if "manual_bpm" in seq and dpg.does_item_exist("manual_bpm_input"):
+        dpg.set_value("manual_bpm_input", float(seq["manual_bpm"]))
+    midi_action_beat_source(mode)  # beat_source + checkboxes + manual-widget visibility
+    for row, track_data in enumerate(seq.get("tracks", [])):
+        if row >= NUM_TRACKS:
+            break
+        _restore_track(row, track_data)
+    audio = seq.get("audio")
+    if isinstance(audio, dict):
+        _apply_audio_state(audio)
+
+
+def apply_project_state(state: dict[str, Any]) -> None:
+    """Re-apply a project dict onto the live app (layout, theme, sequencer) (e11s01)."""
+    apply_window_layout(state.get("layout", {}).get("windows", []))
+    theme = state.get("theme")
+    if isinstance(theme, dict):
+        _apply_theme_config(theme)
+    seq = state.get("sequencer")
+    if isinstance(seq, dict):
+        _apply_sequencer_state(seq)
+
+
 def apply_boot_config() -> None:
     """Boot: apply the persisted theme and (optionally) the saved window layout (e06)."""
     cfg = load_config()
