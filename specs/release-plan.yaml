@@ -1,7 +1,7 @@
 # specs/release-plan.yaml — WSJF-ordered epic list (slice-tasks)
 # All stories in e01 belong to one epic; order = WSJF (value per unit of work).
 
-release: 1.1.0
+release: 0.1.0
 
 epics:
   - id: e01

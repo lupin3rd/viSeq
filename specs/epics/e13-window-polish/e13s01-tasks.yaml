@@ -1,14 +1,14 @@
 # specs/epics/e13-window-polish/e13s01-tasks.yaml
 story_id: e13s01
 title: "Window renames (General/Logs/Info) + em-dash glyph fix + APP_VERSION 0.1.0"
-status: failing
+status: passing
 bcps: 2
 tasks:
   - id: 1
     description: "RED: window-label tests — settings_window 'General', logs_window 'Logs', help_window 'Info'; APP_VERSION 0.1.0; no U+2014 in UI labels/texts"
     verify: ".venv/bin/python -m pytest tests/ -q -k 'window_labels or no_em_dash or app_version'"
     risk: P2
-    status: failing
+    status: passing
     allure:
       severity: normal
       categories: ["unit", "viseq"]
@@ -16,7 +16,7 @@ tasks:
     description: "GREEN: rename three window labels, replace both em dashes, bump APP_VERSION"
     verify: ".venv/bin/python -m pytest tests/ -q -k 'window_labels or no_em_dash or app_version'"
     risk: P2
-    status: failing
+    status: passing
     allure:
       severity: normal
       categories: ["unit", "viseq"]
@@ -24,7 +24,7 @@ tasks:
     description: "Update two legacy window-label assertions (settings/help hidden tests); full suite green"
     verify: ".venv/bin/python -m pytest tests/ -q && .venv/bin/ruff check . && .venv/bin/mypy"
     risk: P2
-    status: failing
+    status: passing
     allure:
       severity: normal
       categories: ["unit", "viseq"]
