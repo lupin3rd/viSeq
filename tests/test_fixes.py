@@ -3796,3 +3796,55 @@ def test_last_project_menu_empty_shows_disabled_placeholder(monkeypatch):
     assert added, "an empty list must still render a placeholder item"
     assert added[0].get("label") == "No recent projects"
     assert added[0].get("enabled") is False
+
+
+def test_project_flow_open_applies_remembers_and_syncs_theme(monkeypatch, tmp_path):
+    proj = tmp_path / "p.viseq"
+    state = _project_state_fixture()
+    assert viseq.save_project_to_file(str(proj), state) is True
+    cfg_path = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(cfg_path))
+    dpg.calls.clear()
+    assert viseq.open_project_file(str(proj)) is True
+    assert viseq.tracks_data[0]["steps"][2]["type"] == "AlphaR", "the project must be applied"
+    cfg = viseq.load_config()
+    assert cfg["projects"]["recent"] == [str(proj)], "the opened path must be remembered"
+    assert cfg["theme"]["preset"] == "chiaro", "the fallback theme must follow the project"
+    assert any(n == "delete_item" and a == ("menu_last_project",) for n, a, kw in dpg.calls), (
+        "the Last-project submenu must be rebuilt after an open"
+    )
+
+
+def test_project_flow_open_bad_file_returns_false(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(cfg_path))
+    assert viseq.open_project_file(str(tmp_path / "nope.viseq")) is False
+
+
+def test_project_flow_save_round_trips_and_remembers(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(cfg_path))
+    proj = str(tmp_path / "myproject")
+    dpg.calls.clear()
+    dpg.values.clear()
+    _seed_project_ui_values()
+    monkeypatch.setattr(viseq, "active_palette", copy.deepcopy(viseq.DEFAULT_PALETTE))
+    assert viseq.save_project_file(proj) is True
+    saved = f"{proj}.viseq"
+    assert os.path.exists(saved), "the .viseq extension must be appended"
+    loaded = viseq.load_project_file(saved)
+    assert loaded is not None, "the saved file must load back"
+    cfg = viseq.load_config()
+    assert cfg["projects"]["recent"] == [saved]
+    assert any(n == "delete_item" and a == ("menu_last_project",) for n, a, kw in dpg.calls)
+
+
+def test_project_flow_recent_entry_routes_to_open(monkeypatch, tmp_path):
+    proj = tmp_path / "p.viseq"
+    state = _project_state_fixture()
+    assert viseq.save_project_to_file(str(proj), state) is True
+    cfg_path = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(cfg_path))
+    dpg.calls.clear()
+    viseq.open_recent_project(None, None, str(proj))
+    assert viseq.tracks_data[0]["steps"][2]["type"] == "AlphaR"
