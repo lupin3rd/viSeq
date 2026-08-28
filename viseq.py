@@ -821,6 +821,49 @@ def apply_project_state(state: dict[str, Any]) -> None:
         _apply_sequencer_state(seq)
 
 
+def _project_document(state: dict[str, Any]) -> dict[str, Any]:
+    """Wrap a state dict into a versioned project document (e11s01)."""
+    return {"format": PROJECT_FORMAT, "version": PROJECT_VERSION, **state}
+
+
+def save_project_to_file(path: str, state: dict[str, Any]) -> bool:
+    """Atomically write a project document; False + logged reason on failure (e11s01)."""
+    try:
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(_project_document(state), f, indent=2)
+        os.replace(tmp, path)
+        return True
+    except OSError as e:
+        log_error("Project", f"cannot write {path}: {e}")
+        return False
+
+
+def load_project_file(path: str) -> dict[str, Any] | None:
+    """Read + validate a project file, sanitized; None (logged) on any problem (e11s01)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, ValueError) as e:
+        log_error("Project", f"cannot read {path}: {e}")
+        return None
+    if not isinstance(raw, dict):
+        log_error("Project", f"{path}: not a project document")
+        return None
+    if raw.get("format") != PROJECT_FORMAT or raw.get("version") != PROJECT_VERSION:
+        log_error(
+            "Project",
+            f"{path}: unsupported format/version {raw.get('format')}/{raw.get('version')}",
+        )
+        return None
+    return _sanitize_project_state(raw)
+
+
+def _sanitize_project_state(raw: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a loaded project document into the capture shape (layout/theme/sequencer)."""
+    return {key: raw[key] for key in ("layout", "theme", "sequencer") if key in raw}
+
+
 def apply_boot_config() -> None:
     """Boot: apply the persisted theme and (optionally) the saved window layout (e06)."""
     cfg = load_config()
