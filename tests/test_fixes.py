@@ -3953,14 +3953,34 @@ def test_project_exit_app_stops_dearpygui():
     assert any(n == "stop_dearpygui" for n, a, kw in dpg.calls), "Exit must stop the app"
 
 
-def test_project_dialogs_created_with_stable_tags():
-    dialogs = import_time_file_dialogs
-    tags = {kw.get("tag") for kw in dialogs}
-    assert "open_project_dialog" in tags, "the open dialog must exist with a stable tag"
-    assert "save_project_dialog" in tags, "the save dialog must exist with a stable tag"
-    for kw in dialogs:
-        assert kw.get("show") is False, "dialogs must be created hidden"
-        assert kw.get("default_path") == viseq.PROJECTS_DIR
+def test_project_dialogs_created_on_demand_with_filters():
+    # e13s02: dialogs are NOT created at import; each show recreates them with
+    # the .viseq and .* filters (DPG shows only directories without filters).
+    assert not import_time_file_dialogs, "dialogs must be created on demand, not at import"
+    dpg.calls.clear()
+    viseq.show_open_project_dialog()
+    dialogs = [kw for n, a, kw in dpg.calls if n == "file_dialog"]
+    assert dialogs and dialogs[0].get("tag") == "open_project_dialog"
+    assert dialogs[0].get("default_path") == viseq.PROJECTS_DIR
+    exts = [kw.get("extension") for n, a, kw in dpg.calls if n == "add_file_extension"]
+    assert ".viseq" in exts, "the .viseq filter must be offered"
+    assert ".*" in exts, "the all-files filter must be offered"
+    assert any(n == "show_item" and a == ("open_project_dialog",) for n, a, kw in dpg.calls)
+    dpg.calls.clear()
+    viseq.show_open_project_dialog()
+    assert any(n == "delete_item" and a == ("open_project_dialog",) for n, a, kw in dpg.calls), (
+        "a second show must recreate the dialog"
+    )
+
+
+def test_project_save_dialog_default_filename_and_filters():
+    dpg.calls.clear()
+    viseq.show_save_project_dialog()
+    dialogs = [kw for n, a, kw in dpg.calls if n == "file_dialog"]
+    assert dialogs and dialogs[0].get("tag") == "save_project_dialog"
+    assert dialogs[0].get("default_filename") == "project.viseq"
+    exts = [kw.get("extension") for n, a, kw in dpg.calls if n == "add_file_extension"]
+    assert ".viseq" in exts and ".*" in exts
 
 
 # ---------- e11s04: settings restructure + boot restore ----------
