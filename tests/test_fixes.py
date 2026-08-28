@@ -3654,3 +3654,33 @@ def test_project_apply_tolerates_missing_sections_and_unknown_device():
 
     assert "combo_devices" not in dpg.values, "an unknown device must be skipped"
     assert viseq.tracks_data[0]["steps"][2]["type"] == "AlphaR"
+
+
+def test_project_file_round_trip(tmp_path):
+    """save_project_to_file + load_project_file round-trip a state dict."""
+    path = str(tmp_path / "proj.viseq")
+    state = _project_state_fixture()
+    assert viseq.save_project_to_file(path, state) is True
+    loaded = viseq.load_project_file(path)
+    assert loaded is not None
+    assert loaded["sequencer"]["tracks"][0]["steps"][2]["type"] == "AlphaR"
+    assert loaded["theme"]["preset"] == "chiaro"
+    assert loaded["layout"]["windows"][0]["tag"] == "sequencer_window"
+
+
+def test_project_file_io_rejects_bad_input(tmp_path):
+    """Missing, wrong-format, wrong-version and corrupt files return None."""
+    missing = str(tmp_path / "nope.viseq")
+    assert viseq.load_project_file(missing) is None
+
+    bad_format = tmp_path / "bad.viseq"
+    bad_format.write_text(json.dumps({"format": "other", "version": 1}))
+    assert viseq.load_project_file(str(bad_format)) is None
+
+    bad_version = tmp_path / "old.viseq"
+    bad_version.write_text(json.dumps({"format": viseq.PROJECT_FORMAT, "version": 99}))
+    assert viseq.load_project_file(str(bad_version)) is None
+
+    corrupt = tmp_path / "corrupt.viseq"
+    corrupt.write_text("{ not json")
+    assert viseq.load_project_file(str(corrupt)) is None
