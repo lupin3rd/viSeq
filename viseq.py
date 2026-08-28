@@ -1031,16 +1031,43 @@ def open_recent_project(sender: Any = None, app_data: Any = None, user_data: Any
         open_project_file(user_data)
 
 
+def _recreate_project_dialog(tag: str, callback: Any, default_filename: str | None) -> None:
+    """(Re)create one project file dialog with .viseq/.* filters, then show it (e13s02).
+
+    DPG's file dialog shows only directories when no extension filters exist;
+    recreating on every show guarantees a fresh dialog whose default path was
+    just created by the caller.
+    """
+    if dpg.does_item_exist(tag):
+        dpg.delete_item(tag)
+    kwargs: dict[str, Any] = {
+        "tag": tag,
+        "show": False,
+        "width": 480,
+        "height": 360,
+        "callback": callback,
+        "default_path": PROJECTS_DIR,
+        "modal": True,
+    }
+    if default_filename:
+        kwargs["default_filename"] = default_filename
+    with dpg.file_dialog(**kwargs):
+        dpg.add_file_extension(".viseq")
+        dpg.add_file_extension(".*")
+        dpg.add_file_extension("")  # #2080 defensive: some systems hide files with .* only
+    dpg.show_item(tag)
+
+
 def show_open_project_dialog() -> None:
-    """Show the Open-project file dialog, defaulting to the projects folder (e11s03)."""
+    """Show the Open-project file dialog, defaulting to the projects folder (e11s03, e13s02)."""
     os.makedirs(PROJECTS_DIR, exist_ok=True)
-    dpg.show_item("open_project_dialog")
+    _recreate_project_dialog("open_project_dialog", on_open_project_picked, None)
 
 
 def show_save_project_dialog() -> None:
-    """Show the Save-project file dialog, defaulting to the projects folder (e11s03)."""
+    """Show the Save-project file dialog, defaulting to the projects folder (e11s03, e13s02)."""
     os.makedirs(PROJECTS_DIR, exist_ok=True)
-    dpg.show_item("save_project_dialog")
+    _recreate_project_dialog("save_project_dialog", on_save_project_picked, "project.viseq")
 
 
 def on_open_project_picked(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -4403,29 +4430,10 @@ with dpg.viewport_menu_bar():
         dpg.add_menu_item(label="General", callback=show_settings_window)
         dpg.add_menu_item(label="MIDI", callback=show_midi_window)
 
-# e11s03: native file dialogs (DPG 2.3.1 add_file_dialog contract: callback app_data
-# carries file_path_name/file_name/current_path), created hidden, shown on demand.
-with dpg.file_dialog(
-    tag="open_project_dialog",
-    show=False,
-    width=480,
-    height=360,
-    callback=on_open_project_picked,
-    default_path=PROJECTS_DIR,
-    modal=True,
-):
-    pass
-with dpg.file_dialog(
-    tag="save_project_dialog",
-    show=False,
-    width=480,
-    height=360,
-    callback=on_save_project_picked,
-    default_path=PROJECTS_DIR,
-    default_filename="project.viseq",
-    modal=True,
-):
-    pass
+# e11s03/e13s02: project file dialogs are created ON DEMAND by
+# show_open_project_dialog / show_save_project_dialog (_recreate_project_dialog)
+# with .viseq/.* filters — DPG shows only directories without extension filters,
+# and a fresh dialog guarantees the default path exists.
 rebuild_last_project_menu()  # e11s03: populate the Last-project submenu for boot
 dpg.setup_dearpygui()
 dpg.show_viewport()

@@ -3962,7 +3962,9 @@ def test_project_dialogs_created_on_demand_with_filters():
     dialogs = [kw for n, a, kw in dpg.calls if n == "file_dialog"]
     assert dialogs and dialogs[0].get("tag") == "open_project_dialog"
     assert dialogs[0].get("default_path") == viseq.PROJECTS_DIR
-    exts = [kw.get("extension") for n, a, kw in dpg.calls if n == "add_file_extension"]
+    exts = [
+        a[0] if a else kw.get("extension") for n, a, kw in dpg.calls if n == "add_file_extension"
+    ]
     assert ".viseq" in exts, "the .viseq filter must be offered"
     assert ".*" in exts, "the all-files filter must be offered"
     assert any(n == "show_item" and a == ("open_project_dialog",) for n, a, kw in dpg.calls)
@@ -3979,7 +3981,9 @@ def test_project_save_dialog_default_filename_and_filters():
     dialogs = [kw for n, a, kw in dpg.calls if n == "file_dialog"]
     assert dialogs and dialogs[0].get("tag") == "save_project_dialog"
     assert dialogs[0].get("default_filename") == "project.viseq"
-    exts = [kw.get("extension") for n, a, kw in dpg.calls if n == "add_file_extension"]
+    exts = [
+        a[0] if a else kw.get("extension") for n, a, kw in dpg.calls if n == "add_file_extension"
+    ]
     assert ".viseq" in exts and ".*" in exts
 
 
