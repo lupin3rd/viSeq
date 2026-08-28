@@ -859,9 +859,113 @@ def load_project_file(path: str) -> dict[str, Any] | None:
     return _sanitize_project_state(raw)
 
 
+def _to_float(value: Any, default: float) -> float:
+    """Coerce a stored value to float, falling back on garbage (e11s01)."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _default_step() -> dict[str, Any]:
+    """A pristine step cell, the template for sanitize healing (e11s01)."""
+    return {
+        "active": False,
+        "type": "NONE",
+        "v1": 0.0,
+        "v2": 1.0,
+        "frames": 4,
+        "msgs": 1,
+        "color": [1.0, 1.0, 1.0],
+    }
+
+
+def _sanitize_step(step: Any) -> dict[str, Any]:
+    """Heal one step: missing persisted keys get defaults, unknown keys drop (e11s01)."""
+    base = _default_step()
+    if isinstance(step, dict):
+        for key in STEP_PERSISTED_KEYS:
+            if key in step:
+                base[key] = step[key]
+    return base
+
+
+def _sanitize_tracks(tracks: Any) -> list[dict[str, Any]]:
+    """Heal the track list: bounded to NUM_TRACKS, steps healed and capped (e11s01)."""
+    clean: list[dict[str, Any]] = []
+    if isinstance(tracks, list):
+        for track in tracks[:NUM_TRACKS]:
+            if not isinstance(track, dict):
+                track = {}
+            steps = track.get("steps", [])
+            if not isinstance(steps, list):
+                steps = []
+            clean.append(
+                {
+                    "target_id": track.get("target_id"),
+                    "base_address": track.get("base_address", ""),
+                    "steps": [_sanitize_step(s) for s in steps[:NUM_STEPS]],
+                }
+            )
+    return clean
+
+
+def _sanitize_audio_state(audio: Any) -> dict[str, Any]:
+    """Heal the audio section: band values clamped to their defaults (e11s01)."""
+    if not isinstance(audio, dict):
+        audio = {}
+    raw_bands = audio.get("bands", {})
+    if not isinstance(raw_bands, dict):
+        raw_bands = {}
+    bands: dict[str, dict[str, Any]] = {}
+    for band_id, default_range in BAND_DEFAULT_RANGES.items():
+        band = raw_bands.get(str(band_id), {})
+        if not isinstance(band, dict):
+            band = {}
+        bands[str(band_id)] = {
+            "enabled": bool(band.get("enabled", False)),
+            "start": _to_float(band.get("start"), default_range[0]),
+            "end": _to_float(band.get("end"), default_range[1]),
+            "min": _to_float(band.get("min"), 0.0),
+            "max": _to_float(band.get("max"), 1.0),
+        }
+    return {
+        "device": str(audio.get("device", "")),
+        "lowpass": bool(audio.get("lowpass", True)),
+        "bands": bands,
+    }
+
+
 def _sanitize_project_state(raw: dict[str, Any]) -> dict[str, Any]:
-    """Coerce a loaded project document into the capture shape (layout/theme/sequencer)."""
-    return {key: raw[key] for key in ("layout", "theme", "sequencer") if key in raw}
+    """Coerce a loaded project document into the capture shape (e11s01)."""
+    theme = raw.get("theme")
+    if not isinstance(theme, dict):
+        theme = {"preset": "scuro", "colors": copy.deepcopy(DEFAULT_PALETTE)}
+    else:
+        preset = str(theme.get("preset", "scuro"))
+        if preset not in THEME_PRESET_LABELS:
+            preset = "scuro"
+        palette = theme.get("colors")
+        if not isinstance(palette, dict):
+            palette = copy.deepcopy(DEFAULT_PALETTE)
+        theme = {"preset": preset, "colors": _sanitize_palette(palette)}
+    layout = raw.get("layout")
+    if not isinstance(layout, dict) or not isinstance(layout.get("windows"), list):
+        layout = {"windows": []}
+    seq = raw.get("sequencer")
+    if not isinstance(seq, dict):
+        seq = {}
+    beat = seq.get("beat_source")
+    return {
+        "layout": {"windows": layout["windows"]},
+        "theme": theme,
+        "sequencer": {
+            "beat_source": beat if beat in BEAT_SOURCE_LABELS else BEAT_SOURCE_ANALYSIS,
+            "manual_bpm": _to_float(seq.get("manual_bpm"), 120.0),
+            "tracks": _sanitize_tracks(seq.get("tracks")),
+            "audio": _sanitize_audio_state(seq.get("audio")),
+        },
+    }
 
 
 def apply_boot_config() -> None:
