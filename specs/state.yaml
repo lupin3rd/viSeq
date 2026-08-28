@@ -5,14 +5,14 @@
 workflow_mode: solo-git
 
 handoff:
-  next_skill: verify-work
-  active_epic_id: e13
-  active_story_id: e13s02
+  next_skill: survey-context
+  active_epic_id: null
+  active_story_id: null
 
-active_flow: verify
+active_flow: sustain
 bug_cycle:
   current_step: 0
   completed_steps: [1, 2, 3, 4, 5]
 
 git:
-  branch: feat/e11-project-save-load
+  branch: main
