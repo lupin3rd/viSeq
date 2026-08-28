@@ -3848,3 +3848,42 @@ def test_project_flow_recent_entry_routes_to_open(monkeypatch, tmp_path):
     dpg.calls.clear()
     viseq.open_recent_project(None, None, str(proj))
     assert viseq.tracks_data[0]["steps"][2]["type"] == "AlphaR"
+
+
+def test_project_dialog_save_callback_forces_extension(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(cfg_path))
+    dpg.calls.clear()
+    dpg.values.clear()
+    _seed_project_ui_values()
+    monkeypatch.setattr(viseq, "active_palette", copy.deepcopy(viseq.DEFAULT_PALETTE))
+    target = str(tmp_path / "pick")
+    viseq.on_save_project_picked(None, {"file_path_name": target}, None)
+    assert os.path.exists(f"{target}.viseq"), "the save callback must write a .viseq file"
+
+
+def test_project_dialog_open_callback_routes(monkeypatch, tmp_path):
+    proj = tmp_path / "p.viseq"
+    state = _project_state_fixture()
+    assert viseq.save_project_to_file(str(proj), state) is True
+    cfg_path = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(cfg_path))
+    dpg.calls.clear()
+    viseq.on_open_project_picked(None, {"file_path_name": str(proj)}, None)
+    assert viseq.tracks_data[0]["steps"][2]["type"] == "AlphaR", "the open callback must apply"
+
+
+def test_project_exit_app_stops_dearpygui():
+    dpg.calls.clear()
+    viseq.exit_app()
+    assert any(n == "stop_dearpygui" for n, a, kw in dpg.calls), "Exit must stop the app"
+
+
+def test_project_dialogs_created_with_stable_tags():
+    dialogs = [kw for n, a, kw in dpg.calls if n == "file_dialog"]
+    tags = {kw.get("tag") for kw in dialogs}
+    assert "open_project_dialog" in tags, "the open dialog must exist with a stable tag"
+    assert "save_project_dialog" in tags, "the save dialog must exist with a stable tag"
+    for kw in dialogs:
+        assert kw.get("show") is False, "dialogs must be created hidden"
+        assert kw.get("default_path") == viseq.PROJECTS_DIR
