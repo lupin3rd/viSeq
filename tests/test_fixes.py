@@ -1571,8 +1571,8 @@ def test_apply_window_layout_sets_geometry_and_visibility(monkeypatch):
 def test_load_config_missing_file_returns_defaults(monkeypatch):
     monkeypatch.setattr(viseq, "CONFIG_PATH", "/nonexistent/viseq_config.json")
     cfg = viseq.load_config()
-    assert cfg["layout"]["restore_on_boot"] is True
-    assert cfg["layout"]["windows"] == []
+    assert cfg["projects"]["recent"] == []
+    assert cfg["projects"]["restore_last_on_boot"] is True
     assert cfg["theme"]["preset"] == "scuro"
     assert cfg["theme"]["colors"]["window_bg"] == list(viseq.DEFAULT_PALETTE["window_bg"])
 
@@ -1582,79 +1582,27 @@ def test_load_config_corrupt_file_returns_defaults(monkeypatch, tmp_path):
     p.write_text("{ not valid json !!!")
     monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
     cfg = viseq.load_config()
-    assert cfg["layout"]["restore_on_boot"] is True, "corrupt config must fall back to defaults"
+    assert cfg["projects"]["restore_last_on_boot"] is True, (
+        "corrupt config must fall back to defaults"
+    )
 
 
 def test_save_then_load_config_round_trip(monkeypatch, tmp_path):
     p = tmp_path / "config.json"
     monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
     cfg = viseq.load_config()
-    cfg["layout"]["restore_on_boot"] = False
+    cfg["projects"]["restore_last_on_boot"] = False
     cfg["theme"]["preset"] = "chiaro"
     viseq.save_config(cfg)
     loaded = viseq.load_config()
-    assert loaded["layout"]["restore_on_boot"] is False
+    assert loaded["projects"]["restore_last_on_boot"] is False
     assert loaded["theme"]["preset"] == "chiaro"
 
 
-def test_should_restore_layout_on_boot_defaults_true(monkeypatch):
-    monkeypatch.setattr(viseq, "CONFIG_PATH", "/nonexistent/viseq_config.json")
-    cfg = viseq.load_config()
-    assert viseq.should_restore_layout_on_boot(cfg) is True
-    cfg["layout"]["restore_on_boot"] = False
-    assert viseq.should_restore_layout_on_boot(cfg) is False
-
-
-def test_save_layout_to_config_persists_snapshot(monkeypatch, tmp_path):
-    p = tmp_path / "config.json"
-    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
-    monkeypatch.setattr(dpg, "get_item_pos", lambda tag: [7, 7])
-    monkeypatch.setattr(dpg, "get_item_width", lambda tag: 111)
-    monkeypatch.setattr(dpg, "get_item_height", lambda tag: 222)
-    monkeypatch.setattr(dpg, "is_item_shown", lambda tag: True)
-    viseq.save_layout_to_config()
-    cfg = viseq.load_config()
-    assert cfg["layout"]["windows"], "the layout snapshot must persist"
-    for r in cfg["layout"]["windows"]:
-        assert set(r.keys()) == {"tag", "shown", "pos", "size"}
-
-
-def test_restore_layout_from_config_applies(monkeypatch, tmp_path):
-    p = tmp_path / "config.json"
-    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
-    cfg = {
-        "layout": {
-            "restore_on_boot": True,
-            "windows": [{"tag": "logs_window", "shown": True, "pos": [5, 6], "size": [700, 200]}],
-        },
-        "theme": {"preset": "scuro", "colors": viseq.DEFAULT_PALETTE},
-    }
-    p.write_text(json.dumps(cfg))
-    dpg.calls.clear()
-    viseq.restore_layout_from_config()
-    assert any(n == "show_item" and a == ("logs_window",) for n, a, kw in dpg.calls)
-    assert any(n == "set_item_pos" and a == ("logs_window", [5, 6]) for n, a, kw in dpg.calls)
-
-
-def test_restore_layout_boot_toggle_persists(monkeypatch, tmp_path):
-    p = tmp_path / "config.json"
-    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
-    viseq.on_restore_layout_boot_toggle(None, False)
-    cfg = viseq.load_config()
-    assert cfg["layout"]["restore_on_boot"] is False
-    viseq.on_restore_layout_boot_toggle(None, True)
-    cfg = viseq.load_config()
-    assert cfg["layout"]["restore_on_boot"] is True
-
-
-def test_settings_window_has_windows_section():
-    labels = [kw.get("label") for kw in import_time_settings_buttons]
-    assert "Save layout" in labels, "Save layout button must exist"
-    assert "Restore layout" in labels, "Restore layout button must exist"
-    assert import_time_restore_checkbox, "Restore at startup checkbox must exist"
-    cb = import_time_restore_checkbox[0]
-    assert cb.get("default_value") is True, "restore-at-boot must default on"
-    assert cb.get("callback") == viseq.on_restore_layout_boot_toggle
+# e11s02: the legacy layout config tests (should_restore_layout_on_boot,
+# save_layout_to_config, restore_layout_from_config, restore-layout toggle) were
+# removed — the layout save/restore buttons die with the settings Windows section
+# in e11s04; config coverage moved to the projects flag tests above.
 
 
 # ---------- e06s02: theming ----------
@@ -1793,7 +1741,10 @@ def test_on_theme_color_derives_from_edits_and_persists(monkeypatch, tmp_path):
     viseq.apply_palette(viseq.DEFAULT_PALETTE)
 
 
-def test_boot_applies_saved_theme_and_layout(monkeypatch, tmp_path):
+def test_boot_applies_saved_theme_and_skips_legacy_layout(monkeypatch, tmp_path):
+    # e11s02: the legacy layout block no longer survives load_config, so boot must
+    # apply the theme and skip the window layout (e11s04 replaces it with
+    # restore-last-project-at-boot).
     p = tmp_path / "config.json"
     p.write_text(
         json.dumps(
@@ -1812,10 +1763,9 @@ def test_boot_applies_saved_theme_and_layout(monkeypatch, tmp_path):
     dpg.calls.clear()
     viseq.apply_boot_config()
     assert viseq.active_palette == viseq.LIGHT_PALETTE
-    assert any(n == "show_item" and a == ("logs_window",) for n, a, kw in dpg.calls), (
-        "boot must restore the saved layout"
+    assert not any(n == "show_item" and a == ("logs_window",) for n, a, kw in dpg.calls), (
+        "the legacy layout block must not be restored once the schema drops it"
     )
-    assert dpg.values.get("cb_restore_layout_boot") is True
     viseq.apply_palette(viseq.DEFAULT_PALETTE)
 
 

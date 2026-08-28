@@ -231,9 +231,11 @@ MIDI_ACTION_BEAT_SOURCE = "beat_source"
 MIDI_ACTION_TRACK_ASSIGN = "track_assign"
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "layout": {"restore_on_boot": True, "windows": []},
+    # e11s02: the window layout moved into project files; the config keeps the
+    # fallback theme, MIDI and the recent-projects list + restore flag.
     "theme": {"preset": "scuro", "colors": copy.deepcopy(DEFAULT_PALETTE)},
     "midi": {"enabled": False, "input_port": None, "bindings": []},
+    "projects": {"recent": [], "restore_last_on_boot": True},
 }
 
 # MIDI control runtime mirrors of cfg["midi"] (e09). The worker thread reads these; the
@@ -593,7 +595,9 @@ def load_config() -> dict[str, Any]:
         if key in loaded:
             merged[key] = _merge(merged[key], loaded[key])
     merged["theme"]["colors"] = _sanitize_palette(merged["theme"].get("colors"))
-    return merged
+    # e11s02: drop unknown top-level keys (the legacy "layout" block) so a stale
+    # config file self-cleans on the next save instead of carrying dead state.
+    return {key: merged[key] for key in DEFAULT_CONFIG}
 
 
 def save_config(cfg: dict[str, Any]) -> None:
@@ -969,14 +973,19 @@ def _sanitize_project_state(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def apply_boot_config() -> None:
-    """Boot: apply the persisted theme and (optionally) the saved window layout (e06)."""
+    """Boot: apply the persisted theme and (optionally) the saved window layout (e06).
+
+    e11s02: the legacy layout block is skipped once the schema drops the key;
+    e11s04 replaces it with restore-last-project-at-boot.
+    """
     cfg = load_config()
     midi_init_from_config(cfg)  # e09: MIDI control mirrors (enabled, port, bindings)
     _apply_theme_config(cfg["theme"])
-    if dpg.does_item_exist("cb_restore_layout_boot"):
-        dpg.set_value("cb_restore_layout_boot", cfg["layout"]["restore_on_boot"])
-    if should_restore_layout_on_boot(cfg):
-        apply_window_layout(cfg["layout"]["windows"])
+    if cfg.get("layout"):
+        if dpg.does_item_exist("cb_restore_layout_boot"):
+            dpg.set_value("cb_restore_layout_boot", cfg["layout"]["restore_on_boot"])
+        if should_restore_layout_on_boot(cfg):
+            apply_window_layout(cfg["layout"]["windows"])
 
 
 def enqueue_set_value(tag: str, value: Any) -> None:
