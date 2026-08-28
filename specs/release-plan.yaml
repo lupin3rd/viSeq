@@ -1,7 +1,7 @@
 # specs/release-plan.yaml — WSJF-ordered epic list (slice-tasks)
 # All stories in e01 belong to one epic; order = WSJF (value per unit of work).
 
-release: 1.1.0
+release: 0.1.0
 
 epics:
   - id: e01
@@ -178,3 +178,26 @@ epics:
       - id: e11s04
         title: "Settings restructure — 'Restore last project at startup' on top, Windows section removed, boot restore in apply_boot_config"
         bcps: 3
+
+  - id: e12
+    slug: menu-shell
+    title: "Menubar shell: viSeq | Windows | Settings — Windows (New Monitor Player / Show Logs / Show Info), Settings (General / MIDI)"
+    wsjf: 40
+    baseline_bcps: 2
+    stories:
+      - id: e12s01
+        title: "Menubar restructure — Windows and Settings menus; Monitor/Show/top-level items removed"
+        bcps: 2
+
+  - id: e13
+    slug: window-polish
+    title: "Window polish — General/Logs/Info renames, em-dash glyph fix, project dialogs show files, version 0.1.0"
+    wsjf: 30
+    baseline_bcps: 4
+    stories:
+      - id: e13s01
+        title: "Window renames (General/Logs/Info) + em-dash glyph fix + APP_VERSION 0.1.0"
+        bcps: 2
+      - id: e13s02
+        title: "Project dialogs show existing .viseq files — extension filters + recreate-on-demand"
+        bcps: 2

@@ -1,0 +1,32 @@
+# specs/epics/e13-window-polish/epic.yaml — epic capsule manifest
+epic_id: e13
+slug: window-polish
+title: "Window polish — General/Logs/Info renames, em-dash glyph fix, project dialogs show files, version 0.1.0"
+wsjf: 30
+baseline_bcps: 4
+delta:
+  - RENAMED: "Settings window -> General"
+    before: "Window label 'Settings' (tag settings_window unchanged)"
+    after: "Window label 'General' (tag settings_window unchanged; the Settings menubar menu and its General item are untouched)"
+  - RENAMED: "OSC Logs window -> Logs"
+    before: "Window label 'OSC Logs' (tag logs_window unchanged)"
+    after: "Window label 'Logs' (tag logs_window unchanged)"
+  - RENAMED: "Help window -> Info"
+    before: "Window label 'Help' (tag help_window unchanged)"
+    after: "Window label 'Info' (tag help_window unchanged)"
+  - MODIFIED: "Em-dash glyphs in visible UI strings"
+    before: "'viSeq — Audio-Reactive VJ Controller for Vimix' and the band separator '—' used U+2014; ProggyClean (default font) has no glyph, rendering a fallback '?'"
+    after: "ASCII hyphen '-' in both visible strings (same fix class as e10s06 title ellipsis)"
+  - MODIFIED: "Project file dialogs display files"
+    before: "file_dialog created once at module level with no add_file_extension filters — DPG shows only directories when no extension filters exist, so existing .viseq files were invisible"
+    after: "Dialogs are recreated on demand with add_file_extension('.viseq') + add_file_extension('.*') filters and default_path=PROJECTS_DIR, so existing projects are visible and selectable"
+  - MODIFIED: "APP_VERSION"
+    before: "1.1.0"
+    after: "0.1.0 (user: this is the first real version of viSeq)"
+stories:
+  - id: e13s01
+    title: "Window renames (General/Logs/Info) + em-dash glyph fix + APP_VERSION 0.1.0"
+    bcps: 2
+  - id: e13s02
+    title: "Project dialogs show existing .viseq files — extension filters + recreate-on-demand"
+    bcps: 2

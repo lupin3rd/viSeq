@@ -1,0 +1,47 @@
+# specs/verifications/e11-verify.yaml — verify-work evidence for epic e11
+# Project save/load — viSeq menu, .viseq files, last-project restore at boot.
+
+story_ids: [e11s01, e11s02, e11s03, e11s04]
+verified_at: "2026-08-28T12:30:00Z"
+verifier: verify-work
+phases:
+  branch:
+    name: feat/e11-project-save-load
+    passed: true
+  preflight:
+    passed: true
+    command: ".venv/bin/ruff check . && .venv/bin/mypy && .venv/bin/python -m pytest tests/ -q"
+    result: "ruff clean, mypy clean, 234 passed"
+  terminal_verdict:
+    command: ".venv/bin/ruff check . && .venv/bin/mypy && .venv/bin/python -m pytest tests/ -q"
+    exit_code: 0
+    captured_at: "2026-08-28T12:25:00Z"
+    note: "Single contiguous run — ruff, mypy and pytest in one shell invocation"
+  story_verifies:
+    e11s01: ".venv/bin/python -m pytest tests/ -q -k 'project_capture or project_apply or project_file or project_sanitize' — 9 passed"
+    e11s02: ".venv/bin/python -m pytest tests/ -q -k 'projects_section or legacy_layout or preserves_projects or remember_recent or recent_project_paths or restore_last_project_flag' — 7 passed"
+    e11s03: ".venv/bin/python -m pytest tests/ -q -k 'viseq_menu or last_project_menu or project_flow or project_dialog or project_exit' — 11 passed"
+    e11s04: ".venv/bin/python -m pytest tests/ -q -k 'project_section_replaces or boot_restores or boot_skips or boot_without' — 4 passed"
+  security:
+    passed: true
+    notes:
+      - "Local-only file I/O: paths come from the DPG file dialog (user-chosen) or the recent list of previously user-chosen paths; no network/OSC contract change."
+      - "load_project_file validates format+version, wraps json.load in try/except, and runs _sanitize_project_state (type coercion via _to_float, default healing) — no eval, no code execution from project files."
+      - "load_config drops unknown top-level keys and sanitizes the palette; save_config keeps the atomic tmp+os.replace pattern."
+      - "All new code runs on the main thread; worker threads and the ui_task_queue routing are untouched."
+      - "Low (non-blocking): a very large project file is read fully into memory on open — same trust model as the existing config load (local user, own files)."
+  cold_start:
+    passed: true
+    note: "GUI app — module import + apply_boot_config at import are exercised headless by the test harness (import-time captures + boot tests); real cold start is covered by manual UAT on the rig."
+  manual:
+    status: pending_user_uat
+    steps:
+      - step: "Launch viseq — menubar shows viSeq first, then Monitor/Show/Settings/MIDI/Help"
+      - step: "viSeq > Save project — dialog opens in projects/, pick a name, .viseq file written; Last project lists it"
+      - step: "Move windows / change theme / program steps — viSeq > Open project restores layout, colors and sequencer"
+      - step: "viSeq > Last project — opens the recent file directly"
+      - step: "viSeq > Exit closes the app"
+      - step: "Settings — 'Restore last project at startup' on top, default ON; Windows section gone"
+      - step: "Restart with the flag ON — last project restored; with the flag OFF — fallback theme, default layout"
+gaps:
+  closed: true

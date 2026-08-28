@@ -102,7 +102,8 @@ CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(CONFIG_DIR, "viseq_config.json")
 
 # viseq application version — single source of truth (matches specs/release-plan.yaml, e08s02).
-APP_VERSION: str = "1.1.0"
+# e13s01: this is the first real release of viSeq (user decision).
+APP_VERSION: str = "0.1.0"
 
 # Author's GitHub profile, shown as a link in the About window (e08s01, user request).
 GITHUB_URL: str = "https://github.com/lupin3rd"
@@ -231,9 +232,11 @@ MIDI_ACTION_BEAT_SOURCE = "beat_source"
 MIDI_ACTION_TRACK_ASSIGN = "track_assign"
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "layout": {"restore_on_boot": True, "windows": []},
+    # e11s02: the window layout moved into project files; the config keeps the
+    # fallback theme, MIDI and the recent-projects list + restore flag.
     "theme": {"preset": "scuro", "colors": copy.deepcopy(DEFAULT_PALETTE)},
     "midi": {"enabled": False, "input_port": None, "bindings": []},
+    "projects": {"recent": [], "restore_last_on_boot": True},
 }
 
 # MIDI control runtime mirrors of cfg["midi"] (e09). The worker thread reads these; the
@@ -593,7 +596,9 @@ def load_config() -> dict[str, Any]:
         if key in loaded:
             merged[key] = _merge(merged[key], loaded[key])
     merged["theme"]["colors"] = _sanitize_palette(merged["theme"].get("colors"))
-    return merged
+    # e11s02: drop unknown top-level keys (the legacy "layout" block) so a stale
+    # config file self-cleans on the next save instead of carrying dead state.
+    return {key: merged[key] for key in DEFAULT_CONFIG}
 
 
 def save_config(cfg: dict[str, Any]) -> None:
@@ -618,7 +623,7 @@ def snapshot_window_layout() -> list[dict[str, Any]]:
     """Record shown/pos/size for every existing layout-tracked window (main thread only).
 
     LAYOUT_ALWAYS_HIDDEN_TAGS (the Settings window) are always recorded as closed: they
-    stay open while the user clicks "Save layout", and must not come back at boot.
+    stay open while the user saves a project, and must not come back at boot.
     """
     records: list[dict[str, Any]] = []
     for tag in _existing_layout_window_tags():
@@ -663,44 +668,440 @@ def apply_window_layout(records: list[dict[str, Any]]) -> None:
             log_error("Layout", f"apply {tag}: {e}")
 
 
-def save_layout_to_config(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Settings 'Save layout': snapshot the current layout and persist it."""
+# ==============================================================================
+# PROJECT SAVE/LOAD (e11) — .viseq files capture window layout + theme + every
+# sequencer configuration; the viSeq menu (e11s03) drives the file dialogs.
+# ==============================================================================
+PROJECT_FORMAT = "viseq-project"
+PROJECT_VERSION = 1
+PROJECT_FILE_EXTENSION = ".viseq"
+PROJECTS_DIR = os.path.join(CONFIG_DIR, "projects")
+RECENT_PROJECTS_MAX = 5  # cap for the Last-project submenu / config list (e11s02)
+# Step fields that belong in a project file; the last_rand_* keys are runtime-only.
+STEP_PERSISTED_KEYS: tuple[str, ...] = ("active", "type", "v1", "v2", "frames", "msgs", "color")
+
+
+def _step_persisted(step: dict[str, Any]) -> dict[str, Any]:
+    """Reduce a runtime step dict to its persisted fields (e11s01)."""
+    return {key: copy.deepcopy(step[key]) for key in STEP_PERSISTED_KEYS if key in step}
+
+
+def _capture_audio_state() -> dict[str, Any]:
+    """Snapshot the audio-analyzer section from its widgets (e11s01)."""
+    bands: dict[str, dict[str, Any]] = {}
+    for band_id in BAND_DEFAULT_RANGES:
+        bands[str(band_id)] = {
+            "enabled": bool(dpg.get_value(f"band{band_id}_enabled")),
+            "start": float(dpg.get_value(f"band{band_id}_start")),
+            "end": float(dpg.get_value(f"band{band_id}_end")),
+            "min": float(dpg.get_value(f"band{band_id}_min")),
+            "max": float(dpg.get_value(f"band{band_id}_max")),
+        }
+    return {
+        "device": str(dpg.get_value("combo_devices")),
+        "lowpass": bool(dpg.get_value("cb_lowpass")),
+        "bands": bands,
+    }
+
+
+def capture_project_state() -> dict[str, Any]:
+    """Snapshot layout + theme + sequencer state into a project dict (e11s01)."""
+    preset_label = str(dpg.get_value("theme_preset"))
+    return {
+        "layout": {"windows": snapshot_window_layout()},
+        "theme": {"preset": _preset_key(preset_label), "colors": copy.deepcopy(active_palette)},
+        "sequencer": {
+            "beat_source": beat_source,
+            "manual_bpm": float(dpg.get_value("manual_bpm_input")),
+            "tracks": [
+                {
+                    "target_id": track.get("target_id"),
+                    "base_address": track.get("base_address", ""),
+                    "steps": [_step_persisted(step) for step in track["steps"]],
+                }
+                for track in tracks_data
+            ],
+            "audio": _capture_audio_state(),
+        },
+    }
+
+
+def _restore_step(row: int, col: int, step_data: dict[str, Any]) -> None:
+    """Apply one persisted step onto the live cell and rebuild its UI (e11s01)."""
+    step = tracks_data[row]["steps"][col]
+    for key in STEP_PERSISTED_KEYS:
+        if key in step_data:
+            step[key] = copy.deepcopy(step_data[key])
+    update_step_ui(row, col)
+
+
+def _restore_track(row: int, track_data: dict[str, Any]) -> None:
+    """Apply one persisted track (clip assignment + steps) and rebuild its UI (e11s01)."""
+    target_id = track_data.get("target_id")
+    tracks_data[row]["target_id"] = target_id
+    tracks_data[row]["base_address"] = f"/vimix/{target_id}" if target_id else ""
+    for col, step_data in enumerate(track_data.get("steps", [])):
+        if col >= NUM_STEPS:
+            break
+        _restore_step(row, col, step_data)
+    update_track_slot_ui(row)
+
+
+def _apply_audio_state(audio: dict[str, Any]) -> None:
+    """Re-apply the audio-analyzer section (device, low-pass, bands) (e11s01)."""
+    global lowpass_enabled
+    if audio.get("device") in input_devices_list:
+        dpg.set_value("combo_devices", audio["device"])
+    lowpass_enabled = bool(audio.get("lowpass", True))
+    if dpg.does_item_exist("cb_lowpass"):
+        dpg.set_value("cb_lowpass", lowpass_enabled)
+    bands = audio.get("bands", {})
+    for band_id in BAND_DEFAULT_RANGES:
+        band = bands.get(str(band_id), {})
+        bands_enabled[band_id] = bool(band.get("enabled", False))
+        if dpg.does_item_exist(f"band{band_id}_enabled"):
+            dpg.set_value(f"band{band_id}_enabled", bands_enabled[band_id])
+        for key in ("start", "end", "min", "max"):
+            tag = f"band{band_id}_{key}"
+            if key in band and dpg.does_item_exist(tag):
+                dpg.set_value(tag, float(band[key]))
+        if bands_enabled[band_id]:
+            refresh_band_value(spectrum_bars_cache, band_id)
+
+
+def _apply_sequencer_state(seq: dict[str, Any]) -> None:
+    """Re-apply beat source, manual BPM, tracks and the audio section (e11s01)."""
+    mode = seq.get("beat_source")
+    if mode not in BEAT_SOURCE_LABELS:
+        mode = BEAT_SOURCE_ANALYSIS
+    if "manual_bpm" in seq and dpg.does_item_exist("manual_bpm_input"):
+        dpg.set_value("manual_bpm_input", float(seq["manual_bpm"]))
+    midi_action_beat_source(mode)  # beat_source + checkboxes + manual-widget visibility
+    for row, track_data in enumerate(seq.get("tracks", [])):
+        if row >= NUM_TRACKS:
+            break
+        _restore_track(row, track_data)
+    audio = seq.get("audio")
+    if isinstance(audio, dict):
+        _apply_audio_state(audio)
+
+
+def apply_project_state(state: dict[str, Any]) -> None:
+    """Re-apply a project dict onto the live app (layout, theme, sequencer) (e11s01)."""
+    apply_window_layout(state.get("layout", {}).get("windows", []))
+    theme = state.get("theme")
+    if isinstance(theme, dict):
+        _apply_theme_config(theme)
+    seq = state.get("sequencer")
+    if isinstance(seq, dict):
+        _apply_sequencer_state(seq)
+
+
+def _project_document(state: dict[str, Any]) -> dict[str, Any]:
+    """Wrap a state dict into a versioned project document (e11s01)."""
+    return {"format": PROJECT_FORMAT, "version": PROJECT_VERSION, **state}
+
+
+def save_project_to_file(path: str, state: dict[str, Any]) -> bool:
+    """Atomically write a project document; False + logged reason on failure (e11s01)."""
+    try:
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(_project_document(state), f, indent=2)
+        os.replace(tmp, path)
+        return True
+    except OSError as e:
+        log_error("Project", f"cannot write {path}: {e}")
+        return False
+
+
+def load_project_file(path: str) -> dict[str, Any] | None:
+    """Read + validate a project file, sanitized; None (logged) on any problem (e11s01)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, ValueError) as e:
+        log_error("Project", f"cannot read {path}: {e}")
+        return None
+    if not isinstance(raw, dict):
+        log_error("Project", f"{path}: not a project document")
+        return None
+    if raw.get("format") != PROJECT_FORMAT or raw.get("version") != PROJECT_VERSION:
+        log_error(
+            "Project",
+            f"{path}: unsupported format/version {raw.get('format')}/{raw.get('version')}",
+        )
+        return None
+    return _sanitize_project_state(raw)
+
+
+def _to_float(value: Any, default: float) -> float:
+    """Coerce a stored value to float, falling back on garbage (e11s01)."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _default_step() -> dict[str, Any]:
+    """A pristine step cell, the template for sanitize healing (e11s01)."""
+    return {
+        "active": False,
+        "type": "NONE",
+        "v1": 0.0,
+        "v2": 1.0,
+        "frames": 4,
+        "msgs": 1,
+        "color": [1.0, 1.0, 1.0],
+    }
+
+
+def _sanitize_step(step: Any) -> dict[str, Any]:
+    """Heal one step: missing persisted keys get defaults, unknown keys drop (e11s01)."""
+    base = _default_step()
+    if isinstance(step, dict):
+        for key in STEP_PERSISTED_KEYS:
+            if key in step:
+                base[key] = step[key]
+    return base
+
+
+def _sanitize_tracks(tracks: Any) -> list[dict[str, Any]]:
+    """Heal the track list: bounded to NUM_TRACKS, steps healed and capped (e11s01)."""
+    clean: list[dict[str, Any]] = []
+    if isinstance(tracks, list):
+        for track in tracks[:NUM_TRACKS]:
+            if not isinstance(track, dict):
+                track = {}
+            steps = track.get("steps", [])
+            if not isinstance(steps, list):
+                steps = []
+            clean.append(
+                {
+                    "target_id": track.get("target_id"),
+                    "base_address": track.get("base_address", ""),
+                    "steps": [_sanitize_step(s) for s in steps[:NUM_STEPS]],
+                }
+            )
+    return clean
+
+
+def _sanitize_audio_state(audio: Any) -> dict[str, Any]:
+    """Heal the audio section: band values clamped to their defaults (e11s01)."""
+    if not isinstance(audio, dict):
+        audio = {}
+    raw_bands = audio.get("bands", {})
+    if not isinstance(raw_bands, dict):
+        raw_bands = {}
+    bands: dict[str, dict[str, Any]] = {}
+    for band_id, default_range in BAND_DEFAULT_RANGES.items():
+        band = raw_bands.get(str(band_id), {})
+        if not isinstance(band, dict):
+            band = {}
+        bands[str(band_id)] = {
+            "enabled": bool(band.get("enabled", False)),
+            "start": _to_float(band.get("start"), default_range[0]),
+            "end": _to_float(band.get("end"), default_range[1]),
+            "min": _to_float(band.get("min"), 0.0),
+            "max": _to_float(band.get("max"), 1.0),
+        }
+    return {
+        "device": str(audio.get("device", "")),
+        "lowpass": bool(audio.get("lowpass", True)),
+        "bands": bands,
+    }
+
+
+def _sanitize_project_state(raw: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a loaded project document into the capture shape (e11s01)."""
+    theme = raw.get("theme")
+    if not isinstance(theme, dict):
+        theme = {"preset": "scuro", "colors": copy.deepcopy(DEFAULT_PALETTE)}
+    else:
+        preset = str(theme.get("preset", "scuro"))
+        if preset not in THEME_PRESET_LABELS:
+            preset = "scuro"
+        palette = theme.get("colors")
+        if not isinstance(palette, dict):
+            palette = copy.deepcopy(DEFAULT_PALETTE)
+        theme = {"preset": preset, "colors": _sanitize_palette(palette)}
+    layout = raw.get("layout")
+    if not isinstance(layout, dict) or not isinstance(layout.get("windows"), list):
+        layout = {"windows": []}
+    seq = raw.get("sequencer")
+    if not isinstance(seq, dict):
+        seq = {}
+    beat = seq.get("beat_source")
+    return {
+        "layout": {"windows": layout["windows"]},
+        "theme": theme,
+        "sequencer": {
+            "beat_source": beat if beat in BEAT_SOURCE_LABELS else BEAT_SOURCE_ANALYSIS,
+            "manual_bpm": _to_float(seq.get("manual_bpm"), 120.0),
+            "tracks": _sanitize_tracks(seq.get("tracks")),
+            "audio": _sanitize_audio_state(seq.get("audio")),
+        },
+    }
+
+
+def remember_recent_project(cfg: dict[str, Any], path: str) -> list[str]:
+    """Insert a project path at the front of the recent list (dedupe + cap) (e11s02)."""
+    recent = cfg.setdefault("projects", {}).setdefault("recent", [])
+    if path in recent:
+        recent.remove(path)
+    recent.insert(0, path)
+    del recent[RECENT_PROJECTS_MAX:]
+    return recent
+
+
+def recent_project_paths(cfg: dict[str, Any]) -> list[str]:
+    """The recent project list with entries whose files no longer exist pruned (e11s02)."""
+    return [p for p in cfg.get("projects", {}).get("recent", []) if os.path.exists(p)]
+
+
+def should_restore_last_project_on_boot(cfg: dict[str, Any]) -> bool:
+    """Whether boot should re-apply the most recent project (default True) (e11s02)."""
+    return bool(cfg.get("projects", {}).get("restore_last_on_boot", True))
+
+
+def on_restore_project_boot_toggle(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Settings 'Restore last project at startup' checkbox: persist the flag (e11s02)."""
     cfg = load_config()
-    cfg["layout"]["windows"] = snapshot_window_layout()
+    cfg.setdefault("projects", {})["restore_last_on_boot"] = bool(app_data)
     save_config(cfg)
 
 
-def restore_layout_from_config(
-    sender: Any = None, app_data: Any = None, user_data: Any = None
-) -> None:
-    """Settings 'Restore layout': re-apply the saved layout from the config."""
+# --- e11s03: viSeq menu flows (Open / Last / Save / Exit + file dialogs) ---
+def _ensure_project_extension(path: str) -> str:
+    """Append the .viseq extension when the chosen name has none (e11s03)."""
+    if path.lower().endswith(PROJECT_FILE_EXTENSION):
+        return path
+    return f"{path}{PROJECT_FILE_EXTENSION}"
+
+
+def save_project_file(path: str) -> bool:
+    """Capture + write a project, then remember it; False + logged on failure (e11s03)."""
+    path = _ensure_project_extension(path)
+    if not save_project_to_file(path, capture_project_state()):
+        return False
     cfg = load_config()
-    apply_window_layout(cfg["layout"]["windows"])
-
-
-def should_restore_layout_on_boot(cfg: dict[str, Any]) -> bool:
-    """Whether boot should re-apply the saved layout (default True when unset)."""
-    return bool(cfg["layout"].get("restore_on_boot", True))
-
-
-def on_restore_layout_boot_toggle(
-    sender: Any = None, app_data: Any = None, user_data: Any = None
-) -> None:
-    """Settings 'Restore at startup' checkbox: persist the flag."""
-    cfg = load_config()
-    cfg["layout"]["restore_on_boot"] = bool(app_data)
+    remember_recent_project(cfg, path)
     save_config(cfg)
+    rebuild_last_project_menu()
+    return True
+
+
+def open_project_file(path: str) -> bool:
+    """Load + apply a project, sync the fallback theme, remember it (e11s03)."""
+    state = load_project_file(path)
+    if state is None:
+        return False
+    apply_project_state(state)
+    cfg = load_config()
+    cfg["theme"] = state["theme"]
+    remember_recent_project(cfg, path)
+    save_config(cfg)
+    rebuild_last_project_menu()
+    return True
+
+
+def rebuild_last_project_menu() -> None:
+    """Rebuild the Last-project submenu from the recent list (e11s03)."""
+    if not dpg.does_item_exist("menu_last_project"):
+        return
+    dpg.delete_item("menu_last_project", children_only=True)
+    recent = recent_project_paths(load_config())
+    if not recent:
+        dpg.add_menu_item(label="No recent projects", enabled=False, parent="menu_last_project")
+        return
+    for path in recent:
+        dpg.add_menu_item(
+            label=os.path.basename(path),
+            callback=open_recent_project,
+            user_data=path,
+            parent="menu_last_project",
+        )
+
+
+def open_recent_project(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Last-project submenu entry -> open that project file (e11s03)."""
+    if isinstance(user_data, str):
+        open_project_file(user_data)
+
+
+def _recreate_project_dialog(tag: str, callback: Any, default_filename: str | None) -> None:
+    """(Re)create one project file dialog with .viseq/.* filters, then show it (e13s02).
+
+    DPG's file dialog shows only directories when no extension filters exist;
+    recreating on every show guarantees a fresh dialog whose default path was
+    just created by the caller.
+    """
+    if dpg.does_item_exist(tag):
+        dpg.delete_item(tag)
+    kwargs: dict[str, Any] = {
+        "tag": tag,
+        "show": False,
+        "width": 480,
+        "height": 360,
+        "callback": callback,
+        "default_path": PROJECTS_DIR,
+        "modal": True,
+    }
+    if default_filename:
+        kwargs["default_filename"] = default_filename
+    with dpg.file_dialog(**kwargs):
+        dpg.add_file_extension(".viseq")
+        dpg.add_file_extension(".*")
+        dpg.add_file_extension("")  # #2080 defensive: some systems hide files with .* only
+    dpg.show_item(tag)
+
+
+def show_open_project_dialog() -> None:
+    """Show the Open-project file dialog, defaulting to the projects folder (e11s03, e13s02)."""
+    os.makedirs(PROJECTS_DIR, exist_ok=True)
+    _recreate_project_dialog("open_project_dialog", on_open_project_picked, None)
+
+
+def show_save_project_dialog() -> None:
+    """Show the Save-project file dialog, defaulting to the projects folder (e11s03, e13s02)."""
+    os.makedirs(PROJECTS_DIR, exist_ok=True)
+    _recreate_project_dialog("save_project_dialog", on_save_project_picked, "project.viseq")
+
+
+def on_open_project_picked(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Open-dialog result -> open the chosen project file (e11s03)."""
+    path = app_data.get("file_path_name") if isinstance(app_data, dict) else None
+    if path:
+        open_project_file(path)
+
+
+def on_save_project_picked(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Save-dialog result -> save a project, forcing the .viseq extension (e11s03)."""
+    path = app_data.get("file_path_name") if isinstance(app_data, dict) else None
+    if path:
+        save_project_file(path)
+
+
+def exit_app(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """viSeq > Exit: close the application (e11s03)."""
+    dpg.stop_dearpygui()
 
 
 def apply_boot_config() -> None:
-    """Boot: apply the persisted theme and (optionally) the saved window layout (e06)."""
+    """Boot: apply the fallback theme, then restore the last project when flagged (e11s04)."""
     cfg = load_config()
     midi_init_from_config(cfg)  # e09: MIDI control mirrors (enabled, port, bindings)
     _apply_theme_config(cfg["theme"])
-    if dpg.does_item_exist("cb_restore_layout_boot"):
-        dpg.set_value("cb_restore_layout_boot", cfg["layout"]["restore_on_boot"])
-    if should_restore_layout_on_boot(cfg):
-        apply_window_layout(cfg["layout"]["windows"])
+    if dpg.does_item_exist("cb_restore_project_boot"):
+        dpg.set_value("cb_restore_project_boot", cfg["projects"]["restore_last_on_boot"])
+    if should_restore_last_project_on_boot(cfg):
+        recent = recent_project_paths(cfg)
+        if recent:
+            state = load_project_file(recent[0])
+            if state is not None:
+                apply_project_state(state)
 
 
 def enqueue_set_value(tag: str, value: Any) -> None:
@@ -3838,7 +4239,7 @@ with dpg.window(
                 callback=on_band_change,
                 user_data=band_id,
             )
-            dpg.add_text("—", tag=f"band{band_id}_value_text", color=(230, 230, 120, 255))
+            dpg.add_text("-", tag=f"band{band_id}_value_text", color=(230, 230, 120, 255))
     with dpg.group(horizontal=True):
         dpg.add_checkbox(
             label="Enable BPM Analysis (Essentia)",
@@ -3854,8 +4255,19 @@ with dpg.window(
 
 # WINDOW 3: SETTINGS (hidden; opened from the menubar "Settings" entry)
 with dpg.window(
-    label="Settings", width=340, height=320, pos=(370, 820), tag="settings_window", show=False
+    label="General", width=340, height=320, pos=(370, 820), tag="settings_window", show=False
 ):
+    # e11s04: Project section first — restore-last-project-at-boot replaces the
+    # removed Windows layout save/restore section.
+    themed_text("Project", slot="text")
+    dpg.add_separator()
+    dpg.add_checkbox(
+        label="Restore last project at startup",
+        tag="cb_restore_project_boot",
+        default_value=True,
+        callback=on_restore_project_boot_toggle,
+    )
+    dpg.add_spacer(height=8)
     themed_text("OSC", slot="text")
     dpg.add_separator()
     dpg.add_text("1. Setup Client (to viOSC):")
@@ -3877,21 +4289,6 @@ with dpg.window(
 
     with dpg.group(tag="vimix_raw_group"):
         pass
-
-    # --- Windows section (e06s01): window layout save/restore ---
-    dpg.add_spacer(height=8)
-    themed_text("Windows", slot="text")
-    dpg.add_separator()
-    with dpg.group(horizontal=True):
-        dpg.add_button(label="Save layout", callback=save_layout_to_config, width=110)
-        dpg.add_button(label="Restore layout", callback=restore_layout_from_config, width=130)
-    dpg.add_checkbox(
-        label="Restore at startup",
-        tag="cb_restore_layout_boot",
-        default_value=True,
-        callback=on_restore_layout_boot_toggle,
-    )
-    dpg.add_spacer(height=8)
 
     # --- Tema section (e06s02): preset combo + five custom color pickers ---
     themed_text("Theme", slot="text")
@@ -3928,14 +4325,12 @@ with (
     pass
 
 # WINDOW 5: OSC LOGS (hidden; opened from the menubar "Show" > "Logs")
-with dpg.window(
-    label="OSC Logs", width=950, height=150, pos=(720, 820), tag="logs_window", show=False
-):
+with dpg.window(label="Logs", width=950, height=150, pos=(720, 820), tag="logs_window", show=False):
     dpg.add_text("Waiting for OSC traffic...", tag="osc_log_text")
 
 # WINDOW 6: HELP / ABOUT (hidden; opened from the menubar "Help", re-centered on open, e08)
 with dpg.window(
-    label="Help",
+    label="Info",
     width=HELP_WINDOW_WIDTH,
     height=HELP_WINDOW_HEIGHT,
     pos=(0, 0),
@@ -3950,7 +4345,7 @@ with dpg.window(
             # DPG 2.3.1: bind_item_font(item, font); bind_font() only takes a global font.
             dpg.bind_item_font("help_logo_text", _help_mono_font)
     dpg.add_spacer(height=6)
-    themed_text("viSeq — Audio-Reactive VJ Controller for Vimix", slot="text_bright")
+    themed_text("viSeq - Audio-Reactive VJ Controller for Vimix", slot="text_bright")
     dpg.add_separator()
     themed_text(f"Version: {APP_VERSION}", slot="text")
     themed_text("License: GPL-3.0", slot="text")
@@ -4020,13 +4415,26 @@ threading.Thread(target=thumbnail_decoder_worker, daemon=True).start()
 dpg.create_viewport(title="viSeq - Audio-Reactive VJ Controller", width=1700, height=1080)
 apply_boot_config()  # e06: apply the saved theme + (optionally) the saved window layout
 with dpg.viewport_menu_bar():
-    with dpg.menu(label="Monitor"):
+    with dpg.menu(label="viSeq"):  # e11s03: first menubar menu — project file flows
+        dpg.add_menu_item(label="Open project", callback=show_open_project_dialog)
+        with dpg.menu(label="Last project", tag="menu_last_project"):
+            pass  # children rebuilt by rebuild_last_project_menu() (boot + after every save/open)
+        dpg.add_separator()
+        dpg.add_menu_item(label="Save project", callback=show_save_project_dialog)
+        dpg.add_menu_item(label="Exit", callback=exit_app)
+    with dpg.menu(label="Windows"):  # e12s01: window management consolidated here
         dpg.add_menu_item(label="New Monitor Player", callback=new_monitor_player)
-    with dpg.menu(label="Show"):
-        dpg.add_menu_item(label="Logs", callback=show_logs_window)
-    dpg.add_menu_item(label="Settings", callback=show_settings_window)
-    dpg.add_menu_item(label="MIDI", callback=show_midi_window)
-    dpg.add_menu_item(label="Help", callback=show_help_window)
+        dpg.add_menu_item(label="Show Logs", callback=show_logs_window)
+        dpg.add_menu_item(label="Show Info", callback=show_help_window)
+    with dpg.menu(label="Settings"):  # e12s01: config panels under one menu
+        dpg.add_menu_item(label="General", callback=show_settings_window)
+        dpg.add_menu_item(label="MIDI", callback=show_midi_window)
+
+# e11s03/e13s02: project file dialogs are created ON DEMAND by
+# show_open_project_dialog / show_save_project_dialog (_recreate_project_dialog)
+# with .viseq/.* filters — DPG shows only directories without extension filters,
+# and a fresh dialog guarantees the default path exists.
+rebuild_last_project_menu()  # e11s03: populate the Last-project submenu for boot
 dpg.setup_dearpygui()
 dpg.show_viewport()
 autostart_osc()  # boot: auto-connect OSC client + start listening server (no manual clicks)

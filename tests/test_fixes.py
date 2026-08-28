@@ -19,6 +19,7 @@ Run:  .venv/bin/python -m pytest tests/ -q
 # ModuleType model cannot express that, so these two codes are disabled for
 # this harness file only. viseq.py itself is fully type-checked.
 
+import copy
 import io
 import json
 import os
@@ -313,6 +314,23 @@ band_rect_tags = {
     if n == "draw_rectangle" and str(kw.get("tag", "")).startswith("band")
 }
 
+# e11s04: settings Project section (restore-last-project checkbox), captured
+# before any calls-list clears; the order marker proves the section sits above OSC.
+import_time_project_restore_cb = [
+    kw
+    for n, a, kw in dpg.calls
+    if n == "add_checkbox" and kw.get("tag") == "cb_restore_project_boot"
+]
+import_time_project_cb_order = [
+    kw.get("tag")
+    for n, a, kw in dpg.calls
+    if (n == "add_checkbox" and kw.get("tag") == "cb_restore_project_boot")
+    or (n == "add_input_text" and kw.get("tag") == "viosc_ip")
+]
+
+# e11s03: project file dialogs, captured before any calls-list clears
+import_time_file_dialogs = [kw for n, a, kw in dpg.calls if n == "file_dialog"]
+
 # e06: settings-window layout/theme sections, captured before any calls-list clears
 import_time_settings_buttons = [
     kw
@@ -345,6 +363,60 @@ beat_checkbox_tags = {
     for n, a, kw in dpg.calls
     if n == "add_checkbox" and str(kw.get("tag", "")).startswith("cb_beat_")
 }
+
+
+# --- e11 regression: isolate the suite from real user state. The import-time
+# apply_boot_config restores the last saved project when one exists (the user's
+# real projects/ dir + config), which mutates tracks_data, palette, beat source,
+# etc. The suite must run against pristine module defaults, not the user's last
+# session (F.I.R.S.T independence). Runs once, after the import-time captures.
+def _fresh_tracks_data() -> list[dict]:
+    """Pristine tracks_data, matching the module import-time construction."""
+    tracks = []
+    for _ in range(viseq.NUM_TRACKS):
+        steps = []
+        for _ in range(viseq.NUM_STEPS):
+            steps.append(
+                {
+                    "active": False,
+                    "type": "NONE",
+                    "v1": 0.0,
+                    "v2": 1.0,
+                    "frames": 4,
+                    "msgs": 1,
+                    "color": [1.0, 1.0, 1.0],
+                    "last_rand_v1": 0.0,
+                    "last_rand_seek": 0.0,
+                    "last_rand_color": [0, 0, 0],
+                }
+            )
+        tracks.append(
+            {
+                "target_id": None,
+                "base_address": "",
+                "active_fade": {"active": False},
+                "steps": steps,
+            }
+        )
+    return tracks
+
+
+def _reset_live_state() -> None:
+    """Restore the sequencer/theme globals to pristine module defaults."""
+    viseq.current_step = -1
+    viseq.is_playing = False
+    viseq.phase_nudge = 0.0
+    viseq.beat_source = viseq.BEAT_SOURCE_ANALYSIS
+    viseq.current_bpm = 120.0
+    viseq.lowpass_enabled = True
+    viseq.bands_enabled = {1: False, 2: False, 3: False}
+    viseq.active_palette = copy.deepcopy(viseq.DEFAULT_PALETTE)
+    viseq.sync_event_seq.clear()
+    viseq.sync_event_beat.clear()
+    viseq.tracks_data[:] = _fresh_tracks_data()
+
+
+_reset_live_state()
 beat_led_tags = {
     kw.get("tag")
     for n, a, kw in dpg.calls
@@ -872,7 +944,7 @@ def test_settings_window_hidden_closable():
     w = import_time_windows.get("settings_window")
     assert w, "settings window must be tagged settings_window"
     assert w.get("show") is False, "settings window must be hidden by default"
-    assert w.get("label") == "Settings"
+    assert w.get("label") == "General"
     assert not w.get("no_close"), "settings window must be closable with X"
 
 
@@ -883,12 +955,14 @@ def test_logs_window_hidden_closable():
     assert not w.get("no_close"), "logs window must be closable with X"
 
 
-def test_menubar_show_menu_and_settings_entry():
-    assert any(kw.get("label") == "Show" for kw in import_time_menus), "Show menu must exist"
+def test_menubar_windows_menu_and_settings_menu():
+    # e12s01: Show/Monitor are gone; the Windows menu hosts Show Logs, the
+    # Settings menu hosts General.
+    assert not any(kw.get("label") == "Show" for kw in import_time_menus), "Show menu must be gone"
     items = {kw.get("label"): kw.get("callback") for kw in import_time_menu_items}
-    assert items.get("Logs") == viseq.show_logs_window, "Show > Logs must open the logs window"
-    assert items.get("Settings") == viseq.show_settings_window, (
-        "Settings menubar entry must open the settings window"
+    assert items.get("Show Logs") == viseq.show_logs_window, "Windows > Show Logs must open logs"
+    assert items.get("General") == viseq.show_settings_window, (
+        "Settings > General must open settings"
     )
 
 
@@ -1570,8 +1644,8 @@ def test_apply_window_layout_sets_geometry_and_visibility(monkeypatch):
 def test_load_config_missing_file_returns_defaults(monkeypatch):
     monkeypatch.setattr(viseq, "CONFIG_PATH", "/nonexistent/viseq_config.json")
     cfg = viseq.load_config()
-    assert cfg["layout"]["restore_on_boot"] is True
-    assert cfg["layout"]["windows"] == []
+    assert cfg["projects"]["recent"] == []
+    assert cfg["projects"]["restore_last_on_boot"] is True
     assert cfg["theme"]["preset"] == "scuro"
     assert cfg["theme"]["colors"]["window_bg"] == list(viseq.DEFAULT_PALETTE["window_bg"])
 
@@ -1581,79 +1655,27 @@ def test_load_config_corrupt_file_returns_defaults(monkeypatch, tmp_path):
     p.write_text("{ not valid json !!!")
     monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
     cfg = viseq.load_config()
-    assert cfg["layout"]["restore_on_boot"] is True, "corrupt config must fall back to defaults"
+    assert cfg["projects"]["restore_last_on_boot"] is True, (
+        "corrupt config must fall back to defaults"
+    )
 
 
 def test_save_then_load_config_round_trip(monkeypatch, tmp_path):
     p = tmp_path / "config.json"
     monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
     cfg = viseq.load_config()
-    cfg["layout"]["restore_on_boot"] = False
+    cfg["projects"]["restore_last_on_boot"] = False
     cfg["theme"]["preset"] = "chiaro"
     viseq.save_config(cfg)
     loaded = viseq.load_config()
-    assert loaded["layout"]["restore_on_boot"] is False
+    assert loaded["projects"]["restore_last_on_boot"] is False
     assert loaded["theme"]["preset"] == "chiaro"
 
 
-def test_should_restore_layout_on_boot_defaults_true(monkeypatch):
-    monkeypatch.setattr(viseq, "CONFIG_PATH", "/nonexistent/viseq_config.json")
-    cfg = viseq.load_config()
-    assert viseq.should_restore_layout_on_boot(cfg) is True
-    cfg["layout"]["restore_on_boot"] = False
-    assert viseq.should_restore_layout_on_boot(cfg) is False
-
-
-def test_save_layout_to_config_persists_snapshot(monkeypatch, tmp_path):
-    p = tmp_path / "config.json"
-    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
-    monkeypatch.setattr(dpg, "get_item_pos", lambda tag: [7, 7])
-    monkeypatch.setattr(dpg, "get_item_width", lambda tag: 111)
-    monkeypatch.setattr(dpg, "get_item_height", lambda tag: 222)
-    monkeypatch.setattr(dpg, "is_item_shown", lambda tag: True)
-    viseq.save_layout_to_config()
-    cfg = viseq.load_config()
-    assert cfg["layout"]["windows"], "the layout snapshot must persist"
-    for r in cfg["layout"]["windows"]:
-        assert set(r.keys()) == {"tag", "shown", "pos", "size"}
-
-
-def test_restore_layout_from_config_applies(monkeypatch, tmp_path):
-    p = tmp_path / "config.json"
-    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
-    cfg = {
-        "layout": {
-            "restore_on_boot": True,
-            "windows": [{"tag": "logs_window", "shown": True, "pos": [5, 6], "size": [700, 200]}],
-        },
-        "theme": {"preset": "scuro", "colors": viseq.DEFAULT_PALETTE},
-    }
-    p.write_text(json.dumps(cfg))
-    dpg.calls.clear()
-    viseq.restore_layout_from_config()
-    assert any(n == "show_item" and a == ("logs_window",) for n, a, kw in dpg.calls)
-    assert any(n == "set_item_pos" and a == ("logs_window", [5, 6]) for n, a, kw in dpg.calls)
-
-
-def test_restore_layout_boot_toggle_persists(monkeypatch, tmp_path):
-    p = tmp_path / "config.json"
-    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
-    viseq.on_restore_layout_boot_toggle(None, False)
-    cfg = viseq.load_config()
-    assert cfg["layout"]["restore_on_boot"] is False
-    viseq.on_restore_layout_boot_toggle(None, True)
-    cfg = viseq.load_config()
-    assert cfg["layout"]["restore_on_boot"] is True
-
-
-def test_settings_window_has_windows_section():
-    labels = [kw.get("label") for kw in import_time_settings_buttons]
-    assert "Save layout" in labels, "Save layout button must exist"
-    assert "Restore layout" in labels, "Restore layout button must exist"
-    assert import_time_restore_checkbox, "Restore at startup checkbox must exist"
-    cb = import_time_restore_checkbox[0]
-    assert cb.get("default_value") is True, "restore-at-boot must default on"
-    assert cb.get("callback") == viseq.on_restore_layout_boot_toggle
+# e11s02: the legacy layout config tests (should_restore_layout_on_boot,
+# save_layout_to_config, restore_layout_from_config, restore-layout toggle) were
+# removed — the layout save/restore buttons die with the settings Windows section
+# in e11s04; config coverage moved to the projects flag tests above.
 
 
 # ---------- e06s02: theming ----------
@@ -1792,7 +1814,10 @@ def test_on_theme_color_derives_from_edits_and_persists(monkeypatch, tmp_path):
     viseq.apply_palette(viseq.DEFAULT_PALETTE)
 
 
-def test_boot_applies_saved_theme_and_layout(monkeypatch, tmp_path):
+def test_boot_applies_saved_theme_and_skips_legacy_layout(monkeypatch, tmp_path):
+    # e11s02: the legacy layout block no longer survives load_config, so boot must
+    # apply the theme and skip the window layout (e11s04 replaces it with
+    # restore-last-project-at-boot).
     p = tmp_path / "config.json"
     p.write_text(
         json.dumps(
@@ -1811,10 +1836,9 @@ def test_boot_applies_saved_theme_and_layout(monkeypatch, tmp_path):
     dpg.calls.clear()
     viseq.apply_boot_config()
     assert viseq.active_palette == viseq.LIGHT_PALETTE
-    assert any(n == "show_item" and a == ("logs_window",) for n, a, kw in dpg.calls), (
-        "boot must restore the saved layout"
+    assert not any(n == "show_item" and a == ("logs_window",) for n, a, kw in dpg.calls), (
+        "the legacy layout block must not be restored once the schema drops it"
     )
-    assert dpg.values.get("cb_restore_layout_boot") is True
     viseq.apply_palette(viseq.DEFAULT_PALETTE)
 
 
@@ -2128,18 +2152,19 @@ def test_help_window_hidden_closable_not_in_layout():
     w = import_time_windows.get("help_window")
     assert w, "help window must be tagged help_window"
     assert w.get("show") is False, "help window must be hidden by default"
-    assert w.get("label") == "Help"
+    assert w.get("label") == "Info"
     assert not w.get("no_close"), "help window must be closable with X"
     assert "help_window" not in viseq.LAYOUT_WINDOW_TAGS, (
         "the About dialog must not join the layout save/restore tracking"
     )
 
 
-def test_menubar_help_entry_wired():
+def test_menubar_show_info_entry_wired():
     items = {kw.get("label"): kw.get("callback") for kw in import_time_menu_items}
-    assert items.get("Help") == viseq.show_help_window, (
-        "Help menubar entry must open the help window"
+    assert items.get("Show Info") == viseq.show_help_window, (
+        "Windows > Show Info must open the About window"
     )
+    assert "Help" not in items, "the old top-level Help entry is gone"
 
 
 def test_help_window_content():
@@ -2167,7 +2192,7 @@ def test_show_help_window_centers_and_shows(monkeypatch):
 
 # ---------- e08s02: version line + full English UI pass ----------
 def test_app_version_constant():
-    assert viseq.APP_VERSION == "1.1.0", "APP_VERSION must match the release-plan target"
+    assert viseq.APP_VERSION == "0.1.0", "APP_VERSION must match the release-plan target"
     assert isinstance(viseq.APP_VERSION, str)
 
 
@@ -3467,3 +3492,620 @@ def test_sequencer_beat_wait_is_polled():
     assert "continue" in fn.group(0), (
         "an idle poll must re-loop so a mode/stop change is re-evaluated"
     )
+
+
+# ---------- e11s01: project file core (capture/apply/io) ----------
+def _seed_project_ui_values():
+    """Seed the DpgStub value table with a known project-like UI state."""
+    dpg.values["manual_bpm_input"] = 132
+    dpg.values["combo_devices"] = "Mock In"
+    dpg.values["cb_lowpass"] = False
+    dpg.values["theme_preset"] = "Dark"
+    dpg.values["band1_enabled"] = True
+    dpg.values["band1_start"] = 0.0
+    dpg.values["band1_end"] = 0.33
+    dpg.values["band1_min"] = 0.0
+    dpg.values["band1_max"] = 1.0
+    dpg.values["band2_enabled"] = False
+    dpg.values["band3_enabled"] = False
+
+
+def _known_tracks():
+    return copy.deepcopy(viseq.tracks_data)
+
+
+def test_project_capture_includes_layout_theme_sequencer(monkeypatch):
+    """capture_project_state() snapshots layout + theme + full sequencer state."""
+    _seed_project_ui_values()
+    monkeypatch.setattr(
+        dpg, "get_item_pos", lambda tag: {"sequencer_window": [10, 10]}.get(tag, [0, 0])
+    )
+    monkeypatch.setattr(dpg, "get_item_width", lambda tag: 1050)
+    monkeypatch.setattr(dpg, "get_item_height", lambda tag: 800)
+    monkeypatch.setattr(dpg, "is_item_shown", lambda tag: True)
+
+    monkeypatch.setattr(viseq, "beat_source", viseq.BEAT_SOURCE_MANUAL)
+    monkeypatch.setattr(viseq, "active_palette", copy.deepcopy(viseq.DEFAULT_PALETTE))
+    viseq.active_palette["accent"] = [10, 20, 30]
+    tracks = _known_tracks()
+    tracks[0]["target_id"] = "media_42"
+    tracks[0]["base_address"] = "/vimix/media_42"
+    tracks[0]["steps"][3]["type"] = "AlphaV"
+    tracks[0]["steps"][3]["v1"] = 0.42
+    tracks[0]["steps"][3]["active"] = True
+    tracks[0]["steps"][3]["color"] = [0.9, 0.1, 0.5]
+    monkeypatch.setattr(viseq, "tracks_data", tracks)
+
+    state = viseq.capture_project_state()
+
+    assert state["layout"]["windows"], "layout section must carry the window records"
+    assert state["theme"]["preset"] == "scuro", "'Dark' combo label maps to the scuro key"
+    assert state["theme"]["colors"]["accent"] == [10, 20, 30]
+    assert state["sequencer"]["beat_source"] == viseq.BEAT_SOURCE_MANUAL
+    assert state["sequencer"]["manual_bpm"] == 132
+    step = state["sequencer"]["tracks"][0]["steps"][3]
+    assert step["type"] == "AlphaV"
+    assert step["v1"] == 0.42
+    assert step["active"] is True
+    assert step["color"] == [0.9, 0.1, 0.5]
+    assert "last_rand_v1" not in step, "runtime-only keys must not be persisted"
+    assert "last_rand_seek" not in step
+    assert "last_rand_color" not in step
+
+
+def test_project_capture_strips_runtime_state_and_records_audio(monkeypatch):
+    """Only persisted step keys survive; audio section mirrors the widgets."""
+    _seed_project_ui_values()
+    monkeypatch.setattr(viseq, "beat_source", viseq.BEAT_SOURCE_ANALYSIS)
+    monkeypatch.setattr(viseq, "active_palette", copy.deepcopy(viseq.DEFAULT_PALETTE))
+    state = viseq.capture_project_state()
+
+    persisted_keys = {"active", "type", "v1", "v2", "frames", "msgs", "color"}
+    for track in state["sequencer"]["tracks"]:
+        for step in track["steps"]:
+            assert set(step.keys()) == persisted_keys, "only persisted step keys may be saved"
+
+    audio = state["sequencer"]["audio"]
+    assert audio["device"] == "Mock In"
+    assert audio["lowpass"] is False
+    assert audio["bands"]["1"] == {
+        "enabled": True,
+        "start": 0.0,
+        "end": 0.33,
+        "min": 0.0,
+        "max": 1.0,
+    }
+    assert audio["bands"]["2"]["enabled"] is False
+    assert audio["bands"]["3"]["enabled"] is False
+
+
+def _project_state_fixture():
+    """A complete, valid project state dict (as capture_project_state would produce)."""
+    steps = [
+        {
+            "active": False,
+            "type": "NONE",
+            "v1": 0.0,
+            "v2": 1.0,
+            "frames": 4,
+            "msgs": 1,
+            "color": [1.0, 1.0, 1.0],
+        }
+        for _ in range(viseq.NUM_STEPS)
+    ]
+    steps[2]["type"] = "AlphaR"
+    steps[2]["active"] = True
+    return {
+        "layout": {
+            "windows": [
+                {"tag": "sequencer_window", "shown": True, "pos": [15, 25], "size": [900, 700]}
+            ]
+        },
+        "theme": {"preset": "chiaro", "colors": copy.deepcopy(viseq.DEFAULT_PALETTE)},
+        "sequencer": {
+            "beat_source": viseq.BEAT_SOURCE_MANUAL,
+            "manual_bpm": 128.0,
+            "tracks": [
+                {
+                    "target_id": "media_9",
+                    "base_address": "/vimix/media_9",
+                    "steps": copy.deepcopy(steps),
+                },
+                {"target_id": None, "base_address": "", "steps": copy.deepcopy(steps)},
+            ],
+            "audio": {
+                "device": "0: Mock In",
+                "lowpass": False,
+                "bands": {
+                    "1": {"enabled": True, "start": 0.0, "end": 0.33, "min": 0.0, "max": 1.0},
+                    "2": {"enabled": False, "start": 0.33, "end": 0.66, "min": 0.0, "max": 1.0},
+                    "3": {"enabled": False, "start": 0.66, "end": 1.0, "min": 0.0, "max": 1.0},
+                },
+            },
+        },
+    }
+
+
+def test_project_apply_restores_tracks_globals_and_widgets():
+    """apply_project_state() re-applies tracks, globals, widgets and layout."""
+    state = _project_state_fixture()
+    dpg.calls.clear()
+    dpg.values.clear()
+    viseq.apply_project_state(state)
+
+    assert viseq.beat_source == viseq.BEAT_SOURCE_MANUAL
+    assert viseq.current_bpm == 128.0
+    assert viseq.lowpass_enabled is False
+    assert viseq.tracks_data[0]["target_id"] == "media_9"
+    assert viseq.tracks_data[0]["base_address"] == "/vimix/media_9"
+    assert viseq.tracks_data[0]["steps"][2]["type"] == "AlphaR"
+    assert viseq.tracks_data[0]["steps"][2]["active"] is True
+    assert len(viseq.tracks_data[0]["steps"]) == viseq.NUM_STEPS
+    assert viseq.tracks_data[1]["target_id"] is None
+    assert viseq.bands_enabled[1] is True
+    assert viseq.bands_enabled[2] is False
+
+    assert dpg.values["manual_bpm_input"] == 128
+    assert dpg.values["cb_beat_manual_bpm"] is True
+    assert dpg.values["cb_beat_bpm_analysis"] is False
+    assert dpg.values["cb_lowpass"] is False
+    assert dpg.values["combo_devices"] == "0: Mock In"
+    assert dpg.values["band1_enabled"] is True
+    assert dpg.values["band1_start"] == 0.0
+    assert dpg.values["band1_max"] == 1.0
+    assert dpg.values["theme_preset"] == "Light"
+
+    assert any(
+        n == "set_item_pos" and a == ("sequencer_window", [15, 25]) for n, a, kw in dpg.calls
+    ), "the window layout must be re-applied"
+    assert any(n == "delete_item" and a == ("seq_slot_0",) for n, a, kw in dpg.calls), (
+        "the clip slot UI must be rebuilt"
+    )
+    assert any(n == "delete_item" and a == ("seq_cell_0_2",) for n, a, kw in dpg.calls), (
+        "the step cell UI must be rebuilt"
+    )
+
+
+def test_project_apply_tolerates_missing_sections_and_unknown_device():
+    """Missing sections and an unknown audio device must not crash the restore."""
+    state = _project_state_fixture()
+    state["sequencer"]["audio"]["device"] = "Ghost Device"
+    state["layout"] = {}
+    state["sequencer"].pop("manual_bpm")
+    dpg.calls.clear()
+    dpg.values.clear()
+    viseq.apply_project_state(state)  # must not raise
+
+    assert "combo_devices" not in dpg.values, "an unknown device must be skipped"
+    assert viseq.tracks_data[0]["steps"][2]["type"] == "AlphaR"
+
+
+def test_project_file_round_trip(tmp_path):
+    """save_project_to_file + load_project_file round-trip a state dict."""
+    path = str(tmp_path / "proj.viseq")
+    state = _project_state_fixture()
+    assert viseq.save_project_to_file(path, state) is True
+    loaded = viseq.load_project_file(path)
+    assert loaded is not None
+    assert loaded["sequencer"]["tracks"][0]["steps"][2]["type"] == "AlphaR"
+    assert loaded["theme"]["preset"] == "chiaro"
+    assert loaded["layout"]["windows"][0]["tag"] == "sequencer_window"
+
+
+def test_project_file_io_rejects_bad_input(tmp_path):
+    """Missing, wrong-format, wrong-version and corrupt files return None."""
+    missing = str(tmp_path / "nope.viseq")
+    assert viseq.load_project_file(missing) is None
+
+    bad_format = tmp_path / "bad.viseq"
+    bad_format.write_text(json.dumps({"format": "other", "version": 1}))
+    assert viseq.load_project_file(str(bad_format)) is None
+
+    bad_version = tmp_path / "old.viseq"
+    bad_version.write_text(json.dumps({"format": viseq.PROJECT_FORMAT, "version": 99}))
+    assert viseq.load_project_file(str(bad_version)) is None
+
+    corrupt = tmp_path / "corrupt.viseq"
+    corrupt.write_text("{ not json")
+    assert viseq.load_project_file(str(corrupt)) is None
+
+
+def test_project_sanitize_heals_partial_step_and_bad_beat_source():
+    """A hand-edited step loses keys -> defaults; a bad beat source falls back."""
+    raw = _project_state_fixture()
+    raw["sequencer"]["beat_source"] = "nonsense"
+    step = raw["sequencer"]["tracks"][0]["steps"][0]
+    step.pop("v1")
+    step.pop("frames")
+    step.pop("color")
+    step["type"] = "SeekR"
+    state = viseq._sanitize_project_state(raw)
+    assert state["sequencer"]["beat_source"] == viseq.BEAT_SOURCE_ANALYSIS
+    healed = state["sequencer"]["tracks"][0]["steps"][0]
+    assert healed["v1"] == 0.0
+    assert healed["frames"] == 4
+    assert healed["color"] == [1.0, 1.0, 1.0]
+    assert healed["active"] is False
+    assert healed["type"] == "SeekR", "present keys must survive the heal"
+
+
+def test_project_sanitize_drops_unknown_keys_and_heals_missing_sections():
+    """Unknown top-level keys drop; a missing theme falls back to defaults."""
+    raw = _project_state_fixture()
+    raw["format"] = viseq.PROJECT_FORMAT
+    raw["version"] = viseq.PROJECT_VERSION
+    raw["hacker_key"] = "x"
+    raw.pop("theme")
+    state = viseq._sanitize_project_state(raw)
+    assert set(state.keys()) == {"layout", "theme", "sequencer"}
+    assert state["theme"]["preset"] == "scuro"
+    assert state["theme"]["colors"]["accent"] == list(viseq.DEFAULT_PALETTE["accent"])
+
+
+def test_project_sanitize_heals_audio_section():
+    """Garbage band values and missing band configs heal to defaults."""
+    raw = _project_state_fixture()
+    raw["sequencer"]["audio"] = {"device": "X", "bands": {"1": {"enabled": True, "start": "abc"}}}
+    state = viseq._sanitize_project_state(raw)
+    audio = state["sequencer"]["audio"]
+    assert audio["device"] == "X"
+    assert audio["lowpass"] is True
+    assert audio["bands"]["1"]["start"] == 0.0, "garbage start heals to the default range start"
+    assert audio["bands"]["2"]["end"] == 0.66
+
+
+# ---------- e11s02: config integration (recent projects + restore flag) ----------
+def test_config_defaults_have_projects_section(monkeypatch):
+    monkeypatch.setattr(viseq, "CONFIG_PATH", "/nonexistent/viseq_config.json")
+    cfg = viseq.load_config()
+    assert cfg["projects"]["recent"] == []
+    assert cfg["projects"]["restore_last_on_boot"] is True
+    assert "layout" not in cfg, "the legacy layout key must be gone"
+
+
+def test_load_config_drops_legacy_layout_key(monkeypatch, tmp_path):
+    p = tmp_path / "config.json"
+    legacy = {
+        "layout": {"restore_on_boot": True, "windows": [{"tag": "x"}]},
+        "theme": {"preset": "scuro", "colors": viseq.DEFAULT_PALETTE},
+        "midi": {"enabled": False, "input_port": None, "bindings": []},
+    }
+    p.write_text(json.dumps(legacy))
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    cfg = viseq.load_config()
+    assert "layout" not in cfg, "legacy layout must not survive the load"
+    assert cfg["projects"]["recent"] == []
+
+
+def test_config_round_trip_preserves_projects(monkeypatch, tmp_path):
+    p = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    cfg = viseq.load_config()
+    cfg["projects"]["restore_last_on_boot"] = False
+    cfg["projects"]["recent"] = ["/tmp/a.viseq"]
+    viseq.save_config(cfg)
+    loaded = viseq.load_config()
+    assert loaded["projects"]["restore_last_on_boot"] is False
+    assert loaded["projects"]["recent"] == ["/tmp/a.viseq"]
+
+
+def test_remember_recent_project_dedupes_caps_and_orders():
+    """Most recent first, no duplicates, capped at RECENT_PROJECTS_MAX."""
+    cfg = {"projects": {"recent": [], "restore_last_on_boot": True}}
+    cfg["projects"]["recent"] = viseq.remember_recent_project(cfg, "/tmp/a.viseq")
+    cfg["projects"]["recent"] = viseq.remember_recent_project(cfg, "/tmp/b.viseq")
+    cfg["projects"]["recent"] = viseq.remember_recent_project(cfg, "/tmp/a.viseq")
+    assert cfg["projects"]["recent"] == ["/tmp/a.viseq", "/tmp/b.viseq"]
+    for i in range(6):
+        cfg["projects"]["recent"] = viseq.remember_recent_project(cfg, f"/tmp/p{i}.viseq")
+    assert len(cfg["projects"]["recent"]) == viseq.RECENT_PROJECTS_MAX
+    assert cfg["projects"]["recent"][0] == "/tmp/p5.viseq"
+
+
+def test_recent_project_paths_prunes_missing_files(tmp_path):
+    keep = tmp_path / "keep.viseq"
+    keep.write_text("{}")
+    cfg = {
+        "projects": {
+            "recent": [str(keep), str(tmp_path / "gone.viseq"), str(tmp_path / "also_gone.viseq")],
+            "restore_last_on_boot": True,
+        }
+    }
+    assert viseq.recent_project_paths(cfg) == [str(keep)]
+
+
+def test_restore_last_project_flag_defaults_and_toggle(monkeypatch, tmp_path):
+    monkeypatch.setattr(viseq, "CONFIG_PATH", "/nonexistent/viseq_config.json")
+    cfg = viseq.load_config()
+    assert viseq.should_restore_last_project_on_boot(cfg) is True
+    p = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    viseq.on_restore_project_boot_toggle(None, False)
+    cfg = viseq.load_config()
+    assert cfg["projects"]["restore_last_on_boot"] is False
+    viseq.on_restore_project_boot_toggle(None, True)
+    cfg = viseq.load_config()
+    assert cfg["projects"]["restore_last_on_boot"] is True
+
+
+# ---------- e11s03: viSeq menu ----------
+def test_viseq_menu_is_first_with_open_last_save_exit():
+    labels = [m.get("label") for m in import_time_menus]
+    assert labels[0] == "viSeq", "viSeq must be the first menubar menu"
+    assert labels[1:4] == ["Last project", "Windows", "Settings"], (
+        "viSeq must precede the Windows/Settings menus (e12s01)"
+    )
+    items = {kw.get("label"): kw.get("callback") for kw in import_time_menu_items}
+    assert items.get("Open project") == viseq.show_open_project_dialog
+    assert items.get("Save project") == viseq.show_save_project_dialog
+    assert items.get("Exit") == viseq.exit_app
+    assert any(m.get("tag") == "menu_last_project" for m in import_time_menus), (
+        "the Last project submenu must exist"
+    )
+
+
+def test_last_project_menu_shows_recent_files(monkeypatch, tmp_path):
+    proj = tmp_path / "set.viseq"
+    proj.write_text("{}")
+    monkeypatch.setattr(
+        viseq,
+        "load_config",
+        lambda: {"projects": {"recent": [str(proj)], "restore_last_on_boot": True}},
+    )
+    dpg.calls.clear()
+    viseq.rebuild_last_project_menu()
+    added = [kw for n, a, kw in dpg.calls if n == "add_menu_item"]
+    assert [kw.get("label") for kw in added] == ["set.viseq"]
+    assert any(kw.get("user_data") == str(proj) for kw in added)
+    assert all(kw.get("parent") == "menu_last_project" for kw in added)
+
+
+def test_last_project_menu_empty_shows_disabled_placeholder(monkeypatch):
+    monkeypatch.setattr(
+        viseq, "load_config", lambda: {"projects": {"recent": [], "restore_last_on_boot": True}}
+    )
+    dpg.calls.clear()
+    viseq.rebuild_last_project_menu()
+    added = [kw for n, a, kw in dpg.calls if n == "add_menu_item"]
+    assert added, "an empty list must still render a placeholder item"
+    assert added[0].get("label") == "No recent projects"
+    assert added[0].get("enabled") is False
+
+
+def test_project_flow_open_applies_remembers_and_syncs_theme(monkeypatch, tmp_path):
+    proj = tmp_path / "p.viseq"
+    state = _project_state_fixture()
+    assert viseq.save_project_to_file(str(proj), state) is True
+    cfg_path = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(cfg_path))
+    dpg.calls.clear()
+    assert viseq.open_project_file(str(proj)) is True
+    assert viseq.tracks_data[0]["steps"][2]["type"] == "AlphaR", "the project must be applied"
+    cfg = viseq.load_config()
+    assert cfg["projects"]["recent"] == [str(proj)], "the opened path must be remembered"
+    assert cfg["theme"]["preset"] == "chiaro", "the fallback theme must follow the project"
+    assert any(n == "delete_item" and a == ("menu_last_project",) for n, a, kw in dpg.calls), (
+        "the Last-project submenu must be rebuilt after an open"
+    )
+
+
+def test_project_flow_open_bad_file_returns_false(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(cfg_path))
+    assert viseq.open_project_file(str(tmp_path / "nope.viseq")) is False
+
+
+def test_project_flow_save_round_trips_and_remembers(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(cfg_path))
+    proj = str(tmp_path / "myproject")
+    dpg.calls.clear()
+    dpg.values.clear()
+    _seed_project_ui_values()
+    monkeypatch.setattr(viseq, "active_palette", copy.deepcopy(viseq.DEFAULT_PALETTE))
+    assert viseq.save_project_file(proj) is True
+    saved = f"{proj}.viseq"
+    assert os.path.exists(saved), "the .viseq extension must be appended"
+    loaded = viseq.load_project_file(saved)
+    assert loaded is not None, "the saved file must load back"
+    cfg = viseq.load_config()
+    assert cfg["projects"]["recent"] == [saved]
+    assert any(n == "delete_item" and a == ("menu_last_project",) for n, a, kw in dpg.calls)
+
+
+def test_project_flow_recent_entry_routes_to_open(monkeypatch, tmp_path):
+    proj = tmp_path / "p.viseq"
+    state = _project_state_fixture()
+    assert viseq.save_project_to_file(str(proj), state) is True
+    cfg_path = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(cfg_path))
+    dpg.calls.clear()
+    viseq.open_recent_project(None, None, str(proj))
+    assert viseq.tracks_data[0]["steps"][2]["type"] == "AlphaR"
+
+
+def test_project_dialog_save_callback_forces_extension(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(cfg_path))
+    dpg.calls.clear()
+    dpg.values.clear()
+    _seed_project_ui_values()
+    monkeypatch.setattr(viseq, "active_palette", copy.deepcopy(viseq.DEFAULT_PALETTE))
+    target = str(tmp_path / "pick")
+    viseq.on_save_project_picked(None, {"file_path_name": target}, None)
+    assert os.path.exists(f"{target}.viseq"), "the save callback must write a .viseq file"
+
+
+def test_project_dialog_open_callback_routes(monkeypatch, tmp_path):
+    proj = tmp_path / "p.viseq"
+    state = _project_state_fixture()
+    assert viseq.save_project_to_file(str(proj), state) is True
+    cfg_path = tmp_path / "config.json"
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(cfg_path))
+    dpg.calls.clear()
+    viseq.on_open_project_picked(None, {"file_path_name": str(proj)}, None)
+    assert viseq.tracks_data[0]["steps"][2]["type"] == "AlphaR", "the open callback must apply"
+
+
+def test_project_exit_app_stops_dearpygui():
+    dpg.calls.clear()
+    viseq.exit_app()
+    assert any(n == "stop_dearpygui" for n, a, kw in dpg.calls), "Exit must stop the app"
+
+
+def test_project_dialogs_created_on_demand_with_filters():
+    # e13s02: dialogs are NOT created at import; each show recreates them with
+    # the .viseq and .* filters (DPG shows only directories without filters).
+    assert not import_time_file_dialogs, "dialogs must be created on demand, not at import"
+    dpg.calls.clear()
+    viseq.show_open_project_dialog()
+    dialogs = [kw for n, a, kw in dpg.calls if n == "file_dialog"]
+    assert dialogs and dialogs[0].get("tag") == "open_project_dialog"
+    assert dialogs[0].get("default_path") == viseq.PROJECTS_DIR
+    exts = [
+        a[0] if a else kw.get("extension") for n, a, kw in dpg.calls if n == "add_file_extension"
+    ]
+    assert ".viseq" in exts, "the .viseq filter must be offered"
+    assert ".*" in exts, "the all-files filter must be offered"
+    assert any(n == "show_item" and a == ("open_project_dialog",) for n, a, kw in dpg.calls)
+    dpg.calls.clear()
+    viseq.show_open_project_dialog()
+    assert any(n == "delete_item" and a == ("open_project_dialog",) for n, a, kw in dpg.calls), (
+        "a second show must recreate the dialog"
+    )
+
+
+def test_project_save_dialog_default_filename_and_filters():
+    dpg.calls.clear()
+    viseq.show_save_project_dialog()
+    dialogs = [kw for n, a, kw in dpg.calls if n == "file_dialog"]
+    assert dialogs and dialogs[0].get("tag") == "save_project_dialog"
+    assert dialogs[0].get("default_filename") == "project.viseq"
+    exts = [
+        a[0] if a else kw.get("extension") for n, a, kw in dpg.calls if n == "add_file_extension"
+    ]
+    assert ".viseq" in exts and ".*" in exts
+
+
+# ---------- e11s04: settings restructure + boot restore ----------
+def test_settings_project_section_replaces_windows_section():
+    # the new restore-last-project checkbox exists, default ON, project callback
+    assert import_time_project_restore_cb, (
+        "the restore-last-project checkbox must exist in Settings"
+    )
+    cb = import_time_project_restore_cb[0]
+    assert cb.get("default_value") is True
+    assert cb.get("callback") == viseq.on_restore_project_boot_toggle
+    # the old windows widgets are gone
+    labels = [kw.get("label") for kw in import_time_settings_buttons]
+    assert "Save layout" not in labels, "the Save layout button must be gone"
+    assert "Restore layout" not in labels, "the Restore layout button must be gone"
+    assert not import_time_restore_checkbox, "the restore-layout checkbox must be gone"
+    # the project checkbox precedes the OSC section (first input of the OSC block)
+    assert import_time_project_cb_order.index("cb_restore_project_boot") < (
+        import_time_project_cb_order.index("viosc_ip")
+    ), "the Project section must sit above the OSC section"
+
+
+def _boot_cfg_fixture(recent, restore_flag):
+    return {
+        "theme": {"preset": "scuro", "colors": viseq.DEFAULT_PALETTE},
+        "midi": {"enabled": False, "input_port": None, "bindings": []},
+        "projects": {"recent": recent, "restore_last_on_boot": restore_flag},
+    }
+
+
+def test_boot_restores_last_project_when_flagged(monkeypatch, tmp_path):
+    proj = tmp_path / "p.viseq"
+    state = _project_state_fixture()
+    assert viseq.save_project_to_file(str(proj), state) is True
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps(_boot_cfg_fixture([str(proj)], True)))
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    monkeypatch.setattr(viseq, "tracks_data", _fresh_tracks_data())
+    dpg.calls.clear()
+    viseq.apply_boot_config()
+    assert viseq.tracks_data[0]["steps"][2]["type"] == "AlphaR", "the last project must be applied"
+    assert any(
+        n == "set_item_pos" and a == ("sequencer_window", [15, 25]) for n, a, kw in dpg.calls
+    ), "the project layout must be re-applied at boot"
+    assert dpg.values.get("cb_restore_project_boot") is True
+    assert dpg.values.get("theme_preset") == "Light", "the project theme must win at boot"
+
+
+def test_boot_skips_project_restore_when_flag_off(monkeypatch, tmp_path):
+    proj = tmp_path / "p.viseq"
+    state = _project_state_fixture()
+    assert viseq.save_project_to_file(str(proj), state) is True
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps(_boot_cfg_fixture([str(proj)], False)))
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    monkeypatch.setattr(viseq, "tracks_data", _fresh_tracks_data())
+    dpg.calls.clear()
+    viseq.apply_boot_config()
+    assert viseq.tracks_data[0]["steps"][2]["type"] == "NONE", (
+        "the project must NOT be applied when the flag is off"
+    )
+    assert not any(n == "delete_item" and a == ("seq_cell_0_2",) for n, a, kw in dpg.calls)
+    assert dpg.values.get("cb_restore_project_boot") is False
+
+
+def test_boot_without_recents_applies_theme_only(monkeypatch, tmp_path):
+    p = tmp_path / "config.json"
+    cfg = _boot_cfg_fixture([], True)
+    cfg["theme"] = {"preset": "chiaro", "colors": viseq.LIGHT_PALETTE}
+    p.write_text(json.dumps(cfg))
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    dpg.calls.clear()
+    viseq.apply_boot_config()
+    assert viseq.active_palette == viseq.LIGHT_PALETTE, "the fallback theme still applies"
+    assert not any(n == "delete_item" and a == ("seq_cell_0_2",) for n, a, kw in dpg.calls)
+
+
+# ---------- e12s01: menubar shell (viSeq | Windows | Settings) ----------
+def test_menubar_shell_windows_and_settings_menus():
+    labels = [m.get("label") for m in import_time_menus]
+    assert labels == ["viSeq", "Last project", "Windows", "Settings"], (
+        "the menubar must be exactly viSeq | Windows | Settings"
+    )
+    items = {kw.get("label"): kw.get("callback") for kw in import_time_menu_items}
+    assert items.get("New Monitor Player") == viseq.new_monitor_player
+    assert items.get("Show Logs") == viseq.show_logs_window
+    assert items.get("Show Info") == viseq.show_help_window
+    assert items.get("General") == viseq.show_settings_window
+    assert items.get("MIDI") == viseq.show_midi_window
+    assert not any(m.get("label") == "Monitor" for m in import_time_menus), (
+        "the Monitor menu must be gone"
+    )
+    assert not any(m.get("label") == "Show" for m in import_time_menus), (
+        "the Show menu must be gone"
+    )
+    assert "Help" not in items, "the Help entry moved to Windows > Show Info"
+    assert "Logs" not in items, "the Logs entry moved to Windows > Show Logs"
+    assert "Settings" not in items, "Settings is a menu now, not a bare item"
+
+
+# ---------- e13s01: window renames + glyph fix + version 0.1.0 ----------
+def test_window_labels_general_logs_info():
+    assert import_time_windows["settings_window"].get("label") == "General", (
+        "the Settings window must be titled General (e13s01)"
+    )
+    assert import_time_windows["logs_window"].get("label") == "Logs", (
+        "the OSC Logs window must be titled Logs (e13s01)"
+    )
+    assert import_time_windows["help_window"].get("label") == "Info", (
+        "the Help window must be titled Info (e13s01)"
+    )
+
+
+def test_no_em_dash_in_visible_ui_strings():
+    labels = [t for t in import_time_ui_labels if isinstance(t, str)]
+    texts = [t for t in import_time_texts if isinstance(t, str)]
+    joined = "\n".join(labels + texts)
+    assert "\u2014" not in joined, (
+        "U+2014 em dash renders as a fallback glyph in ProggyClean — use ASCII '-' (e13s01)"
+    )
+
+
+def test_app_version_is_0_1_0():
+    assert viseq.APP_VERSION == "0.1.0", "this is version 0.1 of viSeq (e13s01)"
