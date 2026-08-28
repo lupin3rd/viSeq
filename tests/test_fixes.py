@@ -944,7 +944,7 @@ def test_settings_window_hidden_closable():
     w = import_time_windows.get("settings_window")
     assert w, "settings window must be tagged settings_window"
     assert w.get("show") is False, "settings window must be hidden by default"
-    assert w.get("label") == "Settings"
+    assert w.get("label") == "General"
     assert not w.get("no_close"), "settings window must be closable with X"
 
 
@@ -2152,7 +2152,7 @@ def test_help_window_hidden_closable_not_in_layout():
     w = import_time_windows.get("help_window")
     assert w, "help window must be tagged help_window"
     assert w.get("show") is False, "help window must be hidden by default"
-    assert w.get("label") == "Help"
+    assert w.get("label") == "Info"
     assert not w.get("no_close"), "help window must be closable with X"
     assert "help_window" not in viseq.LAYOUT_WINDOW_TAGS, (
         "the About dialog must not join the layout save/restore tracking"
@@ -2192,7 +2192,7 @@ def test_show_help_window_centers_and_shows(monkeypatch):
 
 # ---------- e08s02: version line + full English UI pass ----------
 def test_app_version_constant():
-    assert viseq.APP_VERSION == "1.1.0", "APP_VERSION must match the release-plan target"
+    assert viseq.APP_VERSION == "0.1.0", "APP_VERSION must match the release-plan target"
     assert isinstance(viseq.APP_VERSION, str)
 
 

@@ -102,7 +102,8 @@ CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(CONFIG_DIR, "viseq_config.json")
 
 # viseq application version — single source of truth (matches specs/release-plan.yaml, e08s02).
-APP_VERSION: str = "1.1.0"
+# e13s01: this is the first real release of viSeq (user decision).
+APP_VERSION: str = "0.1.0"
 
 # Author's GitHub profile, shown as a link in the About window (e08s01, user request).
 GITHUB_URL: str = "https://github.com/lupin3rd"
@@ -4211,7 +4212,7 @@ with dpg.window(
                 callback=on_band_change,
                 user_data=band_id,
             )
-            dpg.add_text("—", tag=f"band{band_id}_value_text", color=(230, 230, 120, 255))
+            dpg.add_text("-", tag=f"band{band_id}_value_text", color=(230, 230, 120, 255))
     with dpg.group(horizontal=True):
         dpg.add_checkbox(
             label="Enable BPM Analysis (Essentia)",
@@ -4227,7 +4228,7 @@ with dpg.window(
 
 # WINDOW 3: SETTINGS (hidden; opened from the menubar "Settings" entry)
 with dpg.window(
-    label="Settings", width=340, height=320, pos=(370, 820), tag="settings_window", show=False
+    label="General", width=340, height=320, pos=(370, 820), tag="settings_window", show=False
 ):
     # e11s04: Project section first — restore-last-project-at-boot replaces the
     # removed Windows layout save/restore section.
@@ -4297,14 +4298,12 @@ with (
     pass
 
 # WINDOW 5: OSC LOGS (hidden; opened from the menubar "Show" > "Logs")
-with dpg.window(
-    label="OSC Logs", width=950, height=150, pos=(720, 820), tag="logs_window", show=False
-):
+with dpg.window(label="Logs", width=950, height=150, pos=(720, 820), tag="logs_window", show=False):
     dpg.add_text("Waiting for OSC traffic...", tag="osc_log_text")
 
 # WINDOW 6: HELP / ABOUT (hidden; opened from the menubar "Help", re-centered on open, e08)
 with dpg.window(
-    label="Help",
+    label="Info",
     width=HELP_WINDOW_WIDTH,
     height=HELP_WINDOW_HEIGHT,
     pos=(0, 0),
@@ -4319,7 +4318,7 @@ with dpg.window(
             # DPG 2.3.1: bind_item_font(item, font); bind_font() only takes a global font.
             dpg.bind_item_font("help_logo_text", _help_mono_font)
     dpg.add_spacer(height=6)
-    themed_text("viSeq — Audio-Reactive VJ Controller for Vimix", slot="text_bright")
+    themed_text("viSeq - Audio-Reactive VJ Controller for Vimix", slot="text_bright")
     dpg.add_separator()
     themed_text(f"Version: {APP_VERSION}", slot="text")
     themed_text("License: GPL-3.0", slot="text")
