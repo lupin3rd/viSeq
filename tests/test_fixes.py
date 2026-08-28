@@ -3924,3 +3924,56 @@ def test_settings_project_section_replaces_windows_section():
     assert import_time_project_cb_order.index("cb_restore_project_boot") < (
         import_time_project_cb_order.index("viosc_ip")
     ), "the Project section must sit above the OSC section"
+
+
+def _boot_cfg_fixture(recent, restore_flag):
+    return {
+        "theme": {"preset": "scuro", "colors": viseq.DEFAULT_PALETTE},
+        "midi": {"enabled": False, "input_port": None, "bindings": []},
+        "projects": {"recent": recent, "restore_last_on_boot": restore_flag},
+    }
+
+
+def test_boot_restores_last_project_when_flagged(monkeypatch, tmp_path):
+    proj = tmp_path / "p.viseq"
+    state = _project_state_fixture()
+    assert viseq.save_project_to_file(str(proj), state) is True
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps(_boot_cfg_fixture([str(proj)], True)))
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    dpg.calls.clear()
+    viseq.apply_boot_config()
+    assert viseq.tracks_data[0]["steps"][2]["type"] == "AlphaR", "the last project must be applied"
+    assert any(
+        n == "set_item_pos" and a == ("sequencer_window", [15, 25]) for n, a, kw in dpg.calls
+    ), "the project layout must be re-applied at boot"
+    assert dpg.values.get("cb_restore_project_boot") is True
+    assert dpg.values.get("theme_preset") == "Light", "the project theme must win at boot"
+
+
+def test_boot_skips_project_restore_when_flag_off(monkeypatch, tmp_path):
+    proj = tmp_path / "p.viseq"
+    state = _project_state_fixture()
+    assert viseq.save_project_to_file(str(proj), state) is True
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps(_boot_cfg_fixture([str(proj)], False)))
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    dpg.calls.clear()
+    viseq.apply_boot_config()
+    assert viseq.tracks_data[0]["steps"][2]["type"] == "NONE", (
+        "the project must NOT be applied when the flag is off"
+    )
+    assert not any(n == "delete_item" and a == ("seq_cell_0_2",) for n, a, kw in dpg.calls)
+    assert dpg.values.get("cb_restore_project_boot") is False
+
+
+def test_boot_without_recents_applies_theme_only(monkeypatch, tmp_path):
+    p = tmp_path / "config.json"
+    cfg = _boot_cfg_fixture([], True)
+    cfg["theme"] = {"preset": "chiaro", "colors": viseq.LIGHT_PALETTE}
+    p.write_text(json.dumps(cfg))
+    monkeypatch.setattr(viseq, "CONFIG_PATH", str(p))
+    dpg.calls.clear()
+    viseq.apply_boot_config()
+    assert viseq.active_palette == viseq.LIGHT_PALETTE, "the fallback theme still applies"
+    assert not any(n == "delete_item" and a == ("seq_cell_0_2",) for n, a, kw in dpg.calls)
