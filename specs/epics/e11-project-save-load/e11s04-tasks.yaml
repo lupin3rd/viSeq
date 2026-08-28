@@ -1,14 +1,14 @@
 # specs/epics/e11-project-save-load/e11s04-tasks.yaml
 story_id: e11s04
 title: "Settings restructure — 'Restore last project at startup' on top, Windows section removed, boot restore in apply_boot_config"
-status: failing
+status: passing
 bcps: 3
 tasks:
   - id: 1
     description: "RED: settings tests — cb_restore_project_boot default True + project callback; Save/Restore layout buttons and cb_restore_layout_boot gone; project section precedes OSC"
     verify: ".venv/bin/python -m pytest tests/ -q -k 'project_settings'"
     risk: P1
-    status: failing
+    status: passing
     allure:
       severity: high
       categories: ["unit", "viseq"]
@@ -16,7 +16,7 @@ tasks:
     description: "GREEN: settings window restructure (Project section on top, Windows section removed)"
     verify: ".venv/bin/python -m pytest tests/ -q -k 'project_settings'"
     risk: P1
-    status: failing
+    status: passing
     allure:
       severity: high
       categories: ["unit", "viseq"]
@@ -24,7 +24,7 @@ tasks:
     description: "RED: boot-restore tests — flag on + recent file applies state; flag off -> theme only; no recents -> theme only"
     verify: ".venv/bin/python -m pytest tests/ -q -k 'boot_project'"
     risk: P1
-    status: failing
+    status: passing
     allure:
       severity: high
       categories: ["unit", "viseq"]
@@ -32,7 +32,7 @@ tasks:
     description: "GREEN: apply_boot_config rewrite + delete save_layout_to_config / restore_layout_from_config / should_restore_layout_on_boot / on_restore_layout_boot_toggle"
     verify: ".venv/bin/python -m pytest tests/ -q -k 'boot_project'"
     risk: P1
-    status: failing
+    status: passing
     allure:
       severity: high
       categories: ["unit", "viseq"]
@@ -40,7 +40,7 @@ tasks:
     description: "Update test_settings_window_has_windows_section -> project section assertions; full suite green"
     verify: ".venv/bin/python -m pytest tests/ -q && .venv/bin/ruff check . && .venv/bin/mypy"
     risk: P2
-    status: failing
+    status: passing
     allure:
       severity: normal
       categories: ["unit", "viseq"]
