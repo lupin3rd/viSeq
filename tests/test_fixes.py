@@ -363,6 +363,60 @@ beat_checkbox_tags = {
     for n, a, kw in dpg.calls
     if n == "add_checkbox" and str(kw.get("tag", "")).startswith("cb_beat_")
 }
+
+
+# --- e11 regression: isolate the suite from real user state. The import-time
+# apply_boot_config restores the last saved project when one exists (the user's
+# real projects/ dir + config), which mutates tracks_data, palette, beat source,
+# etc. The suite must run against pristine module defaults, not the user's last
+# session (F.I.R.S.T independence). Runs once, after the import-time captures.
+def _fresh_tracks_data() -> list[dict]:
+    """Pristine tracks_data, matching the module import-time construction."""
+    tracks = []
+    for _ in range(viseq.NUM_TRACKS):
+        steps = []
+        for _ in range(viseq.NUM_STEPS):
+            steps.append(
+                {
+                    "active": False,
+                    "type": "NONE",
+                    "v1": 0.0,
+                    "v2": 1.0,
+                    "frames": 4,
+                    "msgs": 1,
+                    "color": [1.0, 1.0, 1.0],
+                    "last_rand_v1": 0.0,
+                    "last_rand_seek": 0.0,
+                    "last_rand_color": [0, 0, 0],
+                }
+            )
+        tracks.append(
+            {
+                "target_id": None,
+                "base_address": "",
+                "active_fade": {"active": False},
+                "steps": steps,
+            }
+        )
+    return tracks
+
+
+def _reset_live_state() -> None:
+    """Restore the sequencer/theme globals to pristine module defaults."""
+    viseq.current_step = -1
+    viseq.is_playing = False
+    viseq.phase_nudge = 0.0
+    viseq.beat_source = viseq.BEAT_SOURCE_ANALYSIS
+    viseq.current_bpm = 120.0
+    viseq.lowpass_enabled = True
+    viseq.bands_enabled = {1: False, 2: False, 3: False}
+    viseq.active_palette = copy.deepcopy(viseq.DEFAULT_PALETTE)
+    viseq.sync_event_seq.clear()
+    viseq.sync_event_beat.clear()
+    viseq.tracks_data[:] = _fresh_tracks_data()
+
+
+_reset_live_state()
 beat_led_tags = {
     kw.get("tag")
     for n, a, kw in dpg.calls
@@ -3979,34 +4033,3 @@ def test_boot_without_recents_applies_theme_only(monkeypatch, tmp_path):
     viseq.apply_boot_config()
     assert viseq.active_palette == viseq.LIGHT_PALETTE, "the fallback theme still applies"
     assert not any(n == "delete_item" and a == ("seq_cell_0_2",) for n, a, kw in dpg.calls)
-
-
-def _fresh_tracks_data():
-    """Pristine tracks_data, matching the module import-time construction (e11s04)."""
-    tracks = []
-    for _ in range(viseq.NUM_TRACKS):
-        steps = []
-        for _ in range(viseq.NUM_STEPS):
-            steps.append(
-                {
-                    "active": False,
-                    "type": "NONE",
-                    "v1": 0.0,
-                    "v2": 1.0,
-                    "frames": 4,
-                    "msgs": 1,
-                    "color": [1.0, 1.0, 1.0],
-                    "last_rand_v1": 0.0,
-                    "last_rand_seek": 0.0,
-                    "last_rand_color": [0, 0, 0],
-                }
-            )
-        tracks.append(
-            {
-                "target_id": None,
-                "base_address": "",
-                "active_fade": {"active": False},
-                "steps": steps,
-            }
-        )
-    return tracks

@@ -178,3 +178,13 @@ epics:
       - id: e11s04
         title: "Settings restructure — 'Restore last project at startup' on top, Windows section removed, boot restore in apply_boot_config"
         bcps: 3
+
+  - id: e12
+    slug: menu-shell
+    title: "Menubar shell: viSeq | Windows | Settings — Windows (New Monitor Player / Show Logs / Show Info), Settings (General / MIDI)"
+    wsjf: 40
+    baseline_bcps: 2
+    stories:
+      - id: e12s01
+        title: "Menubar restructure — Windows and Settings menus; Monitor/Show/top-level items removed"
+        bcps: 2
