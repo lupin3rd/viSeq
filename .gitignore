@@ -21,3 +21,13 @@ viseq_config.json
 
 # User project files (saved via viSeq > Save project)
 /projects/
+
+# Internal agent/spec/dev files — never published (user decision, kept local only)
+AGENTS.md
+CLAUDE.md
+CONVENTIONS.md
+specs/
+tests/
+pyproject.toml
+.pre-commit-config.yaml
+requirements-dev.txt

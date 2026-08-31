@@ -1,10 +1,8 @@
 import contextlib
 import copy
-import io
 import json
 import math
 import os
-import queue
 import random
 import threading
 import time
@@ -14,203 +12,213 @@ from typing import Any
 
 import dearpygui.dearpygui as dpg
 import essentia
-import essentia.standard as es
 import numpy as np
 import sounddevice as sd
 from PIL import Image
-from pythonosc import dispatcher, osc_server, udp_client
+from pythonosc import dispatcher, udp_client
+
+import viseqapp  # noqa: F401  scaffold hook (REFACTOR_LATEST.md commit 1): proves the package import path works at boot
+from viseqapp import mapper, state
+from viseqapp.audio import (
+    _set_band_variable,
+    apply_spectrum_agc,
+    audio_callback,
+    band_value_from_bars,
+    compute_spectrum_bars,
+    get_audio_snapshot,
+    lowpass_filter,
+    rhythm_extractor,
+)
+from viseqapp.config import _sanitize_palette, load_config, save_config
+from viseqapp.constants import (
+    BAND_BEAT_THRESHOLD,
+    BEAT_SOURCE_ANALYSIS,
+    BEAT_SOURCE_BAND1,
+    BEAT_SOURCE_LABELS,
+    BEAT_SOURCE_MANUAL,
+    BEAT_SOURCE_MIDI,
+    DEFAULT_MANUAL_BPM,
+    DEFAULT_PALETTE,
+    FRAME_SLEEP_ANIMATED,
+    FRAME_SLEEP_IDLE,
+    HELP_ASCII_LOGO,
+    HELP_LOGO_INDENT,
+    HELP_WINDOW_HEIGHT,
+    HELP_WINDOW_WIDTH,
+    LAYOUT_ALWAYS_HIDDEN_TAGS,
+    LAYOUT_WINDOW_TAGS,
+    LOG_HISTORY_LIMIT,
+    MAPPER_CARD_H,
+    MAPPER_CARD_STRIDE,
+    MAPPER_CARD_W,
+    MAPPER_THUMB_H,
+    MAPPER_THUMB_W,
+    MAPPER_WINDOW_HEIGHT,
+    MAPPER_WINDOW_WIDTH,
+    MEDIA_BADGE_H,
+    MEDIA_BADGE_W,
+    MEDIA_TILE_H,
+    MEDIA_TITLE_CHAR_PX,
+    MEDIA_TITLE_ELLIPSIS,
+    MEDIA_TITLE_MAX_LINES,
+    MEDIA_TITLE_WRAP,
+    MIDI_ACTION_BEAT_SOURCE,
+    MIDI_ACTION_MAPPER_MAPPING,
+    MIDI_ACTION_NUDGE_BACK,
+    MIDI_ACTION_NUDGE_FORWARD,
+    MIDI_ACTION_SEQ_TOGGLE,
+    MIDI_ACTION_TRACK_ASSIGN,
+    MIDI_ACTION_TRANSPORT_PLAY,
+    MIDI_ACTION_TRANSPORT_RESYNC,
+    MIDI_ACTION_TRANSPORT_TAP,
+    MIDI_CLOCK_PULSES_PER_BEAT,
+    MIDI_LEARN_TIMEOUT_SECONDS,
+    MONITOR_ALPHA_W,
+    MONITOR_DISC_R,
+    MONITOR_DISC_RPM,
+    MONITOR_DISC_SIZE,
+    MONITOR_OFFSET,
+    MONITOR_SEEK_W,
+    MONITOR_SPEED_TEXT_SIZE,
+    MONITOR_THUMB_H,
+    MONITOR_THUMB_W,
+    NUM_STEPS,
+    NUM_TRACKS,
+    PROJECT_FILE_EXTENSION,
+    PROJECT_FORMAT,
+    PROJECT_VERSION,
+    RECENT_PROJECTS_MAX,
+    SLOT_BUTTON_HEIGHT,
+    SLOT_BUTTON_INDENT,
+    SLOT_BUTTON_TOP_SPACER,
+    SLOT_BUTTON_WIDTH,
+    SLOT_HEIGHT,
+    SLOT_WIDTH,
+    SPEC_DRAWLIST_H,
+    SPEC_DRAWLIST_W,
+    SPECTRUM_BARS,
+    SPECTRUM_FPS,
+    STEP_CELL_SIZE,
+    STEP_COLOR_SQUARE_INDENT,
+    STEP_COLOR_SQUARE_SIZE,
+    STEP_PERSISTED_KEYS,
+    THEME_PRESET_LABELS,
+    THEME_PRIMARY_LABELS,
+    THEME_PRIMARY_SLOTS,
+    THUMB_CYCLE_INTERVAL,
+    THUMB_FAIL_LABEL,
+    THUMB_FAIL_THRESHOLD,
+    THUMB_REQUEST_INTERVAL,
+    VIOSC_IP,
+    VIOSC_LISTEN_PORT,
+    VIOSC_PORT,
+)
+from viseqapp.midi import (
+    _clock_port_name,
+    _close_midi_input,
+    _parse_midi_msg,
+    available_controller_ports,
+    binding_source_from_message,
+    controller_connect,
+    controller_disconnect,
+    controller_profile_of,
+    controller_profiles,
+    find_controller_by_port,
+    grid_controller,
+    grid_flash_playhead,
+    grid_mirror_step,
+    midi_init_from_config,
+    resolve_midi_message,
+    save_midi_controllers,
+    selected_bindings,
+    set_midi_enabled,
+)
+from viseqapp.osc import (
+    ALL_PROPERTIES,
+    ViseqOSCUDPServer,
+    find_player_index,
+    find_source_by_name,
+    get_current_target_id,
+    incoming_osc_handler,
+    osc_client,
+    send_monitor_command,
+    thumbnail_decoder_worker,
+)
+from viseqapp.palette import (
+    _apply_theme_config,
+    _preset_key,
+    _set_media_cell,
+    dpg_color_rgba,
+    on_theme_color,
+    on_theme_preset,
+    palette_rgba,
+    theme_color,
+    themed_draw_rectangle,
+    themed_text,
+)
+from viseqapp.profiles import (
+    match_controller_profile,
+)
+from viseqapp.queues import append_log, enqueue_set_value, log_error, ui_task
+from viseqapp.sequencer import (
+    _timed_bpm_live,
+    beat_is_event_driven,
+    send_colorr_step,
+    send_colorv_step,
+    send_seekr_step,
+)
+from viseqapp.state import (
+    _last_unmatched_log,
+    _media_cell_cache,
+    _midi_first_msg_logged,
+    _pristine_track,
+    _text_color_bindings,
+    band_prev_values,
+    bands_enabled,
+    log_queue,
+    midi_bindings,
+    midi_controllers,
+    monitor_players,
+    osc_log_history,
+    request_timestamps,
+    samplerate,
+    sync_event_beat,
+    sync_event_led,
+    sync_event_seq,
+    tap_times,
+    texture_queue,
+    thumb_cycle_state,
+    thumb_fail_count,
+    thumbnails_data,
+    tracks_data,
+    ui_state_queue,
+    ui_task_queue,
+)
 
 # --- HARD CAPS ON NETWORK-FED DATA (viOSC replies) ---
 # Bound memory use and block PIL decompression bombs (audit MED-6).
 Image.MAX_IMAGE_PIXELS = 25_000_000  # PIL's hard ceiling (~25 MP)
-MAX_THUMBNAIL_PIXELS = 3_000_000  # explicit cap; real thumbs are ~58k px
-MAX_THUMBNAIL_BLOB_BYTES = 8 * 1024 * 1024  # per-blob cap
-MAX_STATE_JSON_BYTES = 1 * 1024 * 1024  # per-replydata cap
-
-# --- BEHAVIORAL CONSTANTS (audit L-6) ---
-THUMB_REQUEST_INTERVAL = 3.0  # min seconds between thumbnail requests per source
-LOG_HISTORY_LIMIT = 25  # max entries kept in the OSC log window
-MONITOR_OFFSET = (280, 260)  # grid spacing between monitor player windows
-DPG_COLOR_SCALE = 255.0  # DPG ToColor divides color inputs by 255 -> its color API is 0..255
-
-# Main-loop render cadence (perf e07 P1): full rate while something animates, throttled
-# while idle (input stays responsive at ~30 fps; SPIKE-perf measured the idle render as
-# the biggest fixed cost).
-FRAME_SLEEP_ANIMATED = 0.016  # ~60 fps while sequencer/spectrum/monitor video animate
-FRAME_SLEEP_IDLE = 0.033  # ~30 fps at rest
-
-# Step-cell layout: a centered square leaves the checkbox/type row on top (audit L-6)
-STEP_CELL_SIZE = 90  # px side of each sequencer step cell
-STEP_COLOR_SQUARE_SIZE = 40  # px side of the centered color square inside a step cell
-# ImGui WindowPadding.x inside child windows (default style; app themes don't override)
-STEP_CELL_CONTENT_PADDING = 8
-# Measured on DPG 2.3.1: this indent centers the swatch in the 90px cell (padding included)
-STEP_COLOR_SQUARE_INDENT = (
-    STEP_CELL_SIZE - 2 * STEP_CELL_CONTENT_PADDING - STEP_COLOR_SQUARE_SIZE
-) // 2
-
-# Clip-slot layout: a bare centered assign button, no table frame around it (audit L-6).
-# The borderless slot has no WindowPadding (content_region_avail == full size, measured on
-# 2.3.1), so horizontal centering is pure (width - button_width) / 2. Vertically the button's
-# frame rect sits SLOT_BUTTON_FRAME_INSET px below its layout box (measured), hence the -inset.
-SLOT_WIDTH = 135  # px width of the clip slot column
-SLOT_HEIGHT = 90  # px height of a sequencer row
-SLOT_BUTTON_WIDTH = 110  # px width of the assign button/thumbnail
-SLOT_BUTTON_HEIGHT = 70  # px height of the assign button/thumbnail
-SLOT_BUTTON_FRAME_INSET = 4  # px: ImGui button rect offset below its widget box (2.3.1)
-SLOT_BUTTON_INDENT = (SLOT_WIDTH - SLOT_BUTTON_WIDTH) // 2
-SLOT_BUTTON_TOP_SPACER = (SLOT_HEIGHT - SLOT_BUTTON_HEIGHT) // 2 - SLOT_BUTTON_FRAME_INSET
-
-# Mediagrid tile: index badge box + compact layout (audit L-6)
-MEDIA_BADGE_W = 28  # px width of the media-index badge button
-MEDIA_BADGE_H = 20  # px height of the media-index badge button
-MEDIA_TILE_H = 146  # px height of a media tile (title + photo + badge row)
-# e10s06: the tile title fits at most two wrapped lines, truncated with an ellipsis
-MEDIA_TITLE_WRAP = 125  # px wrap width of the media tile title
-MEDIA_TITLE_MAX_LINES = 2
-MEDIA_TITLE_ELLIPSIS = "..."  # ASCII dots: ProggyClean (default font) has no U+2026 glyph
-MEDIA_TITLE_CHAR_PX = 7  # default-font estimate (ProggyClean 13 px) used before the atlas is built
 
 # Monitor player: compact graphical readout (e07)
-MONITOR_THUMB_W = 115  # thumbnail width, same as the Mediagrid/sequencer
-MONITOR_THUMB_H = 65  # thumbnail height, same as the Mediagrid/sequencer
-MONITOR_DISC_SIZE = 64  # px side of the turntable disc
-MONITOR_ALPHA_W = 10  # px width of the vertical alpha bar
-MONITOR_SEEK_W = 250  # px width of the horizontal seek bar
-MONITOR_DISC_R = 26.0  # radius of the rotating turntable arm
-MONITOR_DISC_RPM = 33.0  # disc rotations per minute at speed 1.0 (vinyl standard)
-MONITOR_SPEED_TEXT_SIZE = 12  # px font size of the speed label inside the disc
 DEFAULT_MONITOR_PROPS = ["alpha", "seek", "speed"]  # requested when a monitor starts
 
 # --- OSC CONFIGURATION ---
 # viseq talks exclusively to viOSC: /vimix/* messages are forwarded by viOSC
 # to Vimix (port 7000), replies come back on viOSC's output port 6667.
-VIOSC_IP = "127.0.0.1"
-VIOSC_PORT = 6666
-VIOSC_LISTEN_PORT = 6667  # the port viOSC sends replies to; viseq's own server listens here
-osc_client = udp_client.SimpleUDPClient(VIOSC_IP, VIOSC_PORT)
 
-viosc_client: Any = None
-local_osc_server: Any = None
-local_server_thread: threading.Thread | None = None
-is_server_running: bool = False
 
 # --- USER CONFIG + THEMING (e06) ---
 # Single JSON file next to viseq.py stores the window layout and the theme. The storage
 # mechanism was delegated to the agent by the user ("puoi decidere tu cosa utilizzare").
 CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.path.join(CONFIG_DIR, "viseq_config.json")
 
 # viseq application version — single source of truth (matches specs/release-plan.yaml, e08s02).
 # e13s01: this is the first real release of viSeq (user decision).
-APP_VERSION: str = "0.1.0"
+# e20s03: 0.2.0 — viseqapp refactor + controller profiles + new project + Mapper family.
+APP_VERSION: str = "0.2.0"
 
 # Author's GitHub profile, shown as a link in the About window (e08s01, user request).
 GITHUB_URL: str = "https://github.com/lupin3rd"
-
-# Palette slots drive every chrome color: the global theme, the per-item themes, explicit
-# text colors and the main draw items. The five primaries are user-editable in the Settings
-# window; the rest derive from them (derive_palette). The "Dark" preset reproduces the
-# legacy look exactly, so first launch is visually identical (SCOPE_LATEST criterion).
-PALETTE_SLOTS: list[str] = [
-    "window_bg",
-    "panel_bg",
-    "border",
-    "border_active",
-    "text",
-    "text_dim",
-    "text_bright",
-    "accent",
-    "accent_bg",
-    "badge_bg",
-    "warning",
-    "play_bg",
-    "play_on_bg",
-    "spectrum",
-]
-THEME_PRIMARY_SLOTS: list[str] = ["window_bg", "panel_bg", "text", "border", "accent"]
-THEME_PRIMARY_LABELS: dict[str, str] = {
-    "window_bg": "Background",
-    "panel_bg": "Panels",
-    "text": "Text",
-    "border": "Lines",
-    "accent": "Accent",
-}
-THEME_PRESET_LABELS: dict[str, str] = {
-    "scuro": "Dark",
-    "chiaro": "Light",
-    "custom": "Custom",
-}
-
-DEFAULT_PALETTE: dict[str, list[int]] = {
-    # Scuro: the exact legacy look (e06s02 acceptance criterion 1)
-    "window_bg": [24, 24, 24],
-    "panel_bg": [40, 40, 40],
-    "border": [80, 80, 80],
-    "border_active": [50, 255, 50],
-    "text": [200, 200, 200],
-    "text_dim": [150, 150, 150],
-    "text_bright": [255, 255, 255],
-    "accent": [50, 255, 50],
-    "accent_bg": [30, 80, 30],
-    "badge_bg": [45, 55, 75],
-    "warning": [255, 220, 80],
-    "play_bg": [80, 80, 80],
-    "play_on_bg": [80, 220, 80],
-    "spectrum": [80, 255, 120],
-}
-
-LIGHT_PALETTE: dict[str, list[int]] = {
-    # Chiaro: light background, dark text (the user's "sfondo scuro" counterpart)
-    "window_bg": [235, 235, 235],
-    "panel_bg": [248, 248, 248],
-    "border": [130, 130, 130],
-    "border_active": [20, 140, 20],
-    "text": [30, 30, 30],
-    "text_dim": [105, 105, 105],
-    "text_bright": [25, 25, 25],
-    "accent": [20, 140, 20],
-    "accent_bg": [205, 235, 205],
-    "badge_bg": [210, 216, 226],
-    "warning": [190, 150, 20],
-    "play_bg": [185, 185, 185],
-    "play_on_bg": [140, 210, 140],
-    "spectrum": [30, 150, 60],
-}
-
-# Fixed windows tracked by the layout save/restore; monitor-player windows are added at
-# snapshot time (they exist only while the app runs, e06s01).
-LAYOUT_WINDOW_TAGS: list[str] = [
-    "sequencer_window",
-    "audio_window",
-    "settings_window",
-    "vimix_media_window",
-    "logs_window",
-]
-
-# The Settings window is a config panel, not workspace: a saved layout must never re-open it
-# at boot (otherwise every start would pop it up, since it is open while clicking "Salva").
-# snapshot records it as closed and apply always hides it (e06s01 user revision).
-LAYOUT_ALWAYS_HIDDEN_TAGS: tuple[str, ...] = ("settings_window",)
-
-# e08: About window (Help menubar). The ASCII logo is the user-supplied art, kept verbatim
-# (8 lines x 53 chars, trailing spaces included) as a raw string so the backslashes survive.
-# The window is a transient dialog: it stays out of LAYOUT_WINDOW_TAGS, so a saved layout
-# never re-opens it at boot and the layout snapshot never records it.
-HELP_ASCII_LOGO: str = r""" ___      ___ ___  ________  _______   ________      
-|\  \    /  /|\  \|\   ____\|\  ___ \ |\   __  \     
-\ \  \  /  / | \  \ \  \___|\ \   __/|\ \  \|\  \    
- \ \  \/  / / \ \  \ \_____  \ \  \_|/_\ \  \\\  \   
-  \ \    / /   \ \  \|____|\  \ \  \_|\ \ \  \\\  \  
-   \ \__/ /     \ \__\____\_\  \ \_______\ \_____  \ 
-    \|__|/       \|__|\_________\|_______|\|___| \__|
-                     \|_________|               \|__|"""
-
-# e08: About-window geometry (measured: logo is 53 chars wide; DejaVu Sans Mono 13px is
-# ~7.8px/char, so ~414px of art in a 540px window leaves ~63px of side padding).
-HELP_WINDOW_WIDTH = 540
-HELP_WINDOW_HEIGHT = 300  # logo + title + version/license/author lines + GitHub button
-HELP_LOGO_INDENT = (HELP_WINDOW_WIDTH - int(53 * 7.8)) // 2
 
 # e08: monospace font for the ASCII logo; the first existing path wins, None falls back to
 # the default proportional font (cosmetic only — the logo then drifts off alignment).
@@ -222,33 +230,12 @@ _HELP_MONO_FONT_PATHS: tuple[str, ...] = (
 _help_mono_font: Any = None
 
 # --- e09: MIDI control engine (single mido stack; notes + CCs, user-configurable bindings) ---
-MIDI_ACTION_SEQ_TOGGLE = "seq_toggle"
-MIDI_ACTION_TRANSPORT_PLAY = "transport_play"
-MIDI_ACTION_TRANSPORT_RESYNC = "transport_resync"
-MIDI_ACTION_TRANSPORT_TAP = "transport_tap"
-MIDI_ACTION_NUDGE_BACK = "nudge_back"
-MIDI_ACTION_NUDGE_FORWARD = "nudge_forward"
-MIDI_ACTION_BEAT_SOURCE = "beat_source"
-MIDI_ACTION_TRACK_ASSIGN = "track_assign"
 
-DEFAULT_CONFIG: dict[str, Any] = {
-    # e11s02: the window layout moved into project files; the config keeps the
-    # fallback theme, MIDI and the recent-projects list + restore flag.
-    "theme": {"preset": "scuro", "colors": copy.deepcopy(DEFAULT_PALETTE)},
-    "midi": {"enabled": False, "input_port": None, "bindings": []},
-    "projects": {"recent": [], "restore_last_on_boot": True},
-}
 
 # MIDI control runtime mirrors of cfg["midi"] (e09). The worker thread reads these; the
 # main thread writes them. Bindings: [{device, channel, type("note"/"cc"), number,
 # action, params}]. Learn flow state (e09s02): pending = (action, params) captured by a
 # learnable widget click, awaiting the next incoming MIDI message.
-midi_enabled: bool = False
-midi_input_port: str | None = None
-midi_bindings: list[dict[str, Any]] = []
-midi_auto_bindings: list[dict[str, Any]] = []  # e09s03: Launchpad grid bindings (not persisted)
-midi_learn_mode: bool = False
-midi_learn_pending: tuple[str, dict[str, Any]] | None = None
 
 # --- e09s03: Novation Launchpad adapter constants ---
 # Three protocol classes (user's device: novlpd01 = original Launchpad MK1):
@@ -261,114 +248,23 @@ midi_learn_pending: tuple[str, dict[str, Any]] | None = None
 #    note grid as MK2. Payload WITHOUT the F0/F7 framing bytes — mido adds them when
 #    sending a sysex message (verified: data must be 0-127; mido.bytes() yields
 #    F0 00 20 29 02 0C 03 01 F7).
-LAUNCHPAD_MK1 = "mk1"
-LAUNCHPAD_NOTE_MODE = "note"
-LAUNCHPAD_PROGRAMMER_MODE = "programmer"
-LAUNCHPAD_PROGRAMMER_SYSEX: list[int] = [0x00, 0x20, 0x29, 0x02, 0x0C, 0x03, 0x01]
-LAUNCHPAD_GRID_ROWS = 8
-LAUNCHPAD_GRID_COLS = 8
-# Semantic LED colors (mirror/flash call sites) mapped per protocol in _launchpad_velocity.
-LAUNCHPAD_LED_OFF = "off"
-LAUNCHPAD_LED_WHITE = "white"
-LAUNCHPAD_LED_RED = "red"
-LAUNCHPAD_LED_AMBER = "amber"
-LAUNCHPAD_LED_GREEN = "green"
-LAUNCHPAD_FLASH_SECONDS = 0.12  # beat flash pulse duration (timer restores the head color)
+# e14s04: the LAUNCHPAD_* constants moved into the controller profile files
+# (controllers/*.json); the runtime uses GRID_LED_* + profile fields.
 
-_LAUNCHPAD_COLOR_MK1: dict[str, int] = {
-    # Official Programmers Reference table (normal use, Flags=12): 16*Green + Red + 12.
-    "off": 12,
-    "red": 15,
-    "amber": 63,
-    "white": 62,  # yellow full — the brightest MK1 color (it has no white)
-    "green": 60,
-}
-_LAUNCHPAD_COLOR_MK2: dict[str, int] = {
-    "off": 0,
-    "red": 5,
-    "amber": 12,
-    "white": 3,
-    "green": 60,
-}
+# ==============================================================================
+# CONTROLLER PROFILES (e14) — the profiles system moved to viseqapp/profiles.py;
+# viseq re-exports its public names (port matcher, loader, note formula).
 
-launchpad_out: Any = None  # open mido output port; None = no Launchpad (all mirror calls no-op)
-launchpad_protocol: str | None = None  # protocol class of the connected device (grid/colors)
-_launchpad_lock = threading.Lock()
 
 # Runtime bindings (tag -> palette slot) recorded at widget creation so apply_palette() can
 # re-theme live. Theme color items are updated via set_value; text/draw items via
 # configure_item (verified against DPG 2.3.1 in the e06 spike probes).
-_theme_color_bindings: dict[Any, str] = {}
-_text_color_bindings: dict[Any, str] = {}
-_draw_color_bindings: dict[Any, tuple[str, str]] = {}
 
-active_palette: dict[str, list[int]] = copy.deepcopy(DEFAULT_PALETTE)
-theme_global: Any = None
 
 # Global chrome theme components (bind_theme) and their palette slots; only bound for
 # non-Scuro themes, so Scuro keeps the exact DPG dark defaults (legacy look).
-GLOBAL_THEME_COMPONENTS: list[tuple[int, str]] = [
-    (dpg.mvThemeCol_WindowBg, "window_bg"),
-    (dpg.mvThemeCol_ChildBg, "panel_bg"),
-    (dpg.mvThemeCol_Border, "border"),
-    (dpg.mvThemeCol_BorderShadow, "window_bg"),
-    (dpg.mvThemeCol_Text, "text"),
-    (dpg.mvThemeCol_TextDisabled, "text_dim"),
-    (dpg.mvThemeCol_FrameBg, "panel_bg"),
-    (dpg.mvThemeCol_FrameBgHovered, "panel_bg"),
-    (dpg.mvThemeCol_FrameBgActive, "panel_bg"),
-    (dpg.mvThemeCol_Button, "badge_bg"),
-    (dpg.mvThemeCol_ButtonHovered, "badge_bg"),
-    (dpg.mvThemeCol_ButtonActive, "badge_bg"),
-    (dpg.mvThemeCol_Header, "badge_bg"),
-    (dpg.mvThemeCol_HeaderHovered, "badge_bg"),
-    (dpg.mvThemeCol_HeaderActive, "badge_bg"),
-    (dpg.mvThemeCol_TitleBg, "window_bg"),
-    (dpg.mvThemeCol_TitleBgActive, "window_bg"),
-    (dpg.mvThemeCol_PopupBg, "window_bg"),
-    (dpg.mvThemeCol_ScrollbarBg, "window_bg"),
-    (dpg.mvThemeCol_ScrollbarGrab, "badge_bg"),
-    (dpg.mvThemeCol_ScrollbarGrabHovered, "badge_bg"),
-    (dpg.mvThemeCol_ScrollbarGrabActive, "badge_bg"),
-    (dpg.mvThemeCol_TableHeaderBg, "panel_bg"),
-    (dpg.mvThemeCol_TableBorderStrong, "border"),
-    (dpg.mvThemeCol_TableBorderLight, "border"),
-    (dpg.mvThemeCol_Separator, "border"),
-    (dpg.mvThemeCol_CheckMark, "accent"),
-    (dpg.mvThemeCol_SliderGrab, "accent"),
-    (dpg.mvThemeCol_SliderGrabActive, "accent"),
-    (dpg.mvThemeCol_InputTextCursor, "accent"),
-    (dpg.mvThemeCol_TextSelectedBg, "accent"),
-]
 
 # --- COMMUNICATION QUEUES ---
-ui_state_queue: queue.Queue[Any] = queue.Queue()
-blob_queue: queue.Queue[Any] = queue.Queue()
-texture_queue: queue.Queue[Any] = queue.Queue()
-log_queue: queue.Queue[str] = queue.Queue()
-ui_task_queue: queue.Queue[Callable[[], None]] = (
-    queue.Queue()
-)  # UI mutations from worker threads, drained on the main thread
-
-
-def ui_task(fn: Callable[[], None]) -> None:
-    """Run a UI mutation on the main thread via the task queue."""
-    ui_task_queue.put(fn)
-
-
-def dpg_color_value(rgb: list[float]) -> list[float]:
-    """Convert normalized 0..1 RGB to DPG's color API scale (0..255).
-
-    DPG 2.x parses color lists by dividing every channel by 255, so colors
-    pushed programmatically (default_value / set_value) must arrive on the
-    0..255 scale; user-picked colors arrive via callbacks already 0..1.
-    """
-    return [round(c * DPG_COLOR_SCALE, 2) for c in rgb]
-
-
-def dpg_color_rgba(rgb: list[float]) -> list[float]:
-    """DPG-scale RGB plus an opaque alpha (color_button needs 4 components)."""
-    return [*dpg_color_value(rgb), DPG_COLOR_SCALE]
 
 
 # ==============================================================================
@@ -376,240 +272,14 @@ def dpg_color_rgba(rgb: list[float]) -> list[float]:
 # ==============================================================================
 
 
-def palette_rgba(color: list[int]) -> list[int]:
-    """Palette RGB (0..255) plus an opaque alpha, the DPG color shape for themes/widgets."""
-    return [color[0], color[1], color[2], 255]
-
-
-def _blend(a: list[int], b: list[int], t: float) -> list[int]:
-    """Per-channel linear blend: t of a over (1 - t) of b."""
-    return [round(a[i] * t + b[i] * (1.0 - t)) for i in range(3)]
-
-
-def derive_palette(primaries: dict[str, list[int]]) -> dict[str, list[int]]:
-    """Complete a 5-slot primary palette with the derived slots (deterministic, no mutation)."""
-    pbg = primaries["panel_bg"]
-    border = primaries["border"]
-    text = primaries["text"]
-    accent = primaries["accent"]
-    return {
-        **primaries,
-        "border_active": accent,
-        "text_dim": _blend(text, [128, 128, 128], 0.55),
-        "text_bright": _blend(text, [255, 255, 255], 0.35),
-        "accent_bg": _blend(accent, pbg, 0.45),
-        "badge_bg": _blend(border, pbg, 0.55),
-        "warning": [255, 220, 80],
-        "play_bg": _blend(border, [255, 255, 255], 0.25),
-        "play_on_bg": _blend(accent, [255, 255, 255], 0.35),
-        "spectrum": _blend(accent, [255, 255, 255], 0.25),
-    }
-
-
-def theme_color(component: int, slot: str, category: int = dpg.mvThemeCat_Core) -> None:
-    """Add a palette-driven theme color; the (tag, slot) pair is recorded for re-theming."""
-    item_tag = dpg.add_theme_color(component, palette_rgba(active_palette[slot]), category=category)
-    _theme_color_bindings[item_tag] = slot
-
-
-def themed_text(*args: Any, slot: str, **kwargs: Any) -> Any:
-    """Add text colored from the active palette; the (tag, slot) pair is recorded for re-theming."""
-    kwargs.pop("color", None)
-    tag = dpg.add_text(*args, color=palette_rgba(active_palette[slot]), **kwargs)
-    _text_color_bindings[tag] = slot
-    return tag
-
-
 # Per-cell cache for the Mediagrid value updates (perf e07 P0): a viOSC state push that
 # does not change a cell's displayed string skips the set_value entirely. Cleared whenever
 # the tables are rebuilt, so freshly created widgets are never wrongly skipped.
-_media_cell_cache: dict[str, str] = {}
-
-
-def _set_media_cell(tag: str, value: str) -> None:
-    """set_value for a media-grid cell, skipping writes whose displayed string is unchanged."""
-    if _media_cell_cache.get(tag) != value and dpg.does_item_exist(tag):
-        dpg.set_value(tag, value)
-    _media_cell_cache[tag] = value
-
-
-def themed_draw_rectangle(*args: Any, slot: str, color_kwarg: str = "fill", **kwargs: Any) -> Any:
-    """draw_rectangle with a palette-driven color; the (tag, slot) pair is recorded."""
-    kwargs[color_kwarg] = palette_rgba(active_palette[slot])
-    tag = dpg.draw_rectangle(*args, **kwargs)
-    _draw_color_bindings[tag] = (slot, color_kwarg)
-    return tag
-
-
-def ensure_global_theme() -> None:
-    """Build (once) and bind the global chrome theme from the active palette."""
-    global theme_global
-    if theme_global is None:
-        with dpg.theme() as t, dpg.theme_component(dpg.mvAll):
-            for component, slot in GLOBAL_THEME_COMPONENTS:
-                theme_color(component, slot)
-        theme_global = t
-    dpg.bind_theme(theme_global)
-
-
-def apply_palette(palette: dict[str, list[int]]) -> None:
-    """Push every recorded color binding; runs on the main thread only (boot + user changes)."""
-    global active_palette
-    for item_tag, slot in _theme_color_bindings.items():
-        dpg.set_value(item_tag, palette_rgba(palette[slot]))
-    for item_tag, slot in _text_color_bindings.items():
-        if dpg.does_item_exist(item_tag):
-            dpg.configure_item(item_tag, color=palette_rgba(palette[slot]))
-    for item_tag, (slot, kwarg) in _draw_color_bindings.items():
-        if dpg.does_item_exist(item_tag):
-            dpg.configure_item(item_tag, **{kwarg: palette_rgba(palette[slot])})
-    active_palette = palette
-
-
-def _to_palette_color(raw: Any) -> list[int]:
-    """Normalized 0..1 RGBA (color_edit callback payload) -> palette RGB on the 0..255 scale."""
-    return [round(float(c) * DPG_COLOR_SCALE) for c in raw[:3]]
-
-
-def _recover_channel(c: float) -> int:
-    """Coerce one color channel to the valid 0..255 range.
-
-    Channels above 255 are treated as legacy double-scaled values (the pre-fix color_edit
-    bug multiplied the 0..255 value by 255, e.g. 24 -> 6120) and divided back before
-    clamping, so a broken config self-heals to its intended color instead of pure white.
-    """
-    v = round(float(c))
-    if v > 255:
-        v = round(v / DPG_COLOR_SCALE)
-    return min(255, max(0, v))
-
-
-def _read_primary_colors_from_edits() -> dict[str, list[int]]:
-    """Read the five Settings color edits as palette RGB.
-
-    DPG 2.3.1 color_edit get_value returns the stored 0..255 scale (verified headless),
-    unlike the callback payload which arrives normalized 0..1 (see _to_palette_color).
-    """
-    colors: dict[str, list[int]] = {}
-    for slot in THEME_PRIMARY_SLOTS:
-        raw = dpg.get_value(f"theme_color_{slot}")
-        colors[slot] = [_recover_channel(c) for c in raw[:3]]
-    return colors
-
-
-def _preset_key(label: str) -> str:
-    """Combo label -> config key ('Custom' -> 'custom')."""
-    for key, lbl in THEME_PRESET_LABELS.items():
-        if lbl == label:
-            return key
-    return "scuro"
-
-
-def _sync_theme_widgets(preset: str, palette: dict[str, list[int]]) -> None:
-    """Push a palette into the Settings theme widgets (combo + five color edits)."""
-    if dpg.does_item_exist("theme_preset"):
-        dpg.set_value("theme_preset", THEME_PRESET_LABELS[preset])
-    for slot in THEME_PRIMARY_SLOTS:
-        tag = f"theme_color_{slot}"
-        if dpg.does_item_exist(tag):
-            dpg.set_value(tag, palette_rgba(palette[slot]))
-
-
-def _apply_theme_config(theme: dict[str, Any]) -> None:
-    """Make a stored theme (preset + colors) the live look: palette, global theme, widgets."""
-    global active_palette
-    preset = str(theme.get("preset", "scuro"))
-    palette = theme["colors"]
-    active_palette = palette
-    if preset == "scuro":
-        dpg.bind_theme(0)  # unbind: DPG's dark defaults reproduce the legacy look
-    else:
-        ensure_global_theme()
-    apply_palette(palette)
-    _sync_theme_widgets(preset, palette)
-
-
-def on_theme_preset(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Settings Tema combo: load a preset palette (or re-derive custom), apply live, persist."""
-    label = str(app_data)
-    if label == THEME_PRESET_LABELS["custom"]:
-        palette = derive_palette(_read_primary_colors_from_edits())
-    elif label == THEME_PRESET_LABELS["chiaro"]:
-        palette = copy.deepcopy(LIGHT_PALETTE)
-    else:
-        palette = copy.deepcopy(DEFAULT_PALETTE)
-    cfg = load_config()
-    cfg["theme"] = {"preset": _preset_key(label), "colors": palette}
-    _apply_theme_config(cfg["theme"])
-    save_config(cfg)
-
-
-def on_theme_color(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Settings color edit: derive the palette from the five edits, apply live, persist."""
-    primaries = _read_primary_colors_from_edits()
-    primaries[user_data] = _to_palette_color(app_data)  # sender payload wins over get_value
-    palette = derive_palette(primaries)
-    cfg = load_config()
-    cfg["theme"] = {"preset": "custom", "colors": palette}
-    _apply_theme_config(cfg["theme"])
-    save_config(cfg)
 
 
 # ==============================================================================
 # USER CONFIG + WINDOW LAYOUT (e06s01)
 # ==============================================================================
-
-
-def _sanitize_palette(colors: Any) -> dict[str, list[int]]:
-    """Coerce a stored palette to valid 0..255 RGB slots.
-
-    Heals configs written by the pre-fix color_edit scale bug (e06 regression): channels
-    like 6120 (= 24 * 255) are divided back to 24 (see _recover_channel), so the intended
-    color is restored instead of blowing out to pure white after DPG's /255 normalization.
-    """
-    clean = {slot: list(DEFAULT_PALETTE[slot]) for slot in PALETTE_SLOTS}
-    if isinstance(colors, dict):
-        for slot in PALETTE_SLOTS:
-            raw = colors.get(slot)
-            if isinstance(raw, (list, tuple)) and len(raw) >= 3:
-                clean[slot] = [_recover_channel(c) for c in raw[:3]]
-    return clean
-
-
-def load_config() -> dict[str, Any]:
-    """Read the user config; missing/corrupt file falls back to defaults (never crashes)."""
-    try:
-        with open(CONFIG_PATH, encoding="utf-8") as f:
-            loaded = json.load(f)
-    except (OSError, ValueError):
-        return copy.deepcopy(DEFAULT_CONFIG)
-    if not isinstance(loaded, dict):
-        return copy.deepcopy(DEFAULT_CONFIG)
-    merged = copy.deepcopy(DEFAULT_CONFIG)
-
-    def _merge(base: Any, over: Any) -> Any:
-        if isinstance(base, dict) and isinstance(over, dict):
-            return {k: _merge(base.get(k), v) for k, v in over.items()}
-        return over
-
-    for key in merged:
-        if key in loaded:
-            merged[key] = _merge(merged[key], loaded[key])
-    merged["theme"]["colors"] = _sanitize_palette(merged["theme"].get("colors"))
-    # e11s02: drop unknown top-level keys (the legacy "layout" block) so a stale
-    # config file self-cleans on the next save instead of carrying dead state.
-    return {key: merged[key] for key in DEFAULT_CONFIG}
-
-
-def save_config(cfg: dict[str, Any]) -> None:
-    """Atomically write the user config; failures are logged, never fatal."""
-    try:
-        tmp = f"{CONFIG_PATH}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, indent=2)
-        os.replace(tmp, CONFIG_PATH)
-    except OSError as e:
-        log_error("Config", f"cannot write {CONFIG_PATH}: {e}")
 
 
 def _existing_layout_window_tags() -> list[str]:
@@ -672,13 +342,8 @@ def apply_window_layout(records: list[dict[str, Any]]) -> None:
 # PROJECT SAVE/LOAD (e11) — .viseq files capture window layout + theme + every
 # sequencer configuration; the viSeq menu (e11s03) drives the file dialogs.
 # ==============================================================================
-PROJECT_FORMAT = "viseq-project"
-PROJECT_VERSION = 1
-PROJECT_FILE_EXTENSION = ".viseq"
 PROJECTS_DIR = os.path.join(CONFIG_DIR, "projects")
-RECENT_PROJECTS_MAX = 5  # cap for the Last-project submenu / config list (e11s02)
 # Step fields that belong in a project file; the last_rand_* keys are runtime-only.
-STEP_PERSISTED_KEYS: tuple[str, ...] = ("active", "type", "v1", "v2", "frames", "msgs", "color")
 
 
 def _step_persisted(step: dict[str, Any]) -> dict[str, Any]:
@@ -709,9 +374,12 @@ def capture_project_state() -> dict[str, Any]:
     preset_label = str(dpg.get_value("theme_preset"))
     return {
         "layout": {"windows": snapshot_window_layout()},
-        "theme": {"preset": _preset_key(preset_label), "colors": copy.deepcopy(active_palette)},
+        "theme": {
+            "preset": _preset_key(preset_label),
+            "colors": copy.deepcopy(state.active_palette),
+        },
         "sequencer": {
-            "beat_source": beat_source,
+            "beat_source": state.beat_source,
             "manual_bpm": float(dpg.get_value("manual_bpm_input")),
             "tracks": [
                 {
@@ -749,12 +417,11 @@ def _restore_track(row: int, track_data: dict[str, Any]) -> None:
 
 def _apply_audio_state(audio: dict[str, Any]) -> None:
     """Re-apply the audio-analyzer section (device, low-pass, bands) (e11s01)."""
-    global lowpass_enabled
     if audio.get("device") in input_devices_list:
         dpg.set_value("combo_devices", audio["device"])
-    lowpass_enabled = bool(audio.get("lowpass", True))
+    state.lowpass_enabled = bool(audio.get("lowpass", True))
     if dpg.does_item_exist("cb_lowpass"):
-        dpg.set_value("cb_lowpass", lowpass_enabled)
+        dpg.set_value("cb_lowpass", state.lowpass_enabled)
     bands = audio.get("bands", {})
     for band_id in BAND_DEFAULT_RANGES:
         band = bands.get(str(band_id), {})
@@ -766,7 +433,7 @@ def _apply_audio_state(audio: dict[str, Any]) -> None:
             if key in band and dpg.does_item_exist(tag):
                 dpg.set_value(tag, float(band[key]))
         if bands_enabled[band_id]:
-            refresh_band_value(spectrum_bars_cache, band_id)
+            refresh_band_value(state.spectrum_bars_cache, band_id)
 
 
 def _apply_sequencer_state(seq: dict[str, Any]) -> None:
@@ -795,6 +462,60 @@ def apply_project_state(state: dict[str, Any]) -> None:
     seq = state.get("sequencer")
     if isinstance(seq, dict):
         _apply_sequencer_state(seq)
+
+
+def pristine_project_state() -> dict[str, Any]:
+    """The New-project document: blank sequencer, current layout + theme kept (e15s01).
+
+    Layout and theme are app-level preferences — a fresh project never moves
+    the windows or changes the colors; only the sequencer content resets.
+    """
+    pristine_tracks = [_pristine_track() for _ in range(NUM_TRACKS)]
+    return {
+        "layout": {"windows": snapshot_window_layout()},
+        "theme": {
+            "preset": _preset_key(str(dpg.get_value("theme_preset"))),
+            "colors": copy.deepcopy(state.active_palette),
+        },
+        "sequencer": {
+            "beat_source": BEAT_SOURCE_ANALYSIS,
+            "manual_bpm": DEFAULT_MANUAL_BPM,
+            "tracks": [
+                {
+                    "target_id": track["target_id"],
+                    "base_address": track["base_address"],
+                    "steps": [_step_persisted(step) for step in track["steps"]],
+                }
+                for track in pristine_tracks
+            ],
+            "audio": {
+                "device": str(dpg.get_value("combo_devices")),
+                "lowpass": True,
+                "bands": {
+                    str(band_id): {
+                        "enabled": False,
+                        "start": default_range[0],
+                        "end": default_range[1],
+                        "min": 0.0,
+                        "max": 1.0,
+                    }
+                    for band_id, default_range in BAND_DEFAULT_RANGES.items()
+                },
+            },
+        },
+    }
+
+
+def apply_new_project() -> None:
+    """Reset the live sequencer to pristine defaults and rebuild its UI (e15s01).
+
+    Tracks are replaced wholesale (clearing pending fades and the runtime
+    last_rand_* keys), then the project-apply path rebuilds every cell, slot,
+    beat-source checkbox and audio widget.
+    """
+    for row in range(NUM_TRACKS):
+        tracks_data[row] = _pristine_track()
+    _apply_sequencer_state(pristine_project_state()["sequencer"])
 
 
 def _project_document(state: dict[str, Any]) -> dict[str, Any]:
@@ -937,7 +658,7 @@ def _sanitize_project_state(raw: dict[str, Any]) -> dict[str, Any]:
         "theme": theme,
         "sequencer": {
             "beat_source": beat if beat in BEAT_SOURCE_LABELS else BEAT_SOURCE_ANALYSIS,
-            "manual_bpm": _to_float(seq.get("manual_bpm"), 120.0),
+            "manual_bpm": _to_float(seq.get("manual_bpm"), DEFAULT_MANUAL_BPM),
             "tracks": _sanitize_tracks(seq.get("tracks")),
             "audio": _sanitize_audio_state(seq.get("audio")),
         },
@@ -1085,38 +806,118 @@ def on_save_project_picked(sender: Any = None, app_data: Any = None, user_data: 
 
 
 def exit_app(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """viSeq > Exit: close the application (e11s03)."""
+    """viSeq > Exit: ask for confirmation before closing the app (e19)."""
+    show_exit_confirm()
+
+
+# e19: exit confirmation — the modal is shared by viSeq > Exit and the OS
+# main-window X (set_exit_callback + disable_close). ``_exiting_app`` guards
+# the shutdown-time re-invocation of the exit callback (destroy_context queues
+# it again while tearing down, when no modal may be created).
+EXIT_CONFIRM_TAG = "exit_confirm_modal"
+
+
+_exiting_app = False
+
+
+def show_exit_confirm(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Close request (menu Exit or the OS window X): confirm before quitting (e19)."""
+    if _exiting_app:
+        return  # already confirmed — destroy_context re-invokes the exit callback
+    if dpg.does_item_exist(EXIT_CONFIRM_TAG):
+        dpg.delete_item(EXIT_CONFIRM_TAG)
+    with dpg.window(
+        label="Exit viSeq",
+        tag=EXIT_CONFIRM_TAG,
+        modal=True,
+        width=380,
+        height=150,
+        no_resize=True,
+    ):
+        themed_text("Close viSeq?", slot="text")
+        themed_text("Any unsaved changes will be lost.", slot="text_dim")
+        dpg.add_separator()
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="Cancel", callback=cancel_exit, width=140)
+            dpg.add_button(label="Exit", callback=confirm_exit, width=140)
+    dpg.show_item(EXIT_CONFIRM_TAG)
+
+
+def cancel_exit(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Exit modal Cancel: close the prompt, the app keeps running (e19)."""
+    if dpg.does_item_exist(EXIT_CONFIRM_TAG):
+        dpg.delete_item(EXIT_CONFIRM_TAG)
+
+
+def confirm_exit(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Exit modal Exit: close the prompt and stop the app (normal cleanup runs)."""
+    global _exiting_app
+    _exiting_app = True
+    if dpg.does_item_exist(EXIT_CONFIRM_TAG):
+        dpg.delete_item(EXIT_CONFIRM_TAG)
     dpg.stop_dearpygui()
+
+
+NEW_PROJECT_CONFIRM_TAG = "new_project_confirm"
+
+
+def show_new_project_confirm(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """viSeq > New project: open the confirmation modal (e15s01).
+
+    Never resets directly — wiping the sequencer is destructive, so the user
+    must confirm first.
+    """
+    if dpg.does_item_exist(NEW_PROJECT_CONFIRM_TAG):
+        dpg.delete_item(NEW_PROJECT_CONFIRM_TAG)
+    with dpg.window(
+        label="New project",
+        tag=NEW_PROJECT_CONFIRM_TAG,
+        modal=True,
+        width=380,
+        height=140,
+        no_resize=True,
+    ):
+        dpg.add_text("Start a new project?", wrap=340)
+        dpg.add_text("The sequencer (clips and steps) will be cleared.", wrap=340)
+        dpg.add_separator()
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="Cancel", callback=cancel_new_project, width=140)
+            dpg.add_button(label="New project", callback=confirm_new_project, width=140)
+    dpg.show_item(NEW_PROJECT_CONFIRM_TAG)
+
+
+def cancel_new_project(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Modal Cancel: close the confirmation without touching the session (e15s01)."""
+    if dpg.does_item_exist(NEW_PROJECT_CONFIRM_TAG):
+        dpg.delete_item(NEW_PROJECT_CONFIRM_TAG)
+
+
+def confirm_new_project(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Modal New project: close the confirmation and reset the sequencer (e15s01)."""
+    if dpg.does_item_exist(NEW_PROJECT_CONFIRM_TAG):
+        dpg.delete_item(NEW_PROJECT_CONFIRM_TAG)
+    apply_new_project()
 
 
 def apply_boot_config() -> None:
     """Boot: apply the fallback theme, then restore the last project when flagged (e11s04)."""
     cfg = load_config()
     midi_init_from_config(cfg)  # e09: MIDI control mirrors (enabled, port, bindings)
+    if dpg.does_item_exist("midi_enable_cb"):
+        # The MIDI window is built before the config loads, so the Enable checkbox
+        # starts unchecked even when the engine is on — sync it (BUG-2026-08-29T102156).
+        dpg.set_value("midi_enable_cb", state.midi_enabled)
     _apply_theme_config(cfg["theme"])
     if dpg.does_item_exist("cb_restore_project_boot"):
         dpg.set_value("cb_restore_project_boot", cfg["projects"]["restore_last_on_boot"])
     if should_restore_last_project_on_boot(cfg):
         recent = recent_project_paths(cfg)
         if recent:
-            state = load_project_file(recent[0])
-            if state is not None:
-                apply_project_state(state)
-
-
-def enqueue_set_value(tag: str, value: Any) -> None:
-    """Queue a dpg.set_value(tag, value) for the main thread, if the item exists."""
-
-    def _set():
-        if dpg.does_item_exist(tag):
-            dpg.set_value(tag, value)
-
-    ui_task(_set)
-
-
-def log_error(context: str, message: str) -> None:
-    t = time.strftime("%H:%M:%S")
-    log_queue.put(f"[{t}] ERROR: {context}: {message}")
+            project_state = load_project_file(recent[0])
+            if project_state is not None:
+                apply_project_state(project_state)
 
 
 def format_osc_log(history: list[str]) -> str:
@@ -1125,75 +926,15 @@ def format_osc_log(history: list[str]) -> str:
 
 
 # --- GLOBAL VIMIX STATE ---
-global_vimix_state: dict[str, Any] = {"current_source": None, "sources": {}}
 # e10s06: viseq-side primary selection (target_id) — wins over the vimix current
 # source for tile theming and for sequencer/monitor attachment.
-viseq_selected_source: str | None = None
 
-ALL_PROPERTIES = [
-    "index",
-    "name",
-    "lock",
-    "failed",
-    "play",
-    "pause",
-    "blending",
-    "alpha",
-    "transparency",
-    "depth",
-    "position",
-    "size",
-    "corner",
-    "angle",
-    "seek",
-    "speed",
-    "brightness",
-    "contrast",
-    "saturation",
-    "hue",
-    "threshold",
-    "gamma",
-    "color",
-    "posterize",
-    "invert",
-    "uri",
-]
-
-last_ui_signature: str = ""
-last_num_cols: int = 4
-osc_log_history: list[str] = []
 
 # --- SEQUENCER STATE ---
-NUM_STEPS = 8
-NUM_TRACKS = 8
-current_step: int = -1
-is_playing: bool = False
-phase_nudge: float = 0.0
-sync_event_seq = threading.Event()
-sync_event_led = threading.Event()
 
 # Beat/clock source selection (e05): the sequencer can follow the analyzed BPM, a band
 # hitting 1.0, standard MIDI clock, or a manual BPM (numeric/TAP). Event-driven modes wake
 # the sequencer on sync_event_beat instead of sleeping a fixed interval.
-BEAT_SOURCE_ANALYSIS = "bpm_analysis"
-BEAT_SOURCE_BAND1 = "band1_beat"
-BEAT_SOURCE_MIDI = "midi_sync"
-BEAT_SOURCE_MANUAL = "manual_bpm"
-BEAT_SOURCE_LABELS = {
-    BEAT_SOURCE_ANALYSIS: "BPM Det",
-    BEAT_SOURCE_BAND1: "Band 1",
-    BEAT_SOURCE_MIDI: "MIDI",
-    BEAT_SOURCE_MANUAL: "Manual",
-}
-beat_source: str = BEAT_SOURCE_ANALYSIS  # default: current behavior (essentia BPM)
-sync_event_beat = threading.Event()  # fired once per beat in band/MIDI modes
-MIDI_CLOCK_PULSES_PER_BEAT = 24  # MIDI standard: 24 clock pulses (0xF8) per quarter note
-midi_pulses: int = 0  # running MIDI clock pulse count (worker thread)
-tap_times: list[float] = []  # TAP timestamps for the manual BPM mode
-band_prev_values: dict[int, float] = {1: 0.0, 2: 0.0, 3: 0.0}  # band rising-edge tracking
-copied_step_data: dict[str, Any] | None = None  # step config copied for paste (e08)
-active_step: tuple[int, int] | None = None  # last touched step (keyboard shortcuts target)
-copied_step_pos: tuple[int, int] | None = None  # where the copied highlight is shown
 # One LED per beat source, shown next to its checkbox on the sequencer (e05)
 BEAT_LED_TAGS = {
     BEAT_SOURCE_ANALYSIS: "led_analysis",
@@ -1203,74 +944,24 @@ BEAT_LED_TAGS = {
 }
 BEAT_CHECKBOX_TAGS = {mode: f"cb_beat_{mode}" for mode in BEAT_SOURCE_LABELS}
 
-# Sequencer data structure with the new "msgs" parameter
-tracks_data: list[dict[str, Any]] = []
-for _ in range(NUM_TRACKS):
-    track: dict[str, Any] = {
-        "target_id": None,
-        "base_address": "",
-        "active_fade": {"active": False},
-        "steps": [],
-    }
-    for _ in range(NUM_STEPS):
-        track["steps"].append(
-            {
-                "active": False,
-                "type": "NONE",
-                "v1": 0.0,
-                "v2": 1.0,
-                "frames": 4,
-                "msgs": 1,  # NEW: number of messages to send in a single step
-                "color": [1.0, 1.0, 1.0],
-                "last_rand_v1": 0.0,
-                "last_rand_seek": 0.0,
-                "last_rand_color": [0, 0, 0],
-            }
-        )
-    tracks_data.append(track)
+
+# Sequencer data structure: one pristine track per row; the New-project reset
+# (e15s01) reuses the same factories, so a fresh project equals a cold boot.
 
 # --- AUDIO STATE ---
-samplerate = 44100
-is_audio_analyzing: bool = False
-is_beat_tracking: bool = False
-lowpass_enabled: bool = True  # mirrors the "Use Low-Pass Filter" checkbox (read on worker threads)
 audio_stream: Any = None
-audio_buffer: np.ndarray = np.zeros(
-    samplerate * 6, dtype=np.float32
-)  # preallocated ring buffer (L-2)
-audio_buffer_head: int = 0  # next write position in audio_buffer (modulo its length)
-current_bpm: float = 120.0
 # e10s08: timestamp of the last successful BPM detection — a stale/absent reading
 # means current_bpm is not a real tempo (e.g. the manual value left over from a
 # previous mode), so the sequencer must not advance on it.
-bpm_last_detected: float = 0.0
-BPM_DETECTION_STALE_SECONDS = 2.0  # 2x the 1 s analysis cadence
-beat_confidence: float = 0.0
-rhythm_extractor = es.RhythmExtractor2013(method="multifeature")
-lowpass_filter = es.LowPass(cutoffFrequency=250.0)
 
 # --- SPECTRUM ANALYZER (e04) ---
-SPECTRUM_FFT_SIZE = 2048  # samples per FFT frame
 # 16 bars > 32: benchmarked lighter (~26% less compute per frame + half the draw calls);
 # the FFT dominates either way, and 16 bars keep a clear view of the audible range.
-SPECTRUM_BARS = 16
-NUM_BANDS = 3  # independent selectable bands (band1/band2/band3)
-SPECTRUM_FPS = 30.0  # spectrum redraw rate while analyzing
-SPECTRUM_DB_FLOOR = 60.0  # dB below full scale mapped to bar level 0
 # e10s09: perceptual spectrum — log-spaced bars over the musical range, level-
 # independent AGC and peak-aware band values so every band responds to music.
-SPECTRUM_F_MIN = 40.0  # Hz: bottom of the perceptual bar range (sub-bass edge)
-SPECTRUM_F_MAX = 20000.0  # Hz: top of the perceptual bar range (below Nyquist)
-SPECTRUM_PEAK_TARGET = 0.9  # AGC: the recent spectral peak maps to this level
-SPECTRUM_PEAK_FLOOR = 0.06  # AGC: below this peak the gain stays flat (silence guard)
-SPECTRUM_PEAK_DECAY = 0.995  # AGC release per frame (~-0.04 dB/frame, ≈ -1.3 dB/s):
 # slow enough that quiet content between transients stays quiet (beat edges re-arm)
-BAND_AGG_WEIGHT = 0.6  # band value = weight*peak + (1-weight)*mean of the band bars
 # A kick/bass transient lands around 0.6-0.9 after AGC+blend (measured); 0.6 fires
 # on strong band transients while the edge semantics ignore sustained content.
-BAND_BEAT_THRESHOLD = 0.6
-SPEC_DRAWLIST_W = 330  # spectrum drawlist width (px)
-SPEC_DRAWLIST_H = 66  # spectrum drawlist height (px) — tall enough to read the bars
 BAND_RECT_COLORS = {
     1: ((255, 255, 0, 40), (255, 255, 0, 200)),  # yellow overlay
     2: ((0, 255, 255, 40), (0, 255, 255, 200)),  # cyan overlay
@@ -1280,23 +971,10 @@ BAND_DEFAULT_RANGES = {1: (0.0, 0.33), 2: (0.33, 0.66), 3: (0.66, 1.0)}  # equal
 
 # Last computed spectrum bars + per-band state. All written on the main thread inside the
 # queued spectrum task; future features read band1/band2/band3 (0..1, 0 while disabled).
-spectrum_bars_cache: np.ndarray = np.zeros(SPECTRUM_BARS, dtype=np.float32)
-spec_peak_hold: float = 0.0  # AGC running spectral peak (spectrum worker only, e10s09)
-bands_enabled: dict[int, bool] = {1: False, 2: False, 3: False}
-band1: float = 0.0
-band2: float = 0.0
-band3: float = 0.0
 
 # e10s03: per-source list of texture tags (tex_<name>_<idx>)
-thumbnails_data: dict[str, list[str]] = {}
-request_timestamps: dict[str, float] = {}
 # e10s04: per-source thumb cycle state {target_id: (current_index, last_switch_time)}
-thumb_cycle_state: dict[str, tuple[int, float]] = {}
-THUMB_CYCLE_INTERVAL = 0.75  # seconds per frame in the Mediagrid thumb cycle
 # e10s04: consecutive unanswered thumb requests per source -> failed tile state
-thumb_fail_count: dict[str, int] = {}
-THUMB_FAIL_THRESHOLD = 5  # request cycles (~15 s) before the tile flips to failed
-THUMB_FAIL_LABEL = " [ Thumb failed — right-click to retry ] "
 
 
 def get_input_devices() -> list[str]:
@@ -1320,15 +998,9 @@ def flash_led(tag: str) -> None:
     threading.Timer(0.1, lambda: ui_task(_off)).start()
 
 
-def append_log(direction: str, address: str) -> None:
-    t = time.strftime("%H:%M:%S")
-    log_msg = f"[{t}] {direction}: {address}"
-    log_queue.put(log_msg)
-
-
 def frame_sleep() -> float:
     """Main-loop sleep: full rate while animating, throttled while idle (perf e07 P1)."""
-    if is_playing or is_audio_analyzing:
+    if state.is_playing or state.is_audio_analyzing:
         return FRAME_SLEEP_ANIMATED
     for p in monitor_players:
         if not p.get("target_id"):
@@ -1419,58 +1091,54 @@ def set_step_type(sender: Any, app_data: Any, user_data: Any) -> None:
 
 def _highlight_copied_step(row: int, col: int) -> None:
     """Show the copied-step highlight and clear any previous one."""
-    global copied_step_pos
-    if copied_step_pos is not None:
-        r, c = copied_step_pos
+    if state.copied_step_pos is not None:
+        r, c = state.copied_step_pos
         update_step_theme(r, c)  # restore the standard theme for the previous copy
-    copied_step_pos = (row, col)
+    state.copied_step_pos = (row, col)
     dpg.bind_item_theme(f"seq_cell_{row}_{col}", theme_step_copied)
 
 
 def copy_step(sender: Any, app_data: Any, user_data: Any) -> None:
     """Remember the full configuration of a step for later paste (e08)."""
-    global copied_step_data, active_step
     row, col = user_data
-    active_step = (row, col)
-    copied_step_data = copy.deepcopy(tracks_data[row]["steps"][col])
+    state.active_step = (row, col)
+    state.copied_step_data = copy.deepcopy(tracks_data[row]["steps"][col])
     _highlight_copied_step(row, col)
 
 
 def paste_step(sender: Any, app_data: Any, user_data: Any) -> None:
     """Apply the copied step configuration to the given step (e08)."""
-    global active_step
     row, col = user_data
-    active_step = (row, col)
-    if copied_step_data is None:
+    state.active_step = (row, col)
+    if state.copied_step_data is None:
         return
-    tracks_data[row]["steps"][col] = copy.deepcopy(copied_step_data)
+    tracks_data[row]["steps"][col] = copy.deepcopy(state.copied_step_data)
     update_step_ui(row, col)
 
 
 def paste_step_to_row(sender: Any, app_data: Any, user_data: Any) -> None:
     """Apply the copied step configuration to every step of the sequencer row (e08)."""
-    global active_step
     row, _ = user_data
-    active_step = (row, 0)
-    if copied_step_data is None:
+    state.active_step = (row, 0)
+    if state.copied_step_data is None:
         return
     for c in range(NUM_STEPS):
-        tracks_data[row]["steps"][c] = copy.deepcopy(copied_step_data)
+        tracks_data[row]["steps"][c] = copy.deepcopy(state.copied_step_data)
         update_step_ui(row, c)
 
 
 def on_copy_shortcut(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     """Ctrl+C: copy the last touched step (ignored while typing in an input)."""
-    if _any_input_focused() or active_step is None:
+    if _any_input_focused() or state.active_step is None:
         return
-    copy_step(None, None, active_step)
+    copy_step(None, None, state.active_step)
 
 
 def on_paste_shortcut(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     """Ctrl+V: paste into the last touched step (ignored while typing in an input)."""
-    if _any_input_focused() or active_step is None:
+    if _any_input_focused() or state.active_step is None:
         return
-    paste_step(None, None, active_step)
+    paste_step(None, None, state.active_step)
 
 
 def _on_copy_key(sender: Any, app_data: Any, user_data: Any) -> None:
@@ -1493,13 +1161,12 @@ def _any_input_focused() -> bool:
     return any(dpg.does_item_exist(tag) and dpg.is_item_focused(tag) for tag in INPUT_WIDGET_TAGS)
 
 
-def _set_step_active(row: int, col: int, state: bool) -> None:
+def _set_step_active(row: int, col: int, active: bool) -> None:
     """Set a step's active state and refresh its visuals — shared by mouse and MIDI."""
-    global active_step
-    active_step = (row, col)  # clicking a step makes it the shortcut target
-    tracks_data[row]["steps"][col]["active"] = state
+    state.active_step = (row, col)  # clicking a step makes it the shortcut target
+    tracks_data[row]["steps"][col]["active"] = active
     if dpg.does_item_exist(f"seq_cb_{row}_{col}"):
-        dpg.set_value(f"seq_cb_{row}_{col}", state)  # keep the cell checkbox in sync
+        dpg.set_value(f"seq_cb_{row}_{col}", active)  # keep the cell checkbox in sync
     update_step_theme(row, col)
 
 
@@ -1529,7 +1196,7 @@ def update_step_theme(row: int, col: int, is_head: bool = False) -> None:
     # Runs on any thread: capture state here, apply the theme on the main thread.
     cell_tag = f"seq_cell_{row}_{col}"
     is_active = tracks_data[row]["steps"][col]["active"]
-    launchpad_mirror_step(row, col, is_active, is_head)  # e09s03: LED mirror (thread-safe)
+    grid_mirror_step(row, col, is_active, is_head)  # e14s02: LED mirror (thread-safe)
     ui_task(lambda: _apply_step_theme(cell_tag, is_active, is_head))
 
 
@@ -1563,7 +1230,7 @@ def update_step_ui(row: int, col: int) -> None:
         )
         dpg.add_text(
             step_data["type"] if step_data["type"] != "NONE" else "",
-            color=palette_rgba(active_palette["text"]),
+            color=palette_rgba(state.active_palette["text"]),
             tag=f"seq_type_{row}_{col}",
         )
         _text_color_bindings[f"seq_type_{row}_{col}"] = "text"
@@ -1715,14 +1382,61 @@ def update_step_ui(row: int, col: int) -> None:
             indent=20,
         )
 
-    update_step_theme(row, col, is_head=(is_playing and current_step == col))
+    update_step_theme(row, col, is_head=(state.is_playing and state.current_step == col))
+
+
+def _add_tile_context_items(target_id: str) -> None:
+    """Both right-click actions of a Mediagrid tile: regen thumb + new mapping (e16).
+
+    Must run inside a ``with dpg.window(popup=True, ...)`` block so the items are
+    parented to that popup window. Every tile calls this — the two actions must
+    never drift apart.
+    """
+    dpg.add_menu_item(
+        label="Regenerate Thumbnail (Random)",
+        callback=regen_thumb_callback,
+        user_data=target_id,
+    )
+    dpg.add_menu_item(
+        label="New Mapping...",
+        callback=open_new_mapping_dialog,
+        user_data=target_id,
+    )
+
+
+def _tile_popup_tag(target_id: str) -> str:
+    """Tag of the single right-click action popup window of a Mediagrid tile."""
+    return f"tile_popup_{target_id}"
+
+
+def _create_tile_popup(target_id: str) -> None:
+    """One right-click action popup per tile, recreated on every grid rebuild.
+
+    DPG binds ONE handler registry per item (bind_item_handler_registry replaces
+    the previous one), so the old per-item ``dpg.popup`` registries were clobbered
+    by the tile click registry on every rebuild and the right-click menu died.
+    The fix: a single combined registry (left = select, right = show this popup
+    window) — no registry conflict, the menu survives rebuilds.
+    """
+    popup_tag = _tile_popup_tag(target_id)
+    if dpg.does_item_exist(popup_tag):
+        dpg.delete_item(popup_tag)
+    with dpg.window(popup=True, show=False, no_title_bar=True, autosize=True, tag=popup_tag):
+        _add_tile_context_items(target_id)
+
+
+def on_tile_context_click(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Right-click on a Mediagrid tile: show the tile's action popup (e16)."""
+    popup_tag = _tile_popup_tag(user_data)
+    if dpg.does_item_exist(popup_tag):
+        dpg.show_item(popup_tag)
 
 
 def regen_thumb_callback(sender: Any, app_data: Any, user_data: Any) -> None:
     target_id = user_data
-    if viosc_client:
+    if state.viosc_client:
         msg_addr = f"/viosc/regen_thumb/{target_id}"
-        viosc_client.send_message(msg_addr, [])
+        state.viosc_client.send_message(msg_addr, [])
         append_log("OUT", msg_addr)
 
     with dpg.mutex():
@@ -1743,12 +1457,9 @@ def regen_thumb_callback(sender: Any, app_data: Any, user_data: Any) -> None:
                 tag=loading_tag,
                 parent=container_tag,
             )
-            with dpg.popup(loading_tag, mousebutton=dpg.mvMouseButton_Right):
-                dpg.add_menu_item(
-                    label="Regenerate Thumbnail (Random)",
-                    callback=regen_thumb_callback,
-                    user_data=target_id,
-                )
+            click_reg_tag = media_tile_click_registry_tag(target_id)
+            if dpg.does_item_exist(click_reg_tag):
+                dpg.bind_item_handler_registry(loading_tag, click_reg_tag)
 
 
 def apply_thumbnail_texture(name: str, idx: str, img_data: Any, w: int, h: int) -> None:
@@ -1783,12 +1494,12 @@ def apply_thumbnail_texture(name: str, idx: str, img_data: Any, w: int, h: int) 
             dpg.delete_item(loading_tag)
         dpg.add_image(texture_tag=tex_tag, tag=img_tag, width=115, height=65, parent=container_tag)
 
-        with dpg.popup(img_tag, mousebutton=dpg.mvMouseButton_Right):
-            dpg.add_menu_item(
-                label="Regenerate Thumbnail (Random)",
-                callback=regen_thumb_callback,
-                user_data=target_id,
-            )
+        # e16: the img joins the tile's combined click registry (left = select,
+        # right = action popup) — the old per-item popup registry here was
+        # replaced by the click registry on the next rebuild, killing right-click.
+        click_reg_tag = media_tile_click_registry_tag(target_id)
+        if dpg.does_item_exist(click_reg_tag):
+            dpg.bind_item_handler_registry(img_tag, click_reg_tag)
 
     for r, track in enumerate(tracks_data):
         if track.get("target_id") == target_id:
@@ -1889,16 +1600,13 @@ def _show_failed_tile_label(target_id: str) -> None:
     dpg.add_text(
         THUMB_FAIL_LABEL,
         parent=container_tag,
-        color=palette_rgba(active_palette["warning"]),
+        color=palette_rgba(state.active_palette["warning"]),
         tag=loading_tag,
     )
     _text_color_bindings[loading_tag] = "text_dim"
-    with dpg.popup(loading_tag, mousebutton=dpg.mvMouseButton_Right):
-        dpg.add_menu_item(
-            label="Regenerate Thumbnail (Random)",
-            callback=regen_thumb_callback,
-            user_data=target_id,
-        )
+    click_reg_tag = media_tile_click_registry_tag(target_id)
+    if dpg.does_item_exist(click_reg_tag):
+        dpg.bind_item_handler_registry(loading_tag, click_reg_tag)
 
 
 def _char_width_px() -> int:
@@ -1945,9 +1653,9 @@ def _tile_theme_for(idx: Any, target_id: str) -> Any:
     current source alone uses the lighter non-green theme; everything else is
     plain. The viseq selection wins when both point at the same source.
     """
-    if target_id == viseq_selected_source:
+    if target_id == state.viseq_selected_source:
         return theme_selected_clip
-    if str(idx) == str(global_vimix_state.get("current_source")):
+    if str(idx) == str(state.global_vimix_state.get("current_source")):
         return theme_vimix_current_clip
     return theme_normal_clip
 
@@ -1959,7 +1667,7 @@ def refresh_tile_selection_themes() -> None:
     touching the grid signature, so the theme binding loop re-runs on the
     existing tiles instead of rebuilding them.
     """
-    for idx, props in global_vimix_state.get("sources", {}).items():
+    for idx, props in state.global_vimix_state.get("sources", {}).items():
         name = props.get("name")
         target_id = str(name) if name else str(idx)
         tile_tag = f"tile_{target_id}"
@@ -1969,11 +1677,10 @@ def refresh_tile_selection_themes() -> None:
 
 def on_media_tile_click(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     """Select a media from the Mediagrid — the viseq-side primary selection (e10s06)."""
-    global viseq_selected_source
     target_id = user_data
-    if target_id == viseq_selected_source:
+    if target_id == state.viseq_selected_source:
         return
-    viseq_selected_source = target_id
+    state.viseq_selected_source = target_id
     refresh_tile_selection_themes()
 
 
@@ -1984,9 +1691,9 @@ def request_missing_thumbnails(now: float) -> None:
     the threshold fires ONE regen retry and the tile flips to the failed label
     (rendered by update_vimix_sources_ui). A successful reply clears the counter.
     """
-    if not viosc_client:
+    if not state.viosc_client:
         return
-    for idx, props in global_vimix_state.get("sources", {}).items():
+    for idx, props in state.global_vimix_state.get("sources", {}).items():
         name = props.get("name")
         uri = props.get("uri")
         target_id = str(name) if name else str(idx)
@@ -1995,19 +1702,18 @@ def request_missing_thumbnails(now: float) -> None:
             last_thumb = request_timestamps.get(f"thumb_{target_id}", 0)
             if now - last_thumb > THUMB_REQUEST_INTERVAL:
                 msg_addr = f"/viosc/thumb/{target_id}"
-                viosc_client.send_message(msg_addr, ["all"])
+                state.viosc_client.send_message(msg_addr, ["all"])
                 append_log("OUT", msg_addr)
                 request_timestamps[f"thumb_{target_id}"] = now
                 thumb_fail_count[target_id] = thumb_fail_count.get(target_id, 0) + 1
                 if thumb_fail_count[target_id] == THUMB_FAIL_THRESHOLD:
                     regen_addr = f"/viosc/regen_thumb/{target_id}"
-                    viosc_client.send_message(regen_addr, [])
+                    state.viosc_client.send_message(regen_addr, [])
                     append_log("OUT", regen_addr)
                     _show_failed_tile_label(target_id)
 
 
 def update_vimix_sources_ui(json_string: str) -> None:
-    global global_vimix_state, last_ui_signature, last_num_cols, viseq_selected_source
     try:
         payload = json.loads(json_string)
         if not isinstance(payload, dict):
@@ -2019,8 +1725,8 @@ def update_vimix_sources_ui(json_string: str) -> None:
             raise ValueError("replydata 'sources' is not an object")
         # Drop malformed entries so a single bad source can't crash the UI/main loop
         sources = {k: v for k, v in sources.items() if isinstance(v, dict)}
-        global_vimix_state["current_source"] = payload.get("current_source")
-        global_vimix_state["sources"] = sources
+        state.global_vimix_state["current_source"] = payload.get("current_source")
+        state.global_vimix_state["sources"] = sources
 
         # L-1: prune cached state for sources that no longer exist (main thread only),
         # so thumbnails_data / request_timestamps / registry textures do not grow across churn.
@@ -2037,6 +1743,9 @@ def update_vimix_sources_ui(json_string: str) -> None:
                 click_reg_tag = media_tile_click_registry_tag(target_id)
                 if dpg.does_item_exist(click_reg_tag):
                     dpg.delete_item(click_reg_tag)  # stale click registry must not linger
+                popup_tag = _tile_popup_tag(target_id)
+                if dpg.does_item_exist(popup_tag):
+                    dpg.delete_item(popup_tag)  # stale action popup must not linger (e16)
         for key in list(request_timestamps):
             if key.startswith("thumb_"):
                 target_id = key[len("thumb_") :]
@@ -2045,11 +1754,13 @@ def update_vimix_sources_ui(json_string: str) -> None:
         for target_id in list(thumb_fail_count):
             if target_id not in live_ids:
                 thumb_fail_count.pop(target_id)
-        if viseq_selected_source is not None and viseq_selected_source not in live_ids:
-            viseq_selected_source = None  # a pruned source can't stay selected (e10s06)
+        if mapper.prune_mappings(live_ids):
+            refresh_mapper_ui()  # a removed source takes its mappings with it (e16)
+        if state.viseq_selected_source is not None and state.viseq_selected_source not in live_ids:
+            state.viseq_selected_source = None  # a pruned source can't stay selected (e10s06)
 
-        current_source = global_vimix_state["current_source"]
-        data_dict = global_vimix_state["sources"]
+        current_source = state.global_vimix_state["current_source"]
+        data_dict = state.global_vimix_state["sources"]
 
         def get_sort_index(k):
             idx_val = data_dict[k].get("index")
@@ -2066,11 +1777,11 @@ def update_vimix_sources_ui(json_string: str) -> None:
         sorted_keys = sorted(data_dict.keys(), key=get_sort_index)
         # current_source joins the signature so a selection change re-runs the structural
         # tile updates (theme/title/index) — the only per-source fields it affects (perf e07).
-        current_signature = f"cols:{last_num_cols}_src:{current_source}_" + str(
+        current_signature = f"cols:{state.last_num_cols}_src:{current_source}_" + str(
             [(k, data_dict[k].get("name"), data_dict[k].get("index")) for k in sorted_keys]
         )
 
-        if current_signature != last_ui_signature:
+        if current_signature != state.last_ui_signature:
             # every rebuild recreates the widgets from scratch (defaults): the per-cell
             # value cache must not skip writes for the freshly created cells (perf e07 P0)
             _media_cell_cache.clear()
@@ -2114,7 +1825,7 @@ def update_vimix_sources_ui(json_string: str) -> None:
                         val_str = str(val)
                     dpg.add_text(val_str, parent=r_id, tag=tag_name)
 
-            num_cols = last_num_cols
+            num_cols = state.last_num_cols
             t_grid = dpg.add_table(
                 parent="vimix_media_group",
                 tag="media_grid",
@@ -2152,9 +1863,19 @@ def update_vimix_sources_ui(json_string: str) -> None:
                         # args (Python 3.13 counts defaults -> 4 args, extras are
                         # None), so the target id must be captured, never received.
                         dpg.add_item_clicked_handler(
-                            0,  # left click selects; right-click keeps the regen popup
+                            0,  # left click selects the media (e10s06)
                             callback=lambda *_, t=target_id: on_media_tile_click(None, None, t),
                         )
+                        dpg.add_item_clicked_handler(
+                            1,  # right click opens the tile action popup (e16)
+                            callback=lambda *_, t=target_id: on_tile_context_click(None, None, t),
+                        )
+                    # e16: ONE popup window per tile, opened by the right-click
+                    # handler above. The old per-item dpg.popup registries were
+                    # replaced by the click registry on every rebuild (DPG binds a
+                    # single registry per item) — the menu silently died. The
+                    # combined registry + shared popup survives rebuilds.
+                    _create_tile_popup(target_id)
 
                     title_tag = f"tile_title_{target_id}"
                     if dpg.does_item_exist(title_tag):
@@ -2163,16 +1884,10 @@ def update_vimix_sources_ui(json_string: str) -> None:
                         "---",
                         parent=cw,
                         wrap=MEDIA_TITLE_WRAP,
-                        color=palette_rgba(active_palette["text_bright"]),
+                        color=palette_rgba(state.active_palette["text_bright"]),
                         tag=title_tag,
                     )
                     _text_color_bindings[title_tag] = "text_bright"
-                    with dpg.popup(title_tag, mousebutton=dpg.mvMouseButton_Right):
-                        dpg.add_menu_item(
-                            label="Regenerate Thumbnail (Random)",
-                            callback=regen_thumb_callback,
-                            user_data=target_id,
-                        )
 
                     dpg.add_spacer(parent=cw, height=4)
                     container_tag = f"thumb_container_{target_id}"
@@ -2189,12 +1904,6 @@ def update_vimix_sources_ui(json_string: str) -> None:
                         dpg.add_image(
                             texture_tag=tex_tag, parent=g_id, tag=img_tag, width=115, height=65
                         )
-                        with dpg.popup(img_tag, mousebutton=dpg.mvMouseButton_Right):
-                            dpg.add_menu_item(
-                                label="Regenerate Thumbnail (Random)",
-                                callback=regen_thumb_callback,
-                                user_data=target_id,
-                            )
                     else:
                         loading_tag = f"loading_txt_{target_id}"
                         if dpg.does_item_exist(loading_tag):
@@ -2204,19 +1913,13 @@ def update_vimix_sources_ui(json_string: str) -> None:
                             THUMB_FAIL_LABEL if is_failed else " [ Loading... ]",
                             parent=g_id,
                             color=palette_rgba(
-                                active_palette["warning"]
+                                state.active_palette["warning"]
                                 if is_failed
-                                else active_palette["text_dim"]
+                                else state.active_palette["text_dim"]
                             ),
                             tag=loading_tag,
                         )
                         _text_color_bindings[loading_tag] = "text_dim"
-                        with dpg.popup(loading_tag, mousebutton=dpg.mvMouseButton_Right):
-                            dpg.add_menu_item(
-                                label="Regenerate Thumbnail (Random)",
-                                callback=regen_thumb_callback,
-                                user_data=target_id,
-                            )
 
                     # Compact per-media readout: index badge + bare alpha value (e06)
                     index_tag = f"tile_index_{target_id}"
@@ -2265,7 +1968,7 @@ def update_vimix_sources_ui(json_string: str) -> None:
                     idx_val = props.get("index")
                     idx_str = str(idx_val) if idx_val is not None else str(idx)
                     dpg.configure_item(f"tile_index_{target_id}", label=idx_str)
-            last_ui_signature = current_signature
+            state.last_ui_signature = current_signature
 
         # Value per-source updates: every cell write goes through the per-cell cache, so a
         # push that changes nothing performs zero dpg calls (perf e07 P0; measured ~20
@@ -2294,83 +1997,14 @@ def update_vimix_sources_ui(json_string: str) -> None:
         log_error("UI update", str(e))
 
 
-def thumbnail_decoder_worker() -> None:
-    while True:
-        name, idx, blob_bytes = blob_queue.get()
-        try:
-            image = Image.open(io.BytesIO(blob_bytes))
-            width, height = image.size
-            if width * height > MAX_THUMBNAIL_PIXELS:
-                raise ValueError(f"thumbnail too large: {width}x{height} px")
-            rgba = image.convert("RGBA")
-            img_data = np.array(rgba, dtype=np.float32) / 255.0
-            texture_queue.put((name, idx, img_data.flatten(), width, height))
-        except Exception as e:
-            print(f"[viseq Decoder Error] Unable to decode '{name}': {e}")
-        blob_queue.task_done()
-
-
 # ==============================================================================
 # MONITOR PLAYERS
 # ==============================================================================
-monitor_players: list[dict[str, Any]] = []  # each: {"id", "tag", "target_id", "props"}
-monitor_player_counter = 0
-
-
-def get_current_target_id() -> str | None:
-    """Return the target id of the currently selected media (e10s06).
-
-    The viseq Mediagrid selection is primary; before the first click (or after
-    the selected source is removed) it falls back to the vimix current source.
-    """
-    if viseq_selected_source is not None:
-        return viseq_selected_source
-    current_source = global_vimix_state.get("current_source")
-    if current_source is None:
-        return None
-    for k, props in global_vimix_state.get("sources", {}).items():
-        if str(k) == str(current_source):
-            name = props.get("name")
-            return str(name) if name else str(k)
-    return None
-
-
-def find_source_by_name(name: str) -> Any:
-    for idx, props in global_vimix_state.get("sources", {}).items():
-        if str(props.get("name")) == str(name):
-            return idx, props
-    return None, None
-
-
-def find_player_index(player_id: int) -> int | None:
-    for i, p in enumerate(monitor_players):
-        if p["id"] == player_id:
-            return i
-    return None
-
-
-def send_monitor_command(player_id: int) -> None:
-    idx = find_player_index(player_id)
-    if idx is None:
-        return
-    player = monitor_players[idx]
-    target_id = player["target_id"]
-    if not target_id:
-        return
-    addr = f"/viosc/monitor/{target_id}"
-    props = player.get("props", [])
-    if props:
-        osc_client.send_message(addr, list(props))
-        append_log("OUT", f"{addr} {props}")
-    else:
-        osc_client.send_message(addr, [])
-        append_log("OUT", f"{addr} (stop)")
 
 
 def new_monitor_player(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    global monitor_player_counter
-    monitor_player_counter += 1
-    player_id = monitor_player_counter
+    state.monitor_player_counter += 1
+    player_id = state.monitor_player_counter
     tag = f"monitor_player_{player_id}"
     player = {
         "id": player_id,
@@ -2707,46 +2341,19 @@ def remove_monitor_player(player_id: int) -> None:
     del monitor_players[idx]
 
 
-def incoming_osc_handler(address: str, *args: Any) -> None:
-    append_log("IN ", address)
-    try:
-        if address == "/viosc/replydata" and args and len(args[0]) <= MAX_STATE_JSON_BYTES:
-            ui_state_queue.put(args[0])
-        elif (
-            address.startswith("/viosc/replythumb/")
-            and args
-            and len(args[0]) <= MAX_THUMBNAIL_BLOB_BYTES
-        ):
-            parts = address.split("/")
-            blob_queue.put((parts[-2], parts[-1], args[0]))
-    except Exception as e:
-        log_error("OSC input", str(e))
-
-
-class ViseqOSCUDPServer(osc_server.ThreadingOSCUDPServer):
-    """OSC receiver with a recv buffer large enough for full thumbnail blobs.
-
-    socketserver.UDPServer defaults max_packet_size to 8192, which truncates
-    thumbnail datagrams larger than 8 KB before python-osc can parse them
-    (BUG-2026-08-27T201742); the buffer must fit the largest accepted blob plus
-    the OSC header (address + typetag + size + padding) margin.
-    """
-
-    max_packet_size = MAX_THUMBNAIL_BLOB_BYTES + 4096
-
-
 def start_osc_server(ip: str, port: int) -> bool:
     """Start the local OSC listening server (main thread); True when it is up."""
-    global local_osc_server, local_server_thread, is_server_running
-    if is_server_running:
+    if state.is_server_running:
         return True
     try:
         disp = dispatcher.Dispatcher()
         disp.set_default_handler(incoming_osc_handler)
-        local_osc_server = ViseqOSCUDPServer((ip, port), disp)
-        local_server_thread = threading.Thread(target=local_osc_server.serve_forever, daemon=True)
-        local_server_thread.start()
-        is_server_running = True
+        state.local_osc_server = ViseqOSCUDPServer((ip, port), disp)
+        state.local_server_thread = threading.Thread(
+            target=state.local_osc_server.serve_forever, daemon=True
+        )
+        state.local_server_thread.start()
+        state.is_server_running = True
         dpg.set_item_label("btn_server_toggle", "Stop Server")
         dpg.set_value("server_status", f"Server Status: Listening on {ip}:{port}")
         return True
@@ -2756,13 +2363,12 @@ def start_osc_server(ip: str, port: int) -> bool:
 
 
 def toggle_local_server() -> None:
-    global local_osc_server, local_server_thread, is_server_running
-    if is_server_running:
-        if local_osc_server and local_server_thread is not None:
-            local_osc_server.shutdown()
-            local_server_thread.join(timeout=1.0)
-            local_osc_server = None
-        is_server_running = False
+    if state.is_server_running:
+        if state.local_osc_server and state.local_server_thread is not None:
+            state.local_osc_server.shutdown()
+            state.local_server_thread.join(timeout=1.0)
+            state.local_osc_server = None
+        state.is_server_running = False
         dpg.set_item_label("btn_server_toggle", "Start Server")
         dpg.set_value("server_status", "Server Status: Stopped")
     else:
@@ -2771,9 +2377,8 @@ def toggle_local_server() -> None:
 
 def connect_osc_client(ip: str, port: int) -> bool:
     """Create the viOSC client (main thread); True when ready."""
-    global viosc_client
     try:
-        viosc_client = udp_client.SimpleUDPClient(ip, port)
+        state.viosc_client = udp_client.SimpleUDPClient(ip, port)
         dpg.set_value("viosc_status", f"Client Status: Ready on {ip}:{port}")
         return True
     except Exception:
@@ -2794,20 +2399,19 @@ def autostart_osc() -> None:
 
 def midi_action_beat_source(mode: str) -> None:
     """Select the sequencer beat source — shared by mouse and MIDI (e09)."""
-    global beat_source, current_bpm
-    beat_source = mode
+    state.beat_source = mode
     for m in BEAT_SOURCE_LABELS:
-        dpg.set_value(f"cb_beat_{m}", m == beat_source)
-    is_manual = beat_source == BEAT_SOURCE_MANUAL
+        dpg.set_value(f"cb_beat_{m}", m == state.beat_source)
+    is_manual = state.beat_source == BEAT_SOURCE_MANUAL
     dpg.configure_item("manual_bpm_input", show=is_manual)
     dpg.configure_item("btn_tap", show=is_manual)
     dpg.configure_item(
         "manual_bpm_text", show=is_manual
     )  # hide the stale readout outside manual mode
     if is_manual:
-        current_bpm = float(dpg.get_value("manual_bpm_input"))
-        dpg.set_value("testo_bpm", f"BPM: {current_bpm:.1f}")
-        dpg.set_value("manual_bpm_text", f"{current_bpm:.0f} BPM")
+        state.current_bpm = float(dpg.get_value("manual_bpm_input"))
+        dpg.set_value("testo_bpm", f"BPM: {state.current_bpm:.1f}")
+        dpg.set_value("manual_bpm_text", f"{state.current_bpm:.0f} BPM")
 
 
 def on_beat_source(sender: Any, app_data: Any, user_data: Any) -> None:
@@ -2820,15 +2424,13 @@ def on_beat_source(sender: Any, app_data: Any, user_data: Any) -> None:
 
 def on_manual_bpm(sender: Any, app_data: Any, user_data: Any) -> None:
     """Set the sequencer BPM from the manual numeric input."""
-    global current_bpm
-    current_bpm = float(app_data)
-    dpg.set_value("testo_bpm", f"BPM: {current_bpm:.1f}")
-    dpg.set_value("manual_bpm_text", f"{current_bpm:.0f} BPM")
+    state.current_bpm = float(app_data)
+    dpg.set_value("testo_bpm", f"BPM: {state.current_bpm:.1f}")
+    dpg.set_value("manual_bpm_text", f"{state.current_bpm:.0f} BPM")
 
 
 def midi_action_transport_tap() -> None:
     """Register a tap for the manual BPM — shared by mouse and MIDI (e09)."""
-    global current_bpm
     now = time.time()
     if tap_times and now - tap_times[-1] > 2.0:
         tap_times.clear()  # stale tap starts a new sequence
@@ -2837,10 +2439,10 @@ def midi_action_transport_tap() -> None:
     if len(tap_times) >= 2:
         intervals = [tap_times[i + 1] - tap_times[i] for i in range(len(tap_times) - 1)]
         bpm = 60.0 / (sum(intervals) / len(intervals))
-        current_bpm = round(bpm, 2)
-        dpg.set_value("manual_bpm_input", round(current_bpm))
-        dpg.set_value("testo_bpm", f"BPM: {current_bpm:.1f}")
-        dpg.set_value("manual_bpm_text", f"{current_bpm:.0f} BPM")
+        state.current_bpm = round(bpm, 2)
+        dpg.set_value("manual_bpm_input", round(state.current_bpm))
+        dpg.set_value("testo_bpm", f"BPM: {state.current_bpm:.1f}")
+        dpg.set_value("manual_bpm_text", f"{state.current_bpm:.0f} BPM")
 
 
 def tap_bpm(sender: Any, app_data: Any, user_data: Any) -> None:
@@ -2854,59 +2456,6 @@ def midi_beats_from_pulses(pulses: int) -> int:
 
 
 # ---------- e09: MIDI control engine ----------
-def binding_matches(binding: dict[str, Any], msg_type: str, number: int, channel: int) -> bool:
-    """True when a parsed MIDI message (type, number, channel) matches the binding."""
-    if binding.get("type") != msg_type:
-        return False
-    if int(binding.get("number", -1)) != number:
-        return False
-    return int(binding.get("channel", 0)) == channel
-
-
-def _binding_device_ok(binding: dict[str, Any], port_name: str) -> bool:
-    """A binding matches the port when its device is empty (wildcard) or equals it."""
-    dev = binding.get("device")
-    return not dev or dev == port_name or dev == "*"
-
-
-def _parse_midi_msg(msg: Any) -> tuple[str | None, int, int]:
-    """Map a mido message to (type, number, value); release edges and other types -> None.
-
-    note_on velocity>0 is the trigger edge (velocity 0 and note_off are releases and must
-    never fire a binding — Launchpad sends note_on with velocity 0 on release).
-    """
-    if msg.type == "note_on":
-        if msg.velocity > 0:
-            return ("note", int(msg.note), int(msg.velocity))
-        return (None, 0, 0)
-    if msg.type == "note_off":
-        return (None, 0, 0)
-    if msg.type == "control_change":
-        return ("cc", int(msg.control), int(msg.value))
-    return (None, 0, 0)
-
-
-def resolve_midi_message(msg: Any, port_name: str) -> list[tuple[str, dict[str, Any], int]]:
-    """Bindings matching a raw mido message on the given port -> (action, params, value)."""
-    msg_type, number, value = _parse_midi_msg(msg)
-    if msg_type is None:
-        return []
-    channel = int(getattr(msg, "channel", 0))
-    out: list[tuple[str, dict[str, Any], int]] = []
-    for binding in list(midi_bindings) + list(midi_auto_bindings):
-        if not _binding_device_ok(binding, port_name):
-            continue
-        if binding_matches(binding, msg_type, number, channel):
-            out.append((str(binding.get("action", "")), dict(binding.get("params") or {}), value))
-    return out
-
-
-def binding_source_from_message(msg: Any, port_name: str) -> dict[str, Any] | None:
-    """The (device, channel, type, number) half of a binding from a message; releases -> None."""
-    msg_type, number, _ = _parse_midi_msg(msg)
-    if msg_type is None:
-        return None
-    return {"device": port_name, "channel": int(msg.channel), "type": msg_type, "number": number}
 
 
 def midi_execute(action: str, params: dict[str, Any], value: int) -> None:
@@ -2927,6 +2476,8 @@ def midi_execute(action: str, params: dict[str, Any], value: int) -> None:
         midi_action_beat_source(str(params.get("mode", "")))
     elif action == MIDI_ACTION_TRACK_ASSIGN:
         midi_action_track_assign(int(params.get("row", 0)))
+    elif action == MIDI_ACTION_MAPPER_MAPPING:  # e18: drive a Mapper control
+        midi_mapping_value(int(params.get("mapping_id", 0)), value)
 
 
 def _midi_enqueue_execute(action: str, params: dict[str, Any], value: int) -> None:
@@ -2934,28 +2485,88 @@ def _midi_enqueue_execute(action: str, params: dict[str, Any], value: int) -> No
     ui_task(lambda: midi_execute(action, params, value))
 
 
+def _log_unmatched_midi(msg: Any, port_name: str) -> None:
+    """Throttled diagnostic: log an incoming message that no binding resolved (e14).
+
+    At most one line per second per port — enough to see the device's messages in the
+    Logs window without flooding it.
+    """
+    now = time.time()
+    if now - _last_unmatched_log.get(port_name, 0.0) < 1.0:
+        return
+    _last_unmatched_log[port_name] = now
+    msg_type, number, value = _parse_midi_msg(msg)
+    if msg_type is not None:
+        append_log("MIDI", f"unmatched {msg_type} {number} (val {value}) on {port_name}")
+
+
+def _log_first_midi_message(msg: Any, port_name: str) -> None:
+    """Log the FIRST message seen on a port — tells input from 'no traffic' (e14 debug)."""
+    if port_name in _midi_first_msg_logged:
+        return
+    _midi_first_msg_logged.add(port_name)
+    msg_type, number, value = _parse_midi_msg(msg)
+    if msg_type is not None:
+        append_log("MIDI", f"first msg on {port_name}: {msg_type} {number} val {value}")
+
+
 def handle_midi_message(msg: Any, port_name: str) -> None:
     """Route one incoming message (worker thread): learn capture first, then dispatch."""
-    if midi_learn_pending is not None:
+    _log_first_midi_message(msg, port_name)
+    if state.midi_learn_pending is not None:
         source = binding_source_from_message(msg, port_name)
         if source is not None:
-            ui_task(lambda: midi_learn_complete(source))
+            ui_task(lambda: midi_learn_complete(source, port_name))
             return
-    for action, params, value in resolve_midi_message(msg, port_name):
+    controller = find_controller_by_port(port_name)
+    if controller is not None:
+        bindings: list[dict[str, Any]] | None = list(controller.get("bindings") or []) + list(
+            controller.get("auto_bindings") or []
+        )
+    else:
+        bindings = None  # legacy flat lists (pre-e14 paths/tests)
+    resolved = False
+    for action, params, value in resolve_midi_message(msg, port_name, bindings):
+        resolved = True
         _midi_enqueue_execute(action, params, value)
+    if not resolved and bindings is not None:
+        _log_unmatched_midi(msg, port_name)
 
 
-def midi_learn_complete(binding: dict[str, Any]) -> None:
-    """Main thread: merge the captured source with the pending action and store the binding."""
-    global midi_learn_pending
-    if midi_learn_pending is None:
+def _exit_midi_learn() -> None:
+    """Turn MIDI Learn off and restore the button/status (cancel, complete, disable)."""
+    state.midi_learn_mode = False
+    state.midi_learn_pending = None
+    if dpg.does_item_exist("midi_learn_btn"):
+        dpg.set_item_label("midi_learn_btn", "Learn mapping...")
+    if dpg.does_item_exist("midi_learn_status"):
+        dpg.set_value("midi_learn_status", "MIDI Learn off")
+
+
+def midi_learn_complete(binding: dict[str, Any], port_name: str | None = None) -> None:
+    """Main thread: merge the captured source with the pending action and store the binding
+    on the owning controller (legacy flat list when no controller owns the port).
+
+    One-shot (e14 bug fix): learn mode exits after the capture, so the learnable
+    sequencer controls (PLAY, beat sources, step cells) are never left hijacked.
+    """
+    if state.midi_learn_pending is None:
         return
-    action, params = midi_learn_pending
+    action, params = state.midi_learn_pending
     binding["action"] = action
     binding["params"] = params
-    midi_bindings.append(binding)
-    midi_learn_pending = None
+    controller = find_controller_by_port(port_name) if port_name else None
+    if controller is not None:
+        controller.setdefault("bindings", []).append(binding)
+    else:
+        midi_bindings.append(binding)
+    state.midi_learn_pending = None
+    _exit_midi_learn()
     refresh_midi_mappings_ui()
+    if action == MIDI_ACTION_MAPPER_MAPPING:  # e18: bind the learned control to the mapping
+        mapper.set_mapping_midi(int(params.get("mapping_id", 0)), binding)
+        _close_mapper_learn_window()
+        refresh_mapper_ui()
     if dpg.does_item_exist("midi_learn_btn"):
         dpg.set_item_label("midi_learn_btn", "Learn mapping...")
     if dpg.does_item_exist("midi_learn_status"):
@@ -2970,13 +2581,18 @@ def learnable(callback: Any, action_builder: Callable[[Any], tuple[str, dict[str
 
     In learn mode the wrapper stores (action, params) from action_builder(user_data) into
     midi_learn_pending and skips the real callback; otherwise it delegates unchanged, so a
-    mouse click and a MIDI trigger share the exact same callback path (e09s02).
+    mouse click and a MIDI trigger share the exact same callback path (e09s02). A stale
+    learn session (past MIDI_LEARN_TIMEOUT_SECONDS) expires and delegates, so the MIDI
+    logic can never permanently disable the sequencer controls (e14 bug fix).
     """
 
     def wrapper(sender: Any, app_data: Any, user_data: Any) -> None:
-        global midi_learn_pending
-        if midi_learn_mode:
-            midi_learn_pending = action_builder(user_data)
+        if state.midi_learn_mode:
+            if time.time() - state.midi_learn_started_at > MIDI_LEARN_TIMEOUT_SECONDS:
+                _exit_midi_learn()
+                callback(sender, app_data, user_data)
+                return
+            state.midi_learn_pending = action_builder(user_data)
             if dpg.does_item_exist("midi_learn_status"):
                 dpg.set_value("midi_learn_status", "Now press your MIDI button")
             return
@@ -2987,21 +2603,16 @@ def learnable(callback: Any, action_builder: Callable[[Any], tuple[str, dict[str
 
 def toggle_midi_learn(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     """Toggle MIDI Learn mode from the MIDI window; the button doubles as Cancel (e09s02)."""
-    global midi_learn_mode, midi_learn_pending
-    if midi_learn_mode:
-        midi_learn_mode = False
-        midi_learn_pending = None
-        if dpg.does_item_exist("midi_learn_btn"):
-            dpg.set_item_label("midi_learn_btn", "Learn mapping...")
-        if dpg.does_item_exist("midi_learn_status"):
-            dpg.set_value("midi_learn_status", "MIDI Learn off")
+    if state.midi_learn_mode:
+        _exit_midi_learn()
         return
-    if not midi_enabled:
+    if not state.midi_enabled:
         if dpg.does_item_exist("midi_learn_status"):
             dpg.set_value("midi_learn_status", "Enable MIDI first (tick Enable MIDI above)")
         return
-    midi_learn_mode = True
-    midi_learn_pending = None
+    state.midi_learn_mode = True
+    state.midi_learn_pending = None
+    state.midi_learn_started_at = time.time()
     if dpg.does_item_exist("midi_learn_btn"):
         dpg.set_item_label("midi_learn_btn", "Cancel learn")
     if dpg.does_item_exist("midi_learn_status"):
@@ -3010,22 +2621,9 @@ def toggle_midi_learn(sender: Any = None, app_data: Any = None, user_data: Any =
 
 def on_midi_enable(sender: Any, app_data: Any, user_data: Any) -> None:
     """MIDI window Enable checkbox: persist and apply the engine toggle (e09s02)."""
-    global midi_learn_mode, midi_learn_pending
     set_midi_enabled(bool(app_data))
-    if not app_data and midi_learn_mode:  # disabling cancels an in-flight learn
-        midi_learn_mode = False
-        midi_learn_pending = None
-        if dpg.does_item_exist("midi_learn_btn"):
-            dpg.set_item_label("midi_learn_btn", "Learn mapping...")
-
-
-def on_midi_input_port(sender: Any, app_data: Any, user_data: Any) -> None:
-    """MIDI device combo: remember the chosen input port (e09s02)."""
-    global midi_input_port
-    midi_input_port = app_data or None
-    cfg = load_config()
-    cfg["midi"]["input_port"] = midi_input_port
-    save_config(cfg)
+    if not app_data and state.midi_learn_mode:  # disabling cancels an in-flight learn
+        _exit_midi_learn()
 
 
 def _midi_binding_label(binding: dict[str, Any]) -> str:
@@ -3039,290 +2637,551 @@ def _midi_binding_label(binding: dict[str, Any]) -> str:
 
 
 def refresh_midi_mappings_ui() -> None:
-    """Rebuild the MIDI Mappings window list (main thread; call after any change)."""
+    """Rebuild the Bindings list for the selected controller (main thread) (e14s03)."""
     if not dpg.does_item_exist("midi_mappings_group"):
         return
     dpg.delete_item("midi_mappings_group", children_only=True)
-    for idx, binding in enumerate(midi_bindings):
+    bindings = selected_bindings()
+    for idx, binding in enumerate(bindings):
         with dpg.group(horizontal=True, parent="midi_mappings_group"):
             dpg.add_text(_midi_binding_label(binding))
             dpg.add_button(label="Delete", callback=delete_midi_binding, user_data=idx)
 
 
 def delete_midi_binding(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Remove a binding by list index and refresh the Mappings window (e09s02)."""
+    """Remove a binding by list index from the selected controller and refresh (e14s03)."""
     idx = int(user_data)
-    if 0 <= idx < len(midi_bindings):
-        del midi_bindings[idx]
+    bindings = selected_bindings()
+    if 0 <= idx < len(bindings):
+        del bindings[idx]
     refresh_midi_mappings_ui()
-
-
-def save_midi_bindings(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Persist the current MIDI bindings to the config (e09s02)."""
-    cfg = load_config()
-    cfg["midi"]["bindings"] = midi_bindings
-    save_config(cfg)
 
 
 def refresh_midi_devices(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Re-scan MIDI inputs and update the Controller combo (keeps the selection)."""
-    global _midi_input_devices
-    try:
-        import mido
+    """Re-scan MIDI inputs and update the Controllers Add combo (e14s03)."""
+    if dpg.does_item_exist("midi_add_combo"):
+        dpg.configure_item("midi_add_combo", items=available_controller_ports())
 
-        _midi_input_devices = list(mido.get_input_names())
-    except Exception:
-        _midi_input_devices = []
-    if dpg.does_item_exist("midi_input_combo"):
-        dpg.configure_item("midi_input_combo", items=_midi_input_devices)
-        if midi_input_port in _midi_input_devices:
-            dpg.set_value("midi_input_combo", midi_input_port)
+
+def add_controller_from_port(port_name: str) -> None:
+    """Add a MIDI input port as a controller (profile auto-detected) and persist (e14s03)."""
+    if not port_name or find_controller_by_port(port_name) is not None:
+        return
+    profile = match_controller_profile(port_name, controller_profiles())
+    has_grid = bool(profile and profile.get("features", {}).get("grid"))
+    controller: dict[str, Any] = {
+        "port": port_name,
+        "profile_id": profile["id"] if profile else "",
+        "role": "grid" if has_grid and grid_controller() is None else None,
+        "bindings": [],
+        "output": None,
+        "auto_bindings": [],
+    }
+    midi_controllers.append(controller)
+    save_midi_controllers()
+    render_controllers_ui()
+
+
+def remove_controller(port_name: str) -> None:
+    """Remove a controller (closes its output) and persist (e14s03)."""
+    controller = find_controller_by_port(port_name)
+    if controller is not None:
+        controller_disconnect(controller)
+        midi_controllers.remove(controller)
+    save_midi_controllers()
+    render_controllers_ui()
+
+
+def assign_grid_role(port_name: str) -> None:
+    """Designate one controller as the sequencer grid; the role is exclusive (e14s03)."""
+    for controller in midi_controllers:
+        controller["role"] = "grid" if controller["port"] == port_name else None
+    save_midi_controllers()
+    render_controllers_ui()
+
+
+def render_controllers_ui() -> None:
+    """Rebuild the Controllers list rows (main thread; call after any change) (e14s03)."""
+    if not dpg.does_item_exist("midi_controllers_group"):
+        return
+    dpg.delete_item("midi_controllers_group", children_only=True)
+    for controller in midi_controllers:
+        profile = controller_profile_of(controller)
+        profile_name = profile.get("name", "Generic") if profile else "Generic"
+        role_mark = " [grid]" if controller.get("role") == "grid" else ""
+        with dpg.group(horizontal=True, parent="midi_controllers_group"):
+            dpg.add_text(f"{controller['port']} - {profile_name}{role_mark}")
+            if (
+                profile
+                and profile.get("features", {}).get("grid")
+                and (controller.get("role") != "grid")
+            ):
+                port = controller["port"]
+                dpg.add_button(
+                    label="Set as grid",
+                    callback=lambda s, a, p=port: assign_grid_role(p),
+                    user_data=port,
+                )
+            port = controller["port"]
+            dpg.add_button(
+                label="Remove",
+                callback=lambda s, a, p=port: remove_controller(p),
+                user_data=port,
+            )
+    if dpg.does_item_exist("midi_add_combo"):
+        dpg.configure_item("midi_add_combo", items=available_controller_ports())
+    refresh_midi_mappings_ui()
 
 
 def show_midi_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Open the MIDI window from the menubar, with a fresh device list and mappings."""
+    """Open the MIDI window from the menubar, with a fresh device list, controller
+    list and the selected controller's mappings (render_controllers_ui refreshes
+    the mappings too)."""
     refresh_midi_devices()
-    refresh_midi_mappings_ui()
+    render_controllers_ui()
     dpg.show_item("midi_window")
+    dpg.focus_item("midi_window")  # e17: a shown window must come to the front
 
 
-def midi_init_from_config(cfg: dict[str, Any]) -> None:
-    """Load the MIDI control mirrors from the config (boot; the menu UI comes in e09s02)."""
-    global midi_enabled, midi_input_port
-    midi_cfg = cfg.get("midi") or {}
-    midi_enabled = bool(midi_cfg.get("enabled", False))
-    midi_input_port = midi_cfg.get("input_port") or None
-    midi_bindings[:] = midi_cfg.get("bindings") or []
+# ---------- e16: Mapper (OSC property mappings -> compact controls) ----------
+def _mapper_columns() -> int:
+    """Number of mapping cards per row, derived from the current window width."""
+    width = dpg.get_item_width("mapper_window")
+    if not width:
+        width = MAPPER_WINDOW_WIDTH
+    return max(1, int((width - 20) / MAPPER_CARD_STRIDE))
 
 
-def set_midi_enabled(enabled: bool) -> None:
-    """Enable/disable the MIDI control engine and persist the flag (main thread)."""
-    global midi_enabled
-    midi_enabled = enabled
-    cfg = load_config()
-    cfg["midi"]["enabled"] = enabled
-    save_config(cfg)
+def _mapper_card_thumb(target_id: str) -> None:
+    """The tiny source thumbnail on a card; a placeholder when none exists yet."""
+    tex_tags = thumbnails_data.get(target_id)
+    if tex_tags:
+        tex_tag = tex_tags[0]
+        if dpg.does_item_exist(tex_tag):
+            dpg.add_image(texture_tag=tex_tag, width=MAPPER_THUMB_W, height=MAPPER_THUMB_H)
+            return
+    themed_text("no thumb", slot="text_dim")
+
+
+def _mapper_caption_spacer(label: str, spec: dict[str, Any]) -> int:
+    """Spacer width that right-aligns the value caption on a card (e20s01).
+
+    The caption is ONE row: label + spacer + value. The spacer fills the gap so
+    the longest possible "%.2f" string of the property (min and max can differ
+    in sign/length, e.g. alpha -1.00..1.00 or posterize 1.00..256.00) ends
+    flush at the card's right edge, measured with the live font width.
+    """
+    char_px = _char_width_px()
+    value_px = char_px * max(len(f"{spec['min']:.2f}"), len(f"{spec['max']:.2f}"))
+    return max(2, MAPPER_CARD_W - 24 - char_px * len(label) - value_px)
+
+
+def _render_mapper_card(mapping: dict[str, Any], parent: Any) -> None:
+    """One compact mapping card: thumbnail + X, one-line caption, the control.
+
+    Row order (e20s01): the source thumbnail (full card width) with the X
+    delete button, then the property caption (label left, value right on a
+    single row), then the control. Tags are unchanged so the band/MIDI drive
+    and the source menu keep working.
+    """
+    mid = mapping["id"]
+    spec = mapper.MAPPER_PROPERTIES[mapping["property"]]
+    with dpg.child_window(
+        parent=parent,
+        width=MAPPER_CARD_W,
+        height=MAPPER_CARD_H,
+        border=True,
+        no_scrollbar=True,
+        tag=f"mapper_card_{mid}",
+    ):
+        with dpg.group(horizontal=True):
+            _mapper_card_thumb(mapping["target_id"])
+            dpg.add_button(
+                label="X",
+                width=18,
+                height=18,
+                callback=delete_mapping,
+                user_data=mid,
+                tag=f"mapper_del_{mid}",
+            )
+        with dpg.group(horizontal=True):
+            themed_text(spec["label"], slot="text_dim", tag=f"mapper_prop_{mid}")
+            dpg.add_spacer(width=_mapper_caption_spacer(spec["label"], spec))
+            themed_text(f"{mapping['value']:.2f}", slot="text_bright", tag=f"mapper_val_{mid}")
+        if mapping["control"] == "slider":
+            dpg.add_slider_float(
+                min_value=spec["min"],
+                max_value=spec["max"],
+                default_value=mapping["value"],
+                width=MAPPER_CARD_W - 24,
+                callback=on_mapper_control,
+                user_data=mid,
+                tag=f"mapper_slider_{mid}",
+            )
+        elif mapping["control"] == "knob":
+            dpg.add_knob_float(
+                min_value=spec["min"],
+                max_value=spec["max"],
+                default_value=mapping["value"],
+                width=44,
+                callback=on_mapper_control,
+                user_data=mid,
+                tag=f"mapper_knob_{mid}",
+            )
+        else:
+            dpg.add_button(
+                label=f"{spec['label']}: {mapping['value']:.2f}",
+                width=MAPPER_CARD_W - 24,
+                callback=on_mapper_button,
+                user_data=mid,
+                tag=f"mapper_btn_{mid}",
+            )
+        _render_mapper_source_menu(mapping)
+
+
+def _render_mapper_source_menu(mapping: dict[str, Any]) -> None:
+    """Right-click menu on a mapper control: Band 2/3 / MIDI Learn / Clear (e18).
+
+    The menu lives on the CONTROL widget (slider/knob/button); the ACTIVE source
+    is marked with a checkmark. Band and MIDI sources are mutually exclusive
+    (see mapper.set_mapping_band).
+    """
+    mid = mapping["id"]
+    control_tag = f"mapper_{mapping['control']}_{mid}"
+    with dpg.popup(control_tag, mousebutton=dpg.mvMouseButton_Right):
+        dpg.add_menu_item(
+            label="Map Band 2",
+            check=True,
+            default_value=(mapping.get("band") == 2),
+            callback=set_mapping_band,
+            user_data=(mid, 2),
+        )
+        dpg.add_menu_item(
+            label="Map Band 3",
+            check=True,
+            default_value=(mapping.get("band") == 3),
+            callback=set_mapping_band,
+            user_data=(mid, 3),
+        )
+        dpg.add_menu_item(
+            label="MIDI Learn...",
+            check=True,
+            default_value=(mapping.get("midi") is not None),
+            callback=map_mapping_midi_learn,
+            user_data=mid,
+        )
+        dpg.add_separator()
+        dpg.add_menu_item(label="Clear source", callback=clear_mapping_source, user_data=mid)
+
+
+def set_mapping_band(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Mapper control menu: bind the control to an audio band (e18)."""
+    mapping_id, band_id = user_data
+    mapper.set_mapping_band(mapping_id, band_id)
+    refresh_mapper_ui()
+
+
+def clear_mapping_source(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Mapper control menu: drop the band/MIDI source, manual control resumes (e18)."""
+    mapper.clear_mapping_source(int(user_data))
+    refresh_mapper_ui()
+
+
+def _set_mapper_control_value(mapping_id: int, value: float) -> None:
+    """Move a mapping's control + caption from an external source (band/MIDI, e18)."""
+    _set_mapper_caption(mapping_id, value)
+    for kind in ("slider", "knob"):
+        tag = f"mapper_{kind}_{mapping_id}"
+        if dpg.does_item_exist(tag):
+            dpg.set_value(tag, value)
+
+
+def drive_mapper_band(band_id: int, level: float) -> None:
+    """Push an audio-band level into every control mapped to that band (e18).
+
+    Called by refresh_band_value (main thread, ~30 fps while the band is
+    enabled); the level is remapped onto each mapping's property range.
+    """
+    for m in state.mapper_mappings:
+        if m.get("band") == band_id:
+            value = mapper.apply_unit_value(m["id"], level)
+            _set_mapper_control_value(m["id"], value)
+
+
+def _close_mapper_learn_window() -> None:
+    """Delete the mapper MIDI-Learn modal (bound, cancelled or timed out)."""
+    if dpg.does_item_exist("mapper_learn_window"):
+        dpg.delete_item("mapper_learn_window")
+
+
+def _cancel_mapper_learn(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Mapper MIDI-Learn modal Cancel: exit learn mode and close the window."""
+    _exit_midi_learn()
+    _close_mapper_learn_window()
+
+
+def map_mapping_midi_learn(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Mapper control menu > MIDI Learn: the next controller move binds this control.
+
+    Reuses the existing learn machinery: midi_learn_pending carries the
+    mapper_mapping action; the worker completes it via midi_learn_complete,
+    which stores the binding and closes this modal automatically.
+    """
+    mapping_id = int(user_data)
+    if dpg.does_item_exist("mapper_learn_window"):
+        dpg.delete_item("mapper_learn_window")
+    with dpg.window(
+        label="MIDI Learn",
+        tag="mapper_learn_window",
+        modal=True,
+        width=360,
+        height=140,
+        no_resize=True,
+    ):
+        if state.midi_enabled:
+            themed_text("Move a control on your MIDI controller...", slot="text")
+            themed_text(
+                "The control binds to this mapping and the window closes.",
+                slot="text_dim",
+            )
+            state.midi_learn_mode = True
+            state.midi_learn_pending = (MIDI_ACTION_MAPPER_MAPPING, {"mapping_id": mapping_id})
+            state.midi_learn_started_at = time.time()
+        else:
+            themed_text("Enable MIDI in the MIDI window first, then try again.", slot="text")
+        dpg.add_separator()
+        dpg.add_button(label="Cancel", callback=_cancel_mapper_learn, width=120)
+    dpg.show_item("mapper_learn_window")
+
+
+def midi_mapping_value(mapping_id: int, midi_value: int) -> None:
+    """Drive a mapper control from a learned MIDI value (0..127 -> range, e18)."""
+    unit = max(0.0, min(1.0, midi_value / 127.0))
+    value = mapper.apply_unit_value(mapping_id, unit)
+    _set_mapper_control_value(mapping_id, value)
+
+
+def tick_midi_learn_timeout() -> None:
+    """Expire a stale MIDI Learn session (mapper learn included) past the timeout."""
+    if state.midi_learn_mode and (
+        time.time() - state.midi_learn_started_at > MIDI_LEARN_TIMEOUT_SECONDS
+    ):
+        _exit_midi_learn()
+        _close_mapper_learn_window()
+
+
+def refresh_mapper_ui() -> None:
+    """Rebuild the Mapper window body from state.mapper_mappings (main thread)."""
+    if not dpg.does_item_exist("mapper_mappings_group"):
+        return
+    dpg.delete_item("mapper_mappings_group", children_only=True)
+    if not state.mapper_mappings:
+        # explicit parent: at runtime (menu callback) DPG cannot deduce the
+        # implicit container, so a parentless add_text would raise 1011
+        themed_text(
+            "No mappings yet — right-click a source in the Mediagrid.",
+            slot="text_dim",
+            wrap=MAPPER_WINDOW_WIDTH - 40,
+            parent="mapper_mappings_group",
+        )
+        return
+    # e20s02: cards sit in horizontal row groups (fixed-width child windows
+    # align across rows) — the old table grid drew an outer frame and shipped
+    # its own right-click menu that fought the per-card popup.
+    cols = _mapper_columns()
+    for i in range(0, len(state.mapper_mappings), cols):
+        row = dpg.add_group(horizontal=True, parent="mapper_mappings_group")
+        for mapping in state.mapper_mappings[i : i + cols]:
+            _render_mapper_card(mapping, parent=row)
+
+
+def show_mapper_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Windows menu: open the Mapper window with a fresh mappings body (e16)."""
+    refresh_mapper_ui()
+    dpg.show_item("mapper_window")
+    dpg.focus_item("mapper_window")  # e17: a shown window must come to the front
+
+
+def _set_mapper_caption(mid: int, value: float) -> None:
+    """Refresh a card's value caption after a control change."""
+    val_tag = f"mapper_val_{mid}"
+    if dpg.does_item_exist(val_tag):
+        dpg.set_value(val_tag, f"{value:.2f}")
+
+
+def on_mapper_control(sender: Any, app_data: Any, user_data: Any) -> None:
+    """Slider/knob change: send the clamped OSC value, refresh the caption."""
+    mid = int(user_data)
+    value = mapper.send_mapping_value(mid, float(app_data))
+    _set_mapper_caption(mid, value)
+
+
+def on_mapper_button(sender: Any, app_data: Any, user_data: Any) -> None:
+    """Button press: toggle min/max, send OSC, refresh the card label + caption."""
+    mid = int(user_data)
+    value = mapper.send_button_mapping(mid)
+    _set_mapper_caption(mid, value)
+    mapping = mapper.find_mapping(mid)
+    if mapping is not None:
+        spec = mapper.MAPPER_PROPERTIES[mapping["property"]]
+        btn_tag = f"mapper_btn_{mid}"
+        if dpg.does_item_exist(btn_tag):
+            dpg.configure_item(btn_tag, label=f"{spec['label']}: {value:.2f}")
+
+
+def delete_mapping(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """X on a mapping card: remove the mapping and refresh the Mapper body."""
+    mapper.remove_mapping(int(user_data))
+    refresh_mapper_ui()
+
+
+def open_new_mapping_dialog(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Mediagrid tile right-click > New Mapping...: modal asking property + control."""
+    state.mapper_pending_target = str(user_data)
+    if dpg.does_item_exist("mapper_new_dialog"):
+        dpg.delete_item("mapper_new_dialog")
+    with dpg.window(
+        label="New Mapping",
+        tag="mapper_new_dialog",
+        modal=True,
+        width=320,
+        height=250,
+        no_resize=True,
+    ):
+        themed_text(f"Source: {state.mapper_pending_target}", slot="text")
+        dpg.add_separator()
+        themed_text("Property", slot="text_dim")
+        dpg.add_combo(
+            items=list(mapper.MAPPER_PROPERTIES),
+            default_value="brightness",
+            width=260,
+            tag="mapper_prop_combo",
+        )
+        themed_text("Control", slot="text_dim")
+        dpg.add_combo(
+            items=list(mapper.MAPPER_CONTROLS),
+            default_value="slider",
+            width=260,
+            tag="mapper_control_combo",
+        )
+        dpg.add_separator()
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="Create", callback=mapper_dialog_confirm, width=120)
+            dpg.add_button(label="Cancel", callback=mapper_dialog_cancel, width=120)
+    dpg.show_item("mapper_new_dialog")
+
+
+def mapper_dialog_confirm(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Dialog Create: add the mapping chosen in the combos and open the Mapper window."""
+    if not dpg.does_item_exist("mapper_new_dialog"):
+        return
+    prop = str(dpg.get_value("mapper_prop_combo"))
+    control = str(dpg.get_value("mapper_control_combo"))
+    target = state.mapper_pending_target
+    dpg.delete_item("mapper_new_dialog")
+    if target is None:
+        return
+    mapper.add_mapping(target, prop, control)
+    refresh_mapper_ui()
+    dpg.show_item("mapper_window")
+
+
+def mapper_dialog_cancel(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Dialog Cancel: close without creating a mapping."""
+    if dpg.does_item_exist("mapper_new_dialog"):
+        dpg.delete_item("mapper_new_dialog")
 
 
 def midi_control_loop() -> None:
-    """MIDI control worker (e09): match messages against bindings, push executions to the
-    main thread via ui_task_queue (HIGH-1 — no direct dpg calls here).
+    """MIDI control worker (e14s02): poll every controller input port, route messages,
+    push executions to the main thread via ui_task_queue (HIGH-1 — no direct dpg calls).
     """
-    global midi_input_port
     try:
         import mido
     except ImportError:
         return
+    open_ports: dict[str, Any] = {}
     while True:
-        if not midi_enabled:
+        if not state.midi_enabled:
             time.sleep(0.2)
             continue
-        port_name = midi_input_port
-        if not port_name:
-            names = mido.get_input_names()
-            if not names:
-                time.sleep(1.0)  # no device: retry quietly
-                continue
-            port_name = names[0]  # device discovery (Launchpad picked by name in e09s03)
-        try:
-            with mido.open_input(port_name) as port:
-                midi_input_port = port_name
-                launchpad_connect(port_name, mido)  # e09s03: LED output + grid bindings
-                append_log("MIDI", f"Control listening on {port_name}")
-                while midi_enabled:
-                    if midi_input_port != port_name:
-                        break  # the user switched the controller: reconnect on next loop
-                    for msg in port.iter_pending():
-                        handle_midi_message(msg, port_name)
-                    time.sleep(0.002)
-        except Exception as e:
-            log_error("MIDI", str(e))
-            midi_input_port = None
-            time.sleep(2.0)
-        finally:
-            launchpad_disconnect()
+        wanted = {c["port"] for c in midi_controllers}
+        for port_name in [p for p in open_ports if p not in wanted]:
+            _close_midi_input(open_ports.pop(port_name))
+        for controller in midi_controllers:
+            port_name = controller["port"]
+            if port_name not in open_ports:
+                try:
+                    open_ports[port_name] = mido.open_input(port_name)
+                    controller_connect(controller, mido)  # e14s02: LED output + grid bindings
+                    append_log("MIDI", f"Control listening on {port_name}")
+                except Exception as e:
+                    log_error("MIDI", str(e))
+                    time.sleep(2.0)
+                    continue
+            try:
+                for msg in open_ports[port_name].iter_pending():
+                    handle_midi_message(msg, port_name)
+            except Exception as e:
+                log_error("MIDI", str(e))
+                _close_midi_input(open_ports.pop(port_name, None))
+        time.sleep(0.002)
 
 
 # ---------- e09s03: Novation Launchpad adapter ----------
-def launchpad_model_from_name(port_name: str) -> str | None:
-    """Classify a MIDI port name into a Launchpad protocol class (None = not a Launchpad)."""
-    name = (port_name or "").lower()
-    if "launchpad" not in name:
-        return None
-    if "mk3" in name or " launchpad x" in name or name.startswith("launchpad x"):
-        return LAUNCHPAD_PROGRAMMER_MODE  # X / Mini MK3 / Pro MK3: SysEx first, then note grid
-    if "mk2" in name or "pro" in name:
-        return LAUNCHPAD_NOTE_MODE  # MK2 / Mini MK2 / Pro: native note mode, row*10+col grid
-    return LAUNCHPAD_MK1  # plain "Launchpad"/"Launchpad S" (novlpd01): row*16+col grid
-
-
-def launchpad_grid_note(row: int, col: int) -> int:
-    """Grid note for pad (row, col) under the connected protocol.
-
-    MK1: row*16+col (0-87); MK2 family: row*10+col (0-79).
-    """
-    if launchpad_protocol == LAUNCHPAD_MK1:
-        return row * 16 + col
-    return row * 10 + col
-
-
-def _launchpad_velocity(color: str) -> int:
-    """Translate a semantic color to the device velocity under the connected protocol."""
-    table = _LAUNCHPAD_COLOR_MK1 if launchpad_protocol == LAUNCHPAD_MK1 else _LAUNCHPAD_COLOR_MK2
-    return table.get(color, 0)
-
-
-def launchpad_led(row: int, col: int, color: str) -> None:
-    """Set one Launchpad pad LED (semantic color; lock-guarded best-effort)."""
-    if launchpad_out is None:
-        return
-    try:
-        import mido
-
-        msg = mido.Message(
-            "note_on", note=launchpad_grid_note(row, col), velocity=_launchpad_velocity(color)
-        )
-        with _launchpad_lock:
-            launchpad_out.send(msg)
-    except Exception as e:
-        log_error("MIDI", f"Launchpad LED ({row},{col}): {e}")
-
-
-def launchpad_mirror_step(row: int, col: int, is_active: bool, is_head: bool) -> None:
-    """Mirror one step cell on the Launchpad grid (any thread; no-op without a device)."""
-    if launchpad_out is None:
-        return
-    if is_head:
-        launchpad_led(row, col, LAUNCHPAD_LED_AMBER)
-    elif is_active:
-        launchpad_led(row, col, LAUNCHPAD_LED_GREEN)
-    else:
-        launchpad_led(row, col, LAUNCHPAD_LED_OFF)
-
-
-def launchpad_flash_playhead() -> None:
-    """White pulse on the current playhead column, restored by a timer (beat flash, e09s03)."""
-    if launchpad_out is None or current_step < 0:
-        return
-    for r in range(LAUNCHPAD_GRID_ROWS):
-        launchpad_led(r, current_step, LAUNCHPAD_LED_WHITE)
-    threading.Timer(LAUNCHPAD_FLASH_SECONDS, _launchpad_restore_playhead).start()
-
-
-def _launchpad_restore_playhead() -> None:
-    """Timer thread: re-apply the playhead amber after a beat flash."""
-    if launchpad_out is None or current_step < 0:
-        return
-    for r in range(LAUNCHPAD_GRID_ROWS):
-        active = tracks_data[r]["steps"][current_step]["active"]
-        launchpad_mirror_step(r, current_step, active, True)
-
-
-def _launchpad_register_grid_bindings(port_name: str) -> None:
-    """Internal 8x8 grid bindings: pad (r,c) toggles step (r,c) — never persisted (e09s03)."""
-    midi_auto_bindings.clear()
-    for r in range(LAUNCHPAD_GRID_ROWS):
-        for c in range(LAUNCHPAD_GRID_COLS):
-            midi_auto_bindings.append(
-                {
-                    "device": port_name,
-                    "channel": 0,
-                    "type": "note",
-                    "number": launchpad_grid_note(r, c),
-                    "action": MIDI_ACTION_SEQ_TOGGLE,
-                    "params": {"row": r, "col": c},
-                    "auto": True,
-                }
-            )
-
-
-def launchpad_connect(input_port_name: str, mido: Any) -> None:
-    """Open the Launchpad output port; enable programmer mode for MK3-family."""
-    global launchpad_out, launchpad_protocol
-    launchpad_disconnect()
-    launchpad_protocol = launchpad_model_from_name(input_port_name)
-    if launchpad_protocol is None:
-        return  # not a Launchpad: no LED output, no grid bindings
-    out_names = mido.get_output_names()
-    out_name = None
-    for cand in out_names:
-        if cand == input_port_name:
-            out_name = cand
-            break
-    if out_name is None:
-        for cand in out_names:
-            if "launchpad" in cand.lower():
-                out_name = cand
-                break
-    if out_name is None and out_names:
-        out_name = out_names[0]  # single MIDI device around: assume it is the same one
-    if out_name is None:
-        return
-    try:
-        with _launchpad_lock:
-            launchpad_out = mido.open_output(out_name)
-        if launchpad_protocol == LAUNCHPAD_PROGRAMMER_MODE:
-            launchpad_out.send(mido.Message("sysex", data=LAUNCHPAD_PROGRAMMER_SYSEX))
-        _launchpad_register_grid_bindings(input_port_name)
-        append_log("MIDI", f"Launchpad ({launchpad_protocol}) output on {out_name}")
-    except Exception as e:
-        log_error("MIDI", f"Launchpad output {out_name}: {e}")
-        launchpad_disconnect()
-
-
-def launchpad_disconnect() -> None:
-    """Close the Launchpad output port and drop grid bindings/protocol (idempotent)."""
-    global launchpad_out, launchpad_protocol
-    with _launchpad_lock:
-        if launchpad_out is not None:
-            with contextlib.suppress(Exception):
-                launchpad_out.close()
-            launchpad_out = None
-    midi_auto_bindings.clear()
-    launchpad_protocol = None
+# MULTI-CONTROLLER RUNTIME (e14s02) — profile-driven controllers, one designated
+# sequencer grid; the legacy launchpad_* path stays until e14s04 removes it.
+# ==============================================================================
+# Persisted shape: {port, profile_id, role ("grid"|None), bindings} + runtime
+# fields output (mido out port) and auto_bindings (grid bindings, never persisted).
+# Semantic grid-LED names (mirror/flash call sites) mapped per profile palette.
 
 
 def midi_clock_loop() -> None:
     """Listen for MIDI clock (0xF8, 24 pulses/beat) and fire the sequencer beat in MIDI mode.
 
-    Opens the first available MIDI input; without any port (or backend) it logs once and
-    idles so the app keeps running.
+    The clock listens on cfg clock_source when set, else the first available input;
+    without any port it logs once and idles so the app keeps running.
     """
-    global midi_pulses
     try:
         import mido
-
-        ports = mido.get_input_names()
-        if not ports:
-            log_error("MIDI", "no MIDI input port available")
-            while True:
-                time.sleep(10)
-        with mido.open_input(ports[0]) as port:
-            append_log("MIDI", f"Listening on {ports[0]}")
-            while True:
-                for msg in port.iter_pending():
-                    if msg.type == "clock":
-                        midi_pulses += 1
-                        if midi_pulses >= MIDI_CLOCK_PULSES_PER_BEAT:
-                            midi_pulses = 0
-                            flash_led("led_midi")
-                            if beat_source == BEAT_SOURCE_MIDI and is_playing:
-                                sync_event_beat.set()
-                time.sleep(0.001)
-    except Exception as e:
-        log_error("MIDI", str(e))
-        while True:
+    except ImportError:
+        return
+    while True:
+        port_name = _clock_port_name()
+        if not port_name:
+            time.sleep(10)
+            continue
+        try:
+            with mido.open_input(port_name) as port:
+                append_log("MIDI", f"Clock listening on {port_name}")
+                while True:
+                    for msg in port.iter_pending():
+                        if msg.type == "clock":
+                            state.midi_pulses += 1
+                            if state.midi_pulses >= MIDI_CLOCK_PULSES_PER_BEAT:
+                                state.midi_pulses = 0
+                                flash_led("led_midi")
+                                if state.beat_source == BEAT_SOURCE_MIDI and state.is_playing:
+                                    sync_event_beat.set()
+                    time.sleep(0.001)
+        except Exception as e:
+            log_error("MIDI", str(e))
             time.sleep(10)
 
 
 def show_settings_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     """Open the general settings window from the top menubar."""
     dpg.show_item("settings_window")
+    dpg.focus_item("settings_window")  # e17: a shown window must come to the front
 
 
 def show_logs_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     """Open the OSC logs window from the top menubar (Show > Logs)."""
     dpg.show_item("logs_window")
+    dpg.focus_item("logs_window")  # e17: a shown window must come to the front
 
 
 def centered_window_pos(
@@ -3348,6 +3207,105 @@ def show_help_window(sender: Any = None, app_data: Any = None, user_data: Any = 
         ),
     )
     dpg.show_item("help_window")
+    dpg.focus_item("help_window")  # e17: a shown window must come to the front
+
+
+# ---------- e17: window switching (Windows-menu list + Ctrl+Tab) ----------
+def _window_menu_entries() -> list[tuple[str, str]]:
+    """Workspace windows in switching order: (tag, menu label).
+
+    Monitor Players are appended live so the list (and Ctrl+Tab) always match
+    the windows that exist.
+    """
+    entries = [
+        ("sequencer_window", "Sequencer"),
+        ("audio_window", "Audio"),
+        ("vimix_media_window", "Media"),
+        ("logs_window", "Logs"),
+        ("mapper_window", "Mapper"),
+    ]
+    entries += [(p["tag"], f"Monitor {p['id']}") for p in monitor_players]
+    return entries
+
+
+_window_menu_dynamic_tags: list[str] = []  # live list items, deleted on refresh
+
+
+_window_menu_sig: tuple[Any, ...] | None = None  # last (active, monitor tags) seen
+
+
+def refresh_window_menu() -> None:
+    """Rebuild the Windows-menu window list and mark the ACTIVE window (e17).
+
+    The list lives under the ``Windows`` menu (after its separator); each entry
+    is a checkable item wired to ``switch_to_window``. Missing windows are
+    skipped so a pruned Monitor Player never leaves a dead entry.
+    """
+    for tag in _window_menu_dynamic_tags:
+        if dpg.does_item_exist(tag):
+            dpg.delete_item(tag)
+    _window_menu_dynamic_tags.clear()
+    active = dpg.get_active_window()
+    for tag, label in _window_menu_entries():
+        if not dpg.does_item_exist(tag):
+            continue
+        item_tag = dpg.add_menu_item(
+            label=label,
+            check=True,
+            default_value=(str(active) == str(tag)),
+            callback=switch_to_window,
+            user_data=tag,
+            parent="menu_windows",
+        )
+        _window_menu_dynamic_tags.append(item_tag)
+
+
+def tick_window_menu() -> None:
+    """Per-frame gate: refresh the Windows-menu list only when it can have changed.
+
+    The signature is (active window, monitor-player tags); anything else the list
+    shows (the fixed windows) is static. One get_active_window per frame is the
+    whole cost when nothing changed.
+    """
+    global _window_menu_sig
+    sig = (dpg.get_active_window(), tuple(p["tag"] for p in monitor_players))
+    if sig != _window_menu_sig:
+        _window_menu_sig = sig
+        refresh_window_menu()
+
+
+def switch_to_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Show + focus a window (Windows-menu list click, Ctrl+Tab target)."""
+    tag = user_data
+    if dpg.does_item_exist(tag):
+        dpg.show_item(tag)
+        dpg.focus_item(tag)
+
+
+def on_cycle_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Ctrl+Tab / Ctrl+Shift+Tab: cycle through the SHOWN workspace windows.
+
+    DPG 2.3.1 key handlers have no modifier support, so the wrapper checks the
+    modifier keys itself; Tab keeps its normal role while an input is focused.
+    """
+    if not dpg.is_key_down(dpg.mvKey_ModCtrl) or _any_input_focused():
+        return
+    forward = not dpg.is_key_down(dpg.mvKey_ModShift)
+    entries = _window_menu_entries()
+    if not entries:
+        return
+    active = dpg.get_active_window()
+    try:
+        idx = next(i for i, (tag, _) in enumerate(entries) if str(tag) == str(active))
+    except StopIteration:
+        idx = -1
+    step = 1 if forward else -1
+    for _ in range(len(entries)):
+        idx = (idx + step) % len(entries)
+        tag, _ = entries[idx]
+        if dpg.does_item_exist(tag) and dpg.is_item_shown(tag):
+            switch_to_window(None, None, tag)
+            return
 
 
 def open_github(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -3361,8 +3319,7 @@ def open_github(sender: Any = None, app_data: Any = None, user_data: Any = None)
 
 
 def callback_resync(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    global current_step
-    current_step = -1
+    state.current_step = -1
     for r in range(NUM_TRACKS):
         tracks_data[r]["active_fade"]["active"] = False
     sync_event_seq.set()
@@ -3372,147 +3329,11 @@ def callback_resync(sender: Any = None, app_data: Any = None, user_data: Any = N
 def callback_nudge_backward(
     sender: Any = None, app_data: Any = None, user_data: Any = None
 ) -> None:
-    global phase_nudge
-    phase_nudge += 0.05
+    state.phase_nudge += 0.05
 
 
 def callback_nudge_forward(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    global phase_nudge
-    phase_nudge -= 0.05
-
-
-def audio_callback(indata: np.ndarray, frames: int, time_info: Any, status: Any) -> None:
-    global audio_buffer, audio_buffer_head
-    if status:
-        print(status)
-    samples = indata[:, 0].astype(np.float32)
-    # L-2 ring-buffer write: in-place, modulo indexing, no full-buffer reallocation
-    # (np.roll allocated a fresh ~1 MB array ~43x/s on every callback).
-    n = len(samples)
-    if n >= len(audio_buffer):  # defensive: block larger than the buffer
-        audio_buffer[:] = samples[-len(audio_buffer) :]
-        audio_buffer_head = 0
-    else:
-        end = audio_buffer_head + n
-        if end <= len(audio_buffer):
-            audio_buffer[audio_buffer_head:end] = samples
-        else:
-            split = len(audio_buffer) - audio_buffer_head
-            audio_buffer[audio_buffer_head:] = samples[:split]
-            audio_buffer[: n - split] = samples[split:]
-        audio_buffer_head = end % len(audio_buffer)
-
-
-def get_audio_snapshot() -> np.ndarray:
-    """Chronological copy of the last len(audio_buffer) samples (newest at tail).
-
-    Linearizes the ring buffer for the BPM thread. Called once per second (not per
-    audio callback), so this allocation is acceptable.
-    """
-    head = audio_buffer_head
-    if head == 0:
-        return audio_buffer.copy()
-    return np.concatenate((audio_buffer[head:], audio_buffer[:head]))
-
-
-def _bar_freq_edges(n_bars: int, sr: float) -> np.ndarray:
-    """Log-spaced frequency edges for n_bars perceptual bars (Hz, e10s09).
-
-    Equal log steps spread musical energy across the bars — linear binning
-    piled almost everything into the low bars and left the high ones dead.
-    """
-    ratio = (SPECTRUM_F_MAX / SPECTRUM_F_MIN) ** (1.0 / n_bars)
-    edges = SPECTRUM_F_MIN * ratio ** np.arange(n_bars + 1)
-    edges[-1] = SPECTRUM_F_MAX  # snap: the pow chain drifts by float epsilon
-    return edges
-
-
-def compute_spectrum_bars(
-    samples: np.ndarray, n_bars: int = SPECTRUM_BARS, sr: float = samplerate
-) -> np.ndarray:
-    """Magnitude spectrum of the latest samples, binned into n_bars levels (0..1).
-
-    Hann-windowed rfft, dB scale with a -SPECTRUM_DB_FLOOR floor; the bars are
-    log-spaced over SPECTRUM_F_MIN..SPECTRUM_F_MAX (e10s09) so music energy is
-    spread perceptually; a full-scale sine reaches ~1.0, silence ~0.0.
-    """
-    if samples.size < SPECTRUM_FFT_SIZE:
-        samples = np.pad(samples, (0, SPECTRUM_FFT_SIZE - samples.size))
-    frame = samples[-SPECTRUM_FFT_SIZE:] * np.hanning(SPECTRUM_FFT_SIZE)
-    mag = np.abs(np.fft.rfft(frame))[1:]  # drop DC; bin k = k*sr/FFT_SIZE
-    bin_edges = np.floor(_bar_freq_edges(n_bars, sr) / (sr / SPECTRUM_FFT_SIZE)).astype(int)
-    levels = np.zeros(n_bars, dtype=np.float32)
-    for i in range(n_bars):
-        lo = bin_edges[i]
-        hi = min(bin_edges[i + 1], len(mag))
-        if hi > lo:
-            levels[i] = float(np.max(mag[lo:hi]))
-    # max per bar: averaging in dB would drown a narrow peak among quiet bins
-    db = 20.0 * np.log10(levels / (SPECTRUM_FFT_SIZE / 4.0) + 1e-12)
-    return np.clip((db + SPECTRUM_DB_FLOOR) / SPECTRUM_DB_FLOOR, 0.0, 1.0).astype(np.float32)
-
-
-def apply_spectrum_agc(bars: np.ndarray, peak_hold: float) -> tuple[np.ndarray, float]:
-    """Normalize bars against a slow-decaying spectral peak (level-independent, e10s09).
-
-    A loud transient raises the hold instantly; the hold decays each frame so the
-    display and bands track the recent loudest content instead of requiring a
-    fixed full-scale input. Silence (peak below the floor) keeps a flat gain.
-    """
-    current = float(np.max(bars)) if bars.size else 0.0
-    peak_hold = current if current > peak_hold else max(current, peak_hold * SPECTRUM_PEAK_DECAY)
-    gain = SPECTRUM_PEAK_TARGET / max(peak_hold, SPECTRUM_PEAK_FLOOR)
-    return np.clip(bars * gain, 0.0, 1.0).astype(np.float32), peak_hold
-
-
-def band_value_from_bars(
-    bars: np.ndarray,
-    start: float,
-    end: float,
-    min_level: float = 0.0,
-    max_level: float = 1.0,
-    agg: str = "mean",
-) -> float:
-    """Fill (0..1) of the selection rectangle over the bars.
-
-    The horizontal window [start, end) picks the bars; the vertical window
-    [min_level, max_level] maps each bar's level so 0 = at/below min and
-    1 = at/above max. An inverted/empty level window falls back to the plain
-    bar mean (backward compatible with the frequency-only usage).
-
-    agg selects the aggregation over the mapped bars (e10s09): "mean" (default,
-    steady fill), "peak" (loudest bar — transient detection) or "blend"
-    (peak-dominant, used by the live band values and the beat edge).
-    """
-    if bars.size == 0:
-        return 0.0
-    n = bars.size
-    lo = round(start * n)
-    hi = round(end * n)
-    if hi <= lo:  # inverted/degenerate horizontal selection -> at least one bar
-        hi = lo + 1
-    lo = max(0, min(lo, n - 1))
-    hi = max(lo + 1, min(hi, n))
-    selected = bars[lo:hi]
-    if max_level <= min_level:
-        return float(np.mean(selected))
-    mapped = np.clip((selected - min_level) / (max_level - min_level), 0.0, 1.0)
-    if agg == "peak":
-        return float(np.max(mapped))
-    if agg == "blend":
-        return float(BAND_AGG_WEIGHT * np.max(mapped) + (1.0 - BAND_AGG_WEIGHT) * np.mean(mapped))
-    return float(np.mean(mapped))
-
-
-def _set_band_variable(band_id: int, value: float) -> None:
-    """Store a band level into its module variable (band1/band2/band3)."""
-    global band1, band2, band3
-    if band_id == 1:
-        band1 = value
-    elif band_id == 2:
-        band2 = value
-    else:
-        band3 = value
+    state.phase_nudge -= 0.05
 
 
 def refresh_band_value(bars: np.ndarray, band_id: int) -> None:
@@ -3525,11 +3346,12 @@ def refresh_band_value(bars: np.ndarray, band_id: int) -> None:
     l_max = float(dpg.get_value(f"band{band_id}_max"))
     value = band_value_from_bars(bars, f_start, f_end, l_min, l_max, agg="blend")
     _set_band_variable(band_id, value)
+    drive_mapper_band(band_id, value)  # e18: mapped controls follow the band
     # Beat trigger: any band rising to the threshold flashes its LED; only band 1 can
     # drive the sequencer beat (edge only) — bands 2/3 stay spectrum-only (e10s07)
     if value >= BAND_BEAT_THRESHOLD and band_prev_values[band_id] < BAND_BEAT_THRESHOLD:
         flash_led(f"led_band{band_id}")
-        if band_id == 1 and beat_source == BEAT_SOURCE_BAND1:
+        if band_id == 1 and state.beat_source == BEAT_SOURCE_BAND1:
             sync_event_beat.set()
     band_prev_values[band_id] = value
     dpg.set_value(f"band{band_id}_value_text", f"{value:.2f}")
@@ -3550,7 +3372,6 @@ def refresh_bands(bars: np.ndarray) -> None:
 
 def update_spectrum_ui(bars: np.ndarray) -> None:
     """Redraw the spectrum bars and refresh the enabled bands (main thread)."""
-    global spectrum_bars_cache
     n = len(bars)
     bw = SPEC_DRAWLIST_W / n
     for i, level in enumerate(bars):
@@ -3560,7 +3381,7 @@ def update_spectrum_ui(bars: np.ndarray) -> None:
             pmin=(i * bw + 1, SPEC_DRAWLIST_H - h),
             pmax=((i + 1) * bw - 1, SPEC_DRAWLIST_H - 2),
         )
-    spectrum_bars_cache = bars
+    state.spectrum_bars_cache = bars
     refresh_bands(bars)
 
 
@@ -3569,7 +3390,7 @@ def on_band_enable(sender: Any, app_data: Any, user_data: Any) -> None:
     band_id = int(user_data)
     bands_enabled[band_id] = bool(app_data)
     if bands_enabled[band_id]:
-        refresh_band_value(spectrum_bars_cache, band_id)
+        refresh_band_value(state.spectrum_bars_cache, band_id)
     else:
         _set_band_variable(band_id, 0.0)
         dpg.set_value(f"band{band_id}_value_text", "—")
@@ -3578,17 +3399,16 @@ def on_band_enable(sender: Any, app_data: Any, user_data: Any) -> None:
 
 def on_band_change(sender: Any, app_data: Any, user_data: Any) -> None:
     """Refresh a band when its selection sliders move."""
-    refresh_band_value(spectrum_bars_cache, int(user_data))
+    refresh_band_value(state.spectrum_bars_cache, int(user_data))
 
 
 def spectrum_analyzer_loop() -> None:
     """Compute the spectrum ~30x/s, AGC-normalize it, enqueue the redraw (HIGH-1)."""
-    global spec_peak_hold
     while True:
-        if is_audio_analyzing:
+        if state.is_audio_analyzing:
             try:
                 bars = compute_spectrum_bars(get_audio_snapshot())
-                bars, spec_peak_hold = apply_spectrum_agc(bars, spec_peak_hold)
+                bars, state.spec_peak_hold = apply_spectrum_agc(bars, state.spec_peak_hold)
                 ui_task(partial(update_spectrum_ui, bars))
             except Exception as e:
                 log_error("Spectrum", str(e))
@@ -3596,23 +3416,22 @@ def spectrum_analyzer_loop() -> None:
 
 
 def essentia_analyzer_loop() -> None:
-    global current_bpm, beat_confidence, bpm_last_detected
     last_error = ""
     while True:
-        if is_beat_tracking and beat_source == BEAT_SOURCE_ANALYSIS:
+        if state.is_beat_tracking and state.beat_source == BEAT_SOURCE_ANALYSIS:
             try:
                 audio_slice = essentia.array(get_audio_snapshot())
                 if np.max(np.abs(audio_slice)) > 0.005:
-                    if lowpass_enabled:
+                    if state.lowpass_enabled:
                         audio_slice = lowpass_filter(audio_slice)
                     bpm, _, confidence, _, _ = rhythm_extractor(audio_slice)
-                    if confidence > 0.2 or beat_confidence == 0.0:
-                        current_bpm = float(bpm)
-                        beat_confidence = float(confidence)
-                        bpm_last_detected = time.time()  # a real reading, not stale (e10s08)
+                    if confidence > 0.2 or state.beat_confidence == 0.0:
+                        state.current_bpm = float(bpm)
+                        state.beat_confidence = float(confidence)
+                        state.bpm_last_detected = time.time()  # a real reading, not stale (e10s08)
                         enqueue_set_value(
                             "testo_bpm",
-                            f"BPM: {current_bpm:.0f}",  # compact readout, no confidence (e10s08)
+                            f"BPM: {state.current_bpm:.0f}",  # no confidence (e10s08)
                         )
             except Exception as e:
                 # Log each distinct failure once, not every second
@@ -3624,21 +3443,20 @@ def essentia_analyzer_loop() -> None:
 
 
 def visual_metronome_loop() -> None:
-    global phase_nudge
     while True:
-        if is_beat_tracking and current_bpm > 0 and not is_playing:
+        if state.is_beat_tracking and state.current_bpm > 0 and not state.is_playing:
             if not _timed_bpm_live():
                 time.sleep(0.05)
                 continue  # no live tempo: don't flash a stale BPM (e10s08)
-            base_sleep = 60.0 / current_bpm
-            actual_sleep = max(0.0, base_sleep + phase_nudge)
-            led_tag = BEAT_LED_TAGS.get(beat_source)
+            base_sleep = 60.0 / state.current_bpm
+            actual_sleep = max(0.0, base_sleep + state.phase_nudge)
+            led_tag = BEAT_LED_TAGS.get(state.beat_source)
             if led_tag:
                 flash_led(led_tag)
             sync_event_led.wait(actual_sleep)
             if sync_event_led.is_set():
                 sync_event_led.clear()
-            phase_nudge = 0.0
+            state.phase_nudge = 0.0
         else:
             time.sleep(0.1)
 
@@ -3648,7 +3466,7 @@ def visual_metronome_loop() -> None:
 # ==============================================================================
 def fade_tick_loop() -> None:
     while True:
-        if is_playing:
+        if state.is_playing:
             current_time = time.time()
             for track in tracks_data:
                 fade = track.get("active_fade", {})
@@ -3682,65 +3500,9 @@ def fade_tick_loop() -> None:
         time.sleep(0.01)  # 100 FPS check loop for smooth fades
 
 
-def send_colorv_step(track: dict[str, Any], row: int, col: int) -> None:
-    """Send the picked RGB (0..1) for a ColorV step (HIGH-1 safe)."""
-    target_addr = f"{track['base_address']}/color"
-    r_val, g_val, b_val = [float(c) for c in track["steps"][col]["color"]]
-    osc_client.send_message(target_addr, [r_val, g_val, b_val])
-    append_log("OUT", f"{target_addr} [{r_val:.2f}, {g_val:.2f}, {b_val:.2f}]")
-
-
-def send_colorr_step(track: dict[str, Any], row: int, col: int) -> None:
-    """Send a random RGB for a ColorR step and show it in the step's color square."""
-    target_addr = f"{track['base_address']}/color"
-    r_val, g_val, b_val = (
-        random.uniform(0.0, 1.0),
-        random.uniform(0.0, 1.0),
-        random.uniform(0.0, 1.0),
-    )
-    osc_client.send_message(target_addr, [r_val, g_val, b_val])
-    append_log("OUT", f"{target_addr} [{r_val:.2f}, {g_val:.2f}, {b_val:.2f}]")
-
-    step_data = track["steps"][col]
-    step_data["last_rand_color"] = [r_val, g_val, b_val]
-    tag_color = f"rand_color_{row}_{col}"
-    enqueue_set_value(tag_color, dpg_color_rgba(step_data["last_rand_color"]))
-
-
-def send_seekr_step(track: dict[str, Any], row: int, col: int) -> None:
-    """Send a random seek (0..1) for a SeekR step and show the value in the cell."""
-    target_addr = f"{track['base_address']}/seek"
-    rand_val = random.uniform(0.0, 1.0)
-    osc_client.send_message(target_addr, float(rand_val))
-    append_log("OUT", f"{target_addr} [{rand_val:.2f}]")
-
-    step_data = track["steps"][col]
-    step_data["last_rand_seek"] = rand_val
-    tag_seek = f"rand_seek_{row}_{col}"
-    enqueue_set_value(tag_seek, f"{rand_val:.2f}")
-
-
-def _timed_bpm_live() -> bool:
-    """True when the fixed-interval tempo is real (e10s08).
-
-    Manual BPM is always live (current_bpm is the entered value); BPM Analysis
-    is live only while beat tracking is on and a detection arrived within the
-    stale window. Band/MIDI modes never use the timed tempo.
-    """
-    if beat_source == BEAT_SOURCE_MANUAL:
-        return True
-    return is_beat_tracking and time.time() - bpm_last_detected <= BPM_DETECTION_STALE_SECONDS
-
-
-def beat_is_event_driven() -> bool:
-    """True when the beat comes from an event (band 1 peak / MIDI clock), not a fixed interval."""
-    return beat_source in (BEAT_SOURCE_BAND1, BEAT_SOURCE_MIDI)
-
-
 def sequencer_tick() -> None:
-    global current_step, phase_nudge
     while True:
-        if is_playing:
+        if state.is_playing:
             if beat_is_event_driven():
                 # Band/MIDI modes: wait for the beat event. The wait is polled so a
                 # beat-source switch or STOP always breaks through — an unbounded wait
@@ -3748,28 +3510,28 @@ def sequencer_tick() -> None:
                 if not sync_event_beat.wait(0.1):
                     continue  # no beat this poll: re-evaluate mode/stop
                 sync_event_beat.clear()
-                phase_nudge = 0.0
+                state.phase_nudge = 0.0
             else:
                 if not _timed_bpm_live():
                     time.sleep(0.05)
                     continue  # no live tempo: never advance on a stale BPM (e10s08)
-                base_sleep = 60.0 / current_bpm if current_bpm > 0 else 0.5
-                actual_sleep = max(0.0, base_sleep + phase_nudge)
-                phase_nudge = 0.0
+                base_sleep = 60.0 / state.current_bpm if state.current_bpm > 0 else 0.5
+                actual_sleep = max(0.0, base_sleep + state.phase_nudge)
+                state.phase_nudge = 0.0
                 sync_event_seq.wait(actual_sleep)
                 if sync_event_seq.is_set():
                     sync_event_seq.clear()
 
-            prev_step = current_step
-            current_step = (current_step + 1) % NUM_STEPS
-            launchpad_flash_playhead()  # e09s03: beat flash on the new playhead column
+            prev_step = state.current_step
+            state.current_step = (state.current_step + 1) % NUM_STEPS
+            grid_flash_playhead()  # e14s02: beat flash on the new playhead column
 
             for r, track in enumerate(tracks_data):
                 if prev_step != -1:
                     update_step_theme(r, prev_step, is_head=False)
-                update_step_theme(r, current_step, is_head=True)
+                update_step_theme(r, state.current_step, is_head=True)
 
-                step_data = track["steps"][current_step]
+                step_data = track["steps"][state.current_step]
 
                 if step_data["active"]:
                     # A new step cancels any pending fade unless it starts its own (audit HIGH-2)
@@ -3789,7 +3551,7 @@ def sequencer_tick() -> None:
                                 append_log("OUT", f"{target_addr} [{rand_val:.2f}]")
 
                                 step_data["last_rand_v1"] = rand_val
-                                tag_v1 = f"rand_v1_{r}_{current_step}"
+                                tag_v1 = f"rand_v1_{r}_{state.current_step}"
                                 enqueue_set_value(tag_v1, f"{rand_val:.2f}")
 
                             elif step_data["type"] == "AlphaF":
@@ -3816,18 +3578,18 @@ def sequencer_tick() -> None:
                                 )
 
                             elif step_data["type"] == "ColorV":
-                                send_colorv_step(track, r, current_step)
+                                send_colorv_step(track, r, state.current_step)
 
                             elif step_data["type"] == "ColorR":
-                                send_colorr_step(track, r, current_step)
+                                send_colorr_step(track, r, state.current_step)
 
                             elif step_data["type"] == "SeekR":
-                                send_seekr_step(track, r, current_step)
+                                send_seekr_step(track, r, state.current_step)
 
                         except Exception as e:
                             print(f"[viseq OSC Error] {e}")
 
-            led_tag = BEAT_LED_TAGS.get(beat_source)
+            led_tag = BEAT_LED_TAGS.get(state.beat_source)
             if led_tag:
                 flash_led(led_tag)
         else:
@@ -3835,17 +3597,16 @@ def sequencer_tick() -> None:
 
 
 def on_lowpass_toggle(sender: Any, app_data: Any, user_data: Any) -> None:
-    global lowpass_enabled
-    lowpass_enabled = bool(app_data)
+    state.lowpass_enabled = bool(app_data)
 
 
 def toggle_audio_stream(sender: Any, app_data: Any, user_data: Any) -> None:
-    global audio_stream, is_audio_analyzing, is_beat_tracking
+    global audio_stream
     if user_data == "vu_meter":
-        is_audio_analyzing = app_data
+        state.is_audio_analyzing = app_data
     elif user_data == "beat_tracking":
-        is_beat_tracking = app_data
-    needs_stream = is_audio_analyzing or is_beat_tracking
+        state.is_beat_tracking = app_data
+    needs_stream = state.is_audio_analyzing or state.is_beat_tracking
 
     if needs_stream and audio_stream is None:
         device_string = dpg.get_value("combo_devices")
@@ -3872,14 +3633,13 @@ def toggle_audio_stream(sender: Any, app_data: Any, user_data: Any) -> None:
 
 
 def toggle_play(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    global is_playing, current_step
-    is_playing = not is_playing
-    if not is_playing:
+    state.is_playing = not state.is_playing
+    if not state.is_playing:
         for r in range(NUM_TRACKS):
             for c in range(NUM_STEPS):
                 update_step_theme(r, c, is_head=False)
             tracks_data[r]["active_fade"]["active"] = False
-        current_step = -1
+        state.current_step = -1
         dpg.set_item_label("btn_play", "PLAY")
     else:
         dpg.set_item_label("btn_play", "STOP")
@@ -3903,6 +3663,9 @@ with dpg.handler_registry():
     # DPG 2.3.1 key handlers have no modifier support: the wrapper checks Ctrl itself
     dpg.add_key_press_handler(dpg.mvKey_C, callback=_on_copy_key)
     dpg.add_key_press_handler(dpg.mvKey_V, callback=_on_paste_key)
+    # e17: Ctrl+Tab / Ctrl+Shift+Tab cycle the workspace windows (the callback
+    # checks the modifiers and the input-focus guard itself).
+    dpg.add_key_press_handler(dpg.mvKey_Tab, callback=on_cycle_window)
 
 
 # e10s06: one click-handler registry per Mediagrid tile. DPG 2.x item handlers
@@ -4303,7 +4066,7 @@ with dpg.window(
     for slot in THEME_PRIMARY_SLOTS:
         dpg.add_color_edit(
             label=THEME_PRIMARY_LABELS[slot],
-            default_value=palette_rgba(active_palette[slot]),
+            default_value=palette_rgba(state.active_palette[slot]),
             tag=f"theme_color_{slot}",
             width=170,
             callback=on_theme_color,
@@ -4362,44 +4125,66 @@ try:
 except Exception:
     _midi_input_devices = []
 
-with dpg.window(label="MIDI", width=460, height=470, pos=(560, 320), tag="midi_window", show=False):
+with dpg.window(label="MIDI", width=520, height=520, pos=(560, 320), tag="midi_window", show=False):
     dpg.add_checkbox(
         label="Enable MIDI",
         tag="midi_enable_cb",
-        default_value=midi_enabled,
+        default_value=state.midi_enabled,
         callback=on_midi_enable,
     )
     dpg.add_separator()
     dpg.add_spacer(height=4)
-    themed_text("Controller", slot="text")
+    # e14s03: Controllers section — add any available input port, list the connected
+    # controllers (profile auto-detected, grid role, remove), bindings per controller.
+    themed_text("Controllers", slot="text")
     with dpg.group(horizontal=True):
-        dpg.add_combo(
-            items=_midi_input_devices,
-            default_value=(
-                midi_input_port or (_midi_input_devices[0] if _midi_input_devices else "")
-            ),
-            tag="midi_input_combo",
-            width=320,
-            callback=on_midi_input_port,
+        dpg.add_combo(items=available_controller_ports(), tag="midi_add_combo", width=320)
+        dpg.add_button(
+            label="Add",
+            callback=lambda: add_controller_from_port(str(dpg.get_value("midi_add_combo"))),
+            width=60,
         )
         dpg.add_button(label="Refresh", callback=refresh_midi_devices, width=80)
+    with (
+        dpg.child_window(height=120, tag="midi_controllers_scroll"),
+        dpg.group(tag="midi_controllers_group"),
+    ):
+        pass
     dpg.add_separator()
     dpg.add_spacer(height=4)
-    themed_text("MIDI Learn", slot="text")
+    themed_text("Bindings", slot="text")
     dpg.add_button(
         label="Learn mapping...", tag="midi_learn_btn", callback=toggle_midi_learn, width=150
     )
     dpg.add_text("", tag="midi_learn_status")
     dpg.add_separator()
     dpg.add_spacer(height=4)
-    themed_text("Mappings", slot="text")
     with (
-        dpg.child_window(height=180, tag="midi_mappings_scroll"),
+        dpg.child_window(height=160, tag="midi_mappings_scroll"),
         dpg.group(tag="midi_mappings_group"),
     ):
         pass
     dpg.add_spacer(height=4)
-    dpg.add_button(label="Save", callback=save_midi_bindings, width=80)
+    dpg.add_button(label="Save", callback=save_midi_controllers, width=80)
+
+# e16: Mapper window — compact grid of OSC property mapping cards; the body is
+# rebuilt by refresh_mapper_ui() (menu open, create, delete, prune). Hidden at
+# boot and never part of the saved layout (transient workspace, like Logs).
+# e20s02: only the mapping cards — no header line, and the scroll
+# container is borderless so no outer frame wraps the grid.
+with (
+    dpg.window(
+        label="Mapper",
+        width=MAPPER_WINDOW_WIDTH,
+        height=MAPPER_WINDOW_HEIGHT,
+        pos=(60, 60),
+        tag="mapper_window",
+        show=False,
+    ),
+    dpg.child_window(height=MAPPER_WINDOW_HEIGHT - 8, border=False, tag="mapper_scroll"),
+    dpg.group(tag="mapper_mappings_group"),
+):
+    pass
 
 # NEW THREAD FOR HIGH-FREQUENCY FADES
 threading.Thread(target=fade_tick_loop, daemon=True).start()
@@ -4413,19 +4198,28 @@ threading.Thread(target=essentia_analyzer_loop, daemon=True).start()
 threading.Thread(target=thumbnail_decoder_worker, daemon=True).start()
 
 dpg.create_viewport(title="viSeq - Audio-Reactive VJ Controller", width=1700, height=1080)
+# e19: closing the main window asks for confirmation — the viewport X routes to
+# the exit modal instead of stopping the app (disable_close keeps rendering on;
+# the modal's Exit button calls stop_dearpygui).
+dpg.set_exit_callback(show_exit_confirm)
+dpg.configure_viewport("__viewport", disable_close=True)
 apply_boot_config()  # e06: apply the saved theme + (optionally) the saved window layout
 with dpg.viewport_menu_bar():
     with dpg.menu(label="viSeq"):  # e11s03: first menubar menu — project file flows
+        dpg.add_menu_item(label="New project", callback=show_new_project_confirm)  # e15s01
         dpg.add_menu_item(label="Open project", callback=show_open_project_dialog)
         with dpg.menu(label="Last project", tag="menu_last_project"):
             pass  # children rebuilt by rebuild_last_project_menu() (boot + after every save/open)
         dpg.add_separator()
         dpg.add_menu_item(label="Save project", callback=show_save_project_dialog)
         dpg.add_menu_item(label="Exit", callback=exit_app)
-    with dpg.menu(label="Windows"):  # e12s01: window management consolidated here
+    with dpg.menu(label="Windows", tag="menu_windows"):  # e12s01 + e17 (window list)
         dpg.add_menu_item(label="New Monitor Player", callback=new_monitor_player)
+        dpg.add_menu_item(label="Show Mapper", callback=show_mapper_window)  # e16
         dpg.add_menu_item(label="Show Logs", callback=show_logs_window)
         dpg.add_menu_item(label="Show Info", callback=show_help_window)
+        dpg.add_separator(parent="menu_windows")  # e17: open windows below the actions
+        # the live window list is rebuilt by refresh_window_menu() (e17)
     with dpg.menu(label="Settings"):  # e12s01: config panels under one menu
         dpg.add_menu_item(label="General", callback=show_settings_window)
         dpg.add_menu_item(label="MIDI", callback=show_midi_window)
@@ -4444,10 +4238,10 @@ try:
         if dpg.does_item_exist("vimix_media_window"):
             w = dpg.get_item_width("vimix_media_window")
             current_cols = max(1, int((w - 20) / 145))
-            if current_cols != last_num_cols:
-                last_num_cols = current_cols
-                if global_vimix_state.get("sources"):
-                    update_vimix_sources_ui(json.dumps(global_vimix_state))
+            if current_cols != state.last_num_cols:
+                state.last_num_cols = current_cols
+                if state.global_vimix_state.get("sources"):
+                    update_vimix_sources_ui(json.dumps(state.global_vimix_state))
 
         has_new_logs = False
         while not log_queue.empty():
@@ -4481,6 +4275,10 @@ try:
 
         tick_thumb_cycle(time.time())
 
+        tick_window_menu()  # e17: keep the Windows-menu list + active mark fresh
+
+        tick_midi_learn_timeout()  # e18: expire stale MIDI Learn sessions (incl. mapper)
+
         request_missing_thumbnails(time.time())
 
         # monitor players: cleanup closed windows and refresh values
@@ -4502,7 +4300,7 @@ finally:
         with contextlib.suppress(Exception):
             audio_stream.stop()
             audio_stream.close()
-    if local_osc_server is not None:
+    if state.local_osc_server is not None:
         with contextlib.suppress(Exception):
-            local_osc_server.shutdown()
+            state.local_osc_server.shutdown()
     dpg.destroy_context()

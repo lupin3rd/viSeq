@@ -1,0 +1,11 @@
+{
+  "id": "launchpad_mk2",
+  "name": "Novation Launchpad MK2 / Mini MK2 / Pro",
+  "match": ["mk2", "pro"],
+  "priority": 20,
+  "protocol": "note",
+  "grid": {"rows": 8, "cols": 8, "note": "row*10+col"},
+  "colors": {"off": 0, "red": 5, "amber": 12, "white": 3, "green": 60},
+  "setup_sysex": null,
+  "features": {"grid": true, "leds": true, "clock": false}
+}

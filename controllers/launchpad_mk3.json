@@ -1,0 +1,11 @@
+{
+  "id": "launchpad_mk3",
+  "name": "Novation Launchpad X / Mini MK3 / Pro MK3",
+  "match": ["mk3", "launchpad x"],
+  "priority": 30,
+  "protocol": "programmer",
+  "grid": {"rows": 8, "cols": 8, "note": "row*10+col"},
+  "colors": {"off": 0, "red": 5, "amber": 12, "white": 3, "green": 60},
+  "setup_sysex": [0, 32, 41, 2, 12, 3, 1],
+  "features": {"grid": true, "leds": true, "clock": false}
+}
