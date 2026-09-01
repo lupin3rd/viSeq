@@ -3253,6 +3253,7 @@ def _window_menu_entries() -> list[tuple[str, str]]:
     match the windows that exist.
     """
     entries = [
+        ("sequencer_window", "Step Sequencer"),
         ("audio_window", "Audio analyzer"),
         ("vimix_media_window", "Vimix sources"),
         ("logs_window", "Logs"),
@@ -3284,6 +3285,26 @@ def _is_tracked_window(tag: Any) -> bool:
     """True when the active item is one of the app's windows, not a menu/popup."""
     s = str(tag)
     return s in _FOCUS_TRACKED_WINDOWS or s.startswith("monitor_player_")
+
+
+def _active_window_tag(tag: Any) -> str | None:
+    """Resolve the active item to its app window (BUG-2026-09-01T194500).
+
+    DPG reports arbitrary widgets as the active window (verified live: clicking
+    a step pad makes get_active_window() return the pad tag, e.g. 'seq_cell_2_4')
+    and the open menu itself while a menu is shown. Walk up the item tree to the
+    first tracked window; return None for menus/popups/unknowns.
+    """
+    item = tag
+    for _ in range(64):  # bounded parent walk
+        s = str(item)
+        if _is_tracked_window(s):
+            return s
+        parent = dpg.get_item_parent(item)
+        if parent is None or str(parent) == s:
+            return None
+        item = parent
+    return None
 
 
 _window_menu_sig: tuple[Any, ...] | None = None  # last (active, monitor tags) seen
@@ -3320,16 +3341,17 @@ def refresh_window_menu() -> None:
 def tick_window_menu() -> None:
     """Per-frame gate: refresh the Windows-menu list only when it can have changed.
 
-    The signature is (tracked current window, monitor-player tags); anything
-    else the list shows (the fixed windows) is static. We remember the last
-    focused window: get_active_window() reports the MENU itself while a menu is
-    open (mvContainers.cpp), so only real app windows are accepted into the
-    track and a menu/popup/None result never clears it (BUG-2026-09-01T194500).
+    The signature is (tracked current window, shown window tags); anything else
+    the list shows is static. We remember the last focused window: get_active_window()
+    reports arbitrary widgets (step pads, combos) and the open menu itself, so
+    the track resolves the active item up to its app window and never clears on
+    a menu/popup/None result (BUG-2026-09-01T194500).
     """
     global _window_menu_sig
     active = dpg.get_active_window()
-    if _is_tracked_window(active):
-        state.current_window = str(active)
+    window = _active_window_tag(active)
+    if window is not None:
+        state.current_window = window
     sig = (
         state.current_window,
         tuple(
