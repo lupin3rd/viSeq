@@ -2088,7 +2088,6 @@ def new_monitor_player(sender: Any = None, app_data: Any = None, user_data: Any 
                 callback=lambda s, a, u: remove_monitor_player(player_id),
                 user_data=player_id,
             )
-    dpg.add_item_focus_handler(callback=_on_window_focused, parent=tag)  # e17 focus track
     update_monitor_player_ui(player_id)  # build the body: assign box or the readout
 
 
@@ -3263,44 +3262,7 @@ def _window_menu_entries() -> list[tuple[str, str]]:
     return entries
 
 
-def _on_window_focused(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Record the last focused window (BUG-2026-09-01T194500).
-
-    DPG's get_active_window() returns None while the viewport menu bar has
-    focus, so the Windows-menu mark and the Ctrl+Tab anchor must come from our
-    own tracking. An item focus handler is attached to every trackable window
-    (DPG 2.3.1 has no window focus handler); blur events leave the track intact.
-    """
-    if app_data:
-        state.current_window = str(sender)
-
-
 _window_menu_dynamic_tags: list[str] = []  # live list items, deleted on refresh
-
-
-# Every window the focus tracker watches (BUG-2026-09-01T194500): the five
-# workspace windows plus the utility windows reachable from the menu bar.
-_FOCUS_TRACKED_WINDOWS: tuple[str, ...] = (
-    "sequencer_window",
-    "audio_window",
-    "vimix_media_window",
-    "logs_window",
-    "mapper_window",
-    "settings_window",
-    "midi_window",
-    "help_window",
-)
-
-
-def attach_window_focus_handlers() -> None:
-    """Attach the focus tracker to every trackable window (BUG-2026-09-01T194500).
-
-    DPG 2.3.1 has no window focus handler; add_item_focus_handler(parent=...) on
-    a window fires with app_data True when the window gains focus. Monitor
-    windows attach theirs at creation (new_monitor_player).
-    """
-    for tag in _FOCUS_TRACKED_WINDOWS:
-        dpg.add_item_focus_handler(callback=_on_window_focused, parent=tag)
 
 
 _window_menu_sig: tuple[Any, ...] | None = None  # last (active, monitor tags) seen
@@ -3336,10 +3298,16 @@ def tick_window_menu() -> None:
     """Per-frame gate: refresh the Windows-menu list only when it can have changed.
 
     The signature is (tracked current window, monitor-player tags); anything
-    else the list shows (the fixed windows) is static. One state read per frame
-    is the whole cost when nothing changed.
+    else the list shows (the fixed windows) is static. We remember the last
+    focused window: get_active_window() returns None while the menu bar has
+    focus, and a None result must never clear the track (BUG-2026-09-01T194500).
+    (Item focus handlers crash with a SystemError on windows in DPG 2.3.1, so
+    the track is polled per frame instead — one cheap C call.)
     """
     global _window_menu_sig
+    active = dpg.get_active_window()
+    if active is not None:
+        state.current_window = str(active)
     sig = (state.current_window, tuple(p["tag"] for p in monitor_players))
     if sig != _window_menu_sig:
         _window_menu_sig = sig
@@ -4305,7 +4273,6 @@ with dpg.viewport_menu_bar():
 # with .viseq/.* filters — DPG shows only directories without extension filters,
 # and a fresh dialog guarantees the default path exists.
 rebuild_last_project_menu()  # e11s03: populate the Last-project submenu for boot
-attach_window_focus_handlers()  # e17: track the last focused window (BUG-2026-09-01T194500)
 dpg.setup_dearpygui()
 dpg.show_viewport()
 autostart_osc()  # boot: auto-connect OSC client + start listening server (no manual clicks)
