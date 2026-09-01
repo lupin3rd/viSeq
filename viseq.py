@@ -3302,6 +3302,8 @@ def refresh_window_menu() -> None:
     _window_menu_dynamic_tags.clear()
     active = state.current_window
     for tag, label in _window_menu_entries():
+        if not (dpg.does_item_exist(tag) and dpg.is_item_shown(tag)):
+            continue  # only list windows that are actually open
         if not dpg.does_item_exist(tag):
             continue
         item_tag = dpg.add_menu_item(
@@ -3328,7 +3330,14 @@ def tick_window_menu() -> None:
     active = dpg.get_active_window()
     if _is_tracked_window(active):
         state.current_window = str(active)
-    sig = (state.current_window, tuple(p["tag"] for p in monitor_players))
+    sig = (
+        state.current_window,
+        tuple(
+            tag
+            for tag, _ in _window_menu_entries()
+            if dpg.does_item_exist(tag) and dpg.is_item_shown(tag)
+        ),
+    )
     if sig != _window_menu_sig:
         _window_menu_sig = sig
         refresh_window_menu()

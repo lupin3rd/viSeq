@@ -26,6 +26,10 @@ VERSION="${1:-$(grep -o 'APP_VERSION: str = "[^"]*"' "$ROOT/viseq.py" | cut -d'"
 BASE_FILE="python3.13.15-cp313-cp313-manylinux_2_28_x86_64.AppImage"
 BASE_URL="https://github.com/niess/python-appimage/releases/download/python3.13/${BASE_FILE}"
 TOOL_URL="https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
+# Statically linked type-2 runtime (musl): no libfuse2 needed on the host — it
+# mounts via the fusermount binary (v3 on Ubuntu 24.04+), solving the FUSE2
+# removal that breaks the stock AppImageKit runtime (user report 2026-09-01).
+RUNTIME_URL="https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64"
 
 CACHE="${CACHE_DIR:-$ROOT/.appimage-cache}"
 mkdir -p "$CACHE" "$ROOT/dist"
@@ -41,7 +45,8 @@ fetch() { # fetch <url> <dest>
 echo "==> viseq AppImage build (version $VERSION)"
 fetch "$BASE_URL" "$CACHE/$BASE_FILE"
 fetch "$TOOL_URL" "$CACHE/appimagetool-x86_64.AppImage"
-chmod +x "$CACHE/$BASE_FILE" "$CACHE/appimagetool-x86_64.AppImage"
+fetch "$RUNTIME_URL" "$CACHE/type2-runtime-x86_64"
+chmod +x "$CACHE/$BASE_FILE" "$CACHE/appimagetool-x86_64.AppImage" "$CACHE/type2-runtime-x86_64"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -105,9 +110,10 @@ OUT="$ROOT/dist/viseq-$VERSION-x86_64.AppImage"
 # over an executing file works on Linux (the running process keeps its inode).
 OUT_TMP="$OUT.tmp"
 TOOL="$CACHE/appimagetool-x86_64.AppImage"
-if ! "$TOOL" "$APPDIR" "$OUT_TMP" >/dev/null 2>&1; then
+RUNTIME="$CACHE/type2-runtime-x86_64"
+if ! "$TOOL" --runtime-file "$RUNTIME" "$APPDIR" "$OUT_TMP" >/dev/null 2>&1; then
   echo "    (FUSE unavailable — retrying with --appimage-extract-and-run)"
-  "$TOOL" --appimage-extract-and-run "$APPDIR" "$OUT_TMP" >/dev/null
+  "$TOOL" --appimage-extract-and-run --runtime-file "$RUNTIME" "$APPDIR" "$OUT_TMP" >/dev/null
 fi
 mv "$OUT_TMP" "$OUT"
 chmod +x "$OUT"
