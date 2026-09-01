@@ -3297,9 +3297,15 @@ def _active_window_tag(tag: Any) -> str | None:
     """
     item = tag
     for _ in range(64):  # bounded parent walk
+        if item is None:
+            return None
         s = str(item)
         if _is_tracked_window(s):
             return s
+        # Real DPG raises get_item_info on stale/unknown ids (boot returns 0)
+        # — bail out before the walk instead of crashing.
+        if not dpg.does_item_exist(item):
+            return None
         parent = dpg.get_item_parent(item)
         if parent is None or str(parent) == s:
             return None
