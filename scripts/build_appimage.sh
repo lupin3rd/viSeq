@@ -100,10 +100,15 @@ PYEOF
 
 echo "==> repacking with appimagetool"
 OUT="$ROOT/dist/viseq-$VERSION-x86_64.AppImage"
+# Write to a temp name then rename: an already-running instance of the app
+# keeps the old file busy (ETXTBSY) and must not block the rebuild — rename
+# over an executing file works on Linux (the running process keeps its inode).
+OUT_TMP="$OUT.tmp"
 TOOL="$CACHE/appimagetool-x86_64.AppImage"
-if ! "$TOOL" "$APPDIR" "$OUT" >/dev/null 2>&1; then
+if ! "$TOOL" "$APPDIR" "$OUT_TMP" >/dev/null 2>&1; then
   echo "    (FUSE unavailable — retrying with --appimage-extract-and-run)"
-  "$TOOL" --appimage-extract-and-run "$APPDIR" "$OUT" >/dev/null
+  "$TOOL" --appimage-extract-and-run "$APPDIR" "$OUT_TMP" >/dev/null
 fi
+mv "$OUT_TMP" "$OUT"
 chmod +x "$OUT"
 echo "==> built $OUT ($(du -h "$OUT" | cut -f1))"

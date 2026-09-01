@@ -3013,7 +3013,7 @@ def refresh_mapper_ui() -> None:
         # explicit parent: at runtime (menu callback) DPG cannot deduce the
         # implicit container, so a parentless add_text would raise 1011
         themed_text(
-            "No mappings yet — right-click a source in the Mediagrid.",
+            "No mappings yet — right-click a source in Vimix sources.",
             slot="text_dim",
             wrap=MAPPER_WINDOW_WIDTH - 40,
             parent="mapper_mappings_group",
@@ -3246,19 +3246,19 @@ def show_help_window(sender: Any = None, app_data: Any = None, user_data: Any = 
 
 # ---------- e17: window switching (Windows-menu list + Ctrl+Tab) ----------
 def _window_menu_entries() -> list[tuple[str, str]]:
-    """Workspace windows in switching order: (tag, menu label).
+    """Windows in switching order: (tag, real window-title label).
 
-    Monitor Players are appended live so the list (and Ctrl+Tab) always match
-    the windows that exist.
+    The main window (Step Sequencer) is always on screen and is not a switching
+    target; Monitor Players are appended live so the list (and Ctrl+Tab) always
+    match the windows that exist.
     """
     entries = [
-        ("sequencer_window", "Sequencer"),
-        ("audio_window", "Audio"),
-        ("vimix_media_window", "Media"),
+        ("audio_window", "Audio analyzer"),
+        ("vimix_media_window", "Vimix sources"),
         ("logs_window", "Logs"),
         ("mapper_window", "Mapper"),
     ]
-    entries += [(p["tag"], f"Monitor {p['id']}") for p in monitor_players]
+    entries += [(p["tag"], f"Monitor Player {p['id']}") for p in monitor_players]
     return entries
 
 
@@ -4139,7 +4139,7 @@ with dpg.window(
 # WINDOW 4: VIMIX MEDIA
 with (
     dpg.window(
-        label="Mediagrid",
+        label="Vimix sources",
         width=550,
         height=690,
         pos=(1100, 10),
