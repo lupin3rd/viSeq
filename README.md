@@ -22,8 +22,9 @@ chmod +x viseq-0.3.0-x86_64.AppImage
 ./viseq-0.3.0-x86_64.AppImage
 ```
 
-**FUSE note:** some distributions (e.g. Ubuntu 24.04+) ship without the FUSE2
-runtime that AppImages rely on. If the AppImage does not start, run it in
+**FUSE note:** the AppImage bundles a statically linked runtime, so it mounts
+on modern distributions (Ubuntu 24.04+ included) without any FUSE package.
+Only on systems with no FUSE at all (e.g. containers, WSL1) run it in
 extract-and-run mode instead:
 
 ```bash
