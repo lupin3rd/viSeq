@@ -3265,6 +3265,27 @@ def _window_menu_entries() -> list[tuple[str, str]]:
 _window_menu_dynamic_tags: list[str] = []  # live list items, deleted on refresh
 
 
+# The app's windows (BUG-2026-09-01T194500). Opening a menu makes DPG report the
+# menu itself as the active window (mvContainers.cpp: menu draw sets
+# GContext->activeWindow), so the focus track must accept ONLY real windows.
+_FOCUS_TRACKED_WINDOWS: tuple[str, ...] = (
+    "sequencer_window",
+    "audio_window",
+    "vimix_media_window",
+    "logs_window",
+    "mapper_window",
+    "settings_window",
+    "midi_window",
+    "help_window",
+)
+
+
+def _is_tracked_window(tag: Any) -> bool:
+    """True when the active item is one of the app's windows, not a menu/popup."""
+    s = str(tag)
+    return s in _FOCUS_TRACKED_WINDOWS or s.startswith("monitor_player_")
+
+
 _window_menu_sig: tuple[Any, ...] | None = None  # last (active, monitor tags) seen
 
 
@@ -3299,14 +3320,13 @@ def tick_window_menu() -> None:
 
     The signature is (tracked current window, monitor-player tags); anything
     else the list shows (the fixed windows) is static. We remember the last
-    focused window: get_active_window() returns None while the menu bar has
-    focus, and a None result must never clear the track (BUG-2026-09-01T194500).
-    (Item focus handlers crash with a SystemError on windows in DPG 2.3.1, so
-    the track is polled per frame instead — one cheap C call.)
+    focused window: get_active_window() reports the MENU itself while a menu is
+    open (mvContainers.cpp), so only real app windows are accepted into the
+    track and a menu/popup/None result never clears it (BUG-2026-09-01T194500).
     """
     global _window_menu_sig
     active = dpg.get_active_window()
-    if active is not None:
+    if _is_tracked_window(active):
         state.current_window = str(active)
     sig = (state.current_window, tuple(p["tag"] for p in monitor_players))
     if sig != _window_menu_sig:
