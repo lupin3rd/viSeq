@@ -13,6 +13,10 @@ venv/
 # Local spike/temp artifacts
 /tmp/
 
+# AppImage build artifacts (e21s02)
+dist/
+.appimage-cache/
+
 # Gate tooling caches (G6)
 .mypy_cache/
 .pytest_cache/
