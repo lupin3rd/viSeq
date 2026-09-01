@@ -4,6 +4,7 @@ import json
 import math
 import os
 import random
+import shutil
 import threading
 import time
 from collections.abc import Callable
@@ -29,7 +30,7 @@ from viseqapp.audio import (
     lowpass_filter,
     rhythm_extractor,
 )
-from viseqapp.config import _sanitize_palette, load_config, save_config
+from viseqapp.config import _sanitize_palette, load_config, save_config, user_config_dir
 from viseqapp.constants import (
     BAND_BEAT_THRESHOLD,
     BEAT_SOURCE_ANALYSIS,
@@ -208,9 +209,9 @@ DEFAULT_MONITOR_PROPS = ["alpha", "seek", "speed"]  # requested when a monitor s
 
 
 # --- USER CONFIG + THEMING (e06) ---
-# Single JSON file next to viseq.py stores the window layout and the theme. The storage
-# mechanism was delegated to the agent by the user ("puoi decidere tu cosa utilizzare").
-CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
+# The per-user config lives under the XDG config dir (e21s01); the project
+# files folder and the eager boot dirs are e21s01 task 5 (AppImage-safe: the
+# app dir is read-only inside the bundle).
 
 # viseq application version — single source of truth (matches specs/release-plan.yaml, e08s02).
 # e13s01: this is the first real release of viSeq (user decision).
@@ -342,8 +343,41 @@ def apply_window_layout(records: list[dict[str, Any]]) -> None:
 # PROJECT SAVE/LOAD (e11) — .viseq files capture window layout + theme + every
 # sequencer configuration; the viSeq menu (e11s03) drives the file dialogs.
 # ==============================================================================
-PROJECTS_DIR = os.path.join(CONFIG_DIR, "projects")
+PROJECTS_DIR = os.path.join(user_config_dir(), "projects")
+# The pre-e21 projects default (app dir); one-time migration source (e21s01).
+LEGACY_PROJECTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "projects")
 # Step fields that belong in a project file; the last_rand_* keys are runtime-only.
+
+
+def _migrate_legacy_projects() -> None:
+    """One-time copy of legacy app-dir .viseq projects into PROJECTS_DIR (e21s01).
+
+    Copy-only and skip-existing: user documents are never overwritten or
+    deleted; non-.viseq files and a missing legacy dir are ignored.
+    """
+    if os.path.abspath(LEGACY_PROJECTS_DIR) == os.path.abspath(PROJECTS_DIR):
+        return
+    try:
+        names = sorted(os.listdir(LEGACY_PROJECTS_DIR))
+    except OSError:
+        return
+    for name in names:
+        if not name.lower().endswith(PROJECT_FILE_EXTENSION):
+            continue
+        target = os.path.join(PROJECTS_DIR, name)
+        if os.path.exists(target):
+            continue
+        try:
+            shutil.copy2(os.path.join(LEGACY_PROJECTS_DIR, name), target)
+        except OSError as e:
+            log_error("Projects", f"migrate {name}: {e}")
+
+
+def ensure_user_dirs() -> None:
+    """Create the XDG user dirs at boot and migrate legacy projects (e21s01)."""
+    os.makedirs(user_config_dir(), exist_ok=True)
+    os.makedirs(PROJECTS_DIR, exist_ok=True)
+    _migrate_legacy_projects()
 
 
 def _step_persisted(step: dict[str, Any]) -> dict[str, Any]:
@@ -4204,6 +4238,7 @@ dpg.create_viewport(title="viSeq - Audio-Reactive VJ Controller", width=1700, he
 dpg.set_exit_callback(show_exit_confirm)
 dpg.configure_viewport("__viewport", disable_close=True)
 apply_boot_config()  # e06: apply the saved theme + (optionally) the saved window layout
+ensure_user_dirs()  # e21s01: eager XDG user dirs (config + projects) + legacy .viseq migration
 with dpg.viewport_menu_bar():
     with dpg.menu(label="viSeq"):  # e11s03: first menubar menu — project file flows
         dpg.add_menu_item(label="New project", callback=show_new_project_confirm)  # e15s01
