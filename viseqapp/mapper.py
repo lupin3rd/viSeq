@@ -194,7 +194,8 @@ def set_mapping_band(mapping_id: int, band_id: int | None) -> None:
     """Set/clear the audio-band source of a mapping (e18).
 
     Band and MIDI sources are mutually exclusive: setting a band clears any
-    MIDI source, and vice versa.
+    MIDI source, and vice versa. e23s02: binding a band seeds the input range
+    to 0..1 (the raw band level scale).
     """
     mapping = find_mapping(mapping_id)
     if mapping is None:
@@ -202,10 +203,16 @@ def set_mapping_band(mapping_id: int, band_id: int | None) -> None:
     mapping["band"] = band_id
     if band_id is not None:
         mapping["midi"] = None
+        mapping["input_from"] = 0.0
+        mapping["input_to"] = 1.0
 
 
 def set_mapping_midi(mapping_id: int, binding: dict[str, Any]) -> None:
-    """Set the MIDI source of a mapping from a learned binding (e18)."""
+    """Set the MIDI source of a mapping from a learned binding (e18).
+
+    e23s02: binding a MIDI source seeds the input range to 0..127 (the raw
+    MIDI value scale).
+    """
     mapping = find_mapping(mapping_id)
     if mapping is None:
         return
@@ -215,6 +222,17 @@ def set_mapping_midi(mapping_id: int, binding: dict[str, Any]) -> None:
         "number": binding.get("number"),
     }
     mapping["band"] = None
+    mapping["input_from"] = 0.0
+    mapping["input_to"] = 127.0
+
+
+def set_mapping_input(mapping_id: int, in_from: float, in_to: float) -> None:
+    """Set the input range a bound source maps through (e23s02); from > to reverses it."""
+    mapping = find_mapping(mapping_id)
+    if mapping is None:
+        return
+    mapping["input_from"] = float(in_from)
+    mapping["input_to"] = float(in_to)
 
 
 def clear_mapping_source(mapping_id: int) -> None:
@@ -224,6 +242,26 @@ def clear_mapping_source(mapping_id: int) -> None:
         return
     mapping["band"] = None
     mapping["midi"] = None
+
+
+def apply_input_value(mapping_id: int, raw: float) -> float:
+    """Drive a mapping from a raw source value (band level / MIDI value, e23s02).
+
+    The raw value is remapped through the mapping's input range onto a clamped
+    0..1 unit, then through the output range (apply_unit_value) and sent as
+    OSC. Sub-ranges restrict the travel, reversed ranges (from > to) invert
+    the response; a degenerate range yields unit 0 (output_from). Returns the
+    effective value (0.0 for an unknown id). Worker-safe, HIGH-1.
+    """
+    mapping = find_mapping(mapping_id)
+    if mapping is None:
+        return 0.0
+    in_from, in_to = mapping["input_from"], mapping["input_to"]
+    if in_from is None or in_to is None or in_from == in_to:
+        unit = 0.0
+    else:
+        unit = _clamp((float(raw) - in_from) / (in_to - in_from), 0.0, 1.0)
+    return apply_unit_value(mapping_id, unit)
 
 
 def apply_unit_value(mapping_id: int, unit: float) -> float:

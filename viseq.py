@@ -3018,6 +3018,30 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any) -> None:
                 user_data=(mid, "to"),
                 tag=f"mapper_out_to_{mid}",
             )
+        # e23s02: the raw input range of the bound source (band or MIDI)
+        if mapping.get("band") is not None or mapping.get("midi") is not None:
+            in_from = mapping.get("input_from")
+            in_to = mapping.get("input_to")
+            with dpg.group(horizontal=True):
+                themed_text("input:", slot="text_dim")
+                dpg.add_drag_float(
+                    default_value=in_from if in_from is not None else 0.0,
+                    width=MAPPER_DRAG_W,
+                    format="%.2f",
+                    speed=0.01,
+                    callback=on_mapper_input,
+                    user_data=(mid, "from"),
+                    tag=f"mapper_in_from_{mid}",
+                )
+                dpg.add_drag_float(
+                    default_value=in_to if in_to is not None else 1.0,
+                    width=MAPPER_DRAG_W,
+                    format="%.2f",
+                    speed=0.01,
+                    callback=on_mapper_input,
+                    user_data=(mid, "to"),
+                    tag=f"mapper_in_to_{mid}",
+                )
         _render_mapper_source_menu(mapping)
 
 
@@ -3085,11 +3109,12 @@ def drive_mapper_band(band_id: int, level: float) -> None:
     """Push an audio-band level into every control mapped to that band (e18).
 
     Called by refresh_band_value (main thread, ~30 fps while the band is
-    enabled); the level is remapped onto each mapping's property range.
+    enabled). e23s02: the raw level (0..1) is remapped through each mapping's
+    input range (default 0..1), then through its output range.
     """
     for m in state.mapper_mappings:
         if m.get("band") == band_id:
-            value = mapper.apply_unit_value(m["id"], level)
+            value = mapper.apply_input_value(m["id"], level)
             _set_mapper_control_value(m["id"], value)
 
 
@@ -3140,9 +3165,13 @@ def map_mapping_midi_learn(sender: Any = None, app_data: Any = None, user_data: 
 
 
 def midi_mapping_value(mapping_id: int, midi_value: int) -> None:
-    """Drive a mapper control from a learned MIDI value (0..127 -> range, e18)."""
-    unit = max(0.0, min(1.0, midi_value / 127.0))
-    value = mapper.apply_unit_value(mapping_id, unit)
+    """Drive a mapper control from a learned MIDI value (e23s02).
+
+    The raw 0..127 value is remapped through the mapping's input range
+    (default 0..127), then through its output range, and the control widget
+    follows.
+    """
+    value = mapper.apply_input_value(mapping_id, midi_value)
     _set_mapper_control_value(mapping_id, value)
 
 
@@ -3251,6 +3280,18 @@ def on_mapper_output(sender: Any, app_data: Any, user_data: Any) -> None:
     out_to = float(dpg.get_value(to_tag))
     mapper.set_mapping_output(mid, out_from, out_to)
     _sync_mapper_control(mid)
+
+
+def on_mapper_input(sender: Any, app_data: Any, user_data: Any) -> None:
+    """Drag an input from/to box: store the new input range of the bound source.
+
+    Reads BOTH boxes (edited via the sender, the other via get_value) so the
+    pair is consistent; no body rebuild (a refresh mid-drag would kill it).
+    """
+    mid, _edge = user_data
+    from_tag = f"mapper_in_from_{mid}"
+    to_tag = f"mapper_in_to_{mid}"
+    mapper.set_mapping_input(mid, float(dpg.get_value(from_tag)), float(dpg.get_value(to_tag)))
 
 
 def delete_mapping(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
