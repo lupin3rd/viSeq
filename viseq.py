@@ -3609,13 +3609,15 @@ def midi_clock_loop() -> None:
 
 
 # ---------- e26: Leap Motion worker ----------
-# Owns the LeapC connection lifecycle (open/poll/close) entirely on this one
-# daemon thread. The external 'leap' package is imported lazily (absolute
-# import — the suite/CI has no such package); when it or the Gemini service is
-# unavailable the loop degrades to status 'missing'/'disconnected' with slow
-# retries and never crashes the app (CONVENTIONS § Defensive Code). Tracking
-# frames normalize into state.leap_values under state.leap_lock; UI/status
-# updates go through the queues (HIGH-1: no dpg from this thread).
+# The library's OWN auto-poll thread (auto_poll=True + a Listener) owns the LeapC
+# handshake and event loop — the official example pattern. This daemon thread
+# only manages the lifecycle: lazy-import the external 'leap' package (absolute
+# import — the suite/CI may not have it), open/keep/reconnect the connection
+# while state.leap_enabled, close when disabled. Missing library or service
+# degrades to status 'missing'/'disconnected' with slow retries and never
+# crashes the app (CONVENTIONS § Defensive Code). Tracking frames normalize
+# into state.leap_values under state.leap_lock; UI/status updates go through
+# the queues (HIGH-1: no dpg from any thread here).
 
 
 def _leap_lib() -> Any:
@@ -3628,41 +3630,53 @@ def _leap_lib() -> Any:
         return None
 
 
-def _leap_close_connection(connection: Any) -> Any:
-    """Close an open LeapC connection (idempotent); returns None = closed state."""
-    if connection is not None:
-        with contextlib.suppress(Exception):
-            connection.disconnect()
-    return None
+def _leap_listener(lib: Any) -> Any:
+    """A Listener whose callbacks run on the library's auto-poll thread.
 
+    The callbacks only touch state (under leap_lock) and the log queues — no
+    dpg (HIGH-1). Poll errors arrive via on_error (the library reports timeouts
+    and handshake noise the same way); only real failures flip the status.
+    """
 
-def _leap_handle_event(event: Any) -> None:
-    """One polled LeapC event: tracking frames become the live snapshot (e26s01)."""
-    if getattr(event, "hands", None) is None:
-        return  # connection/device events: status handled by the loop's lifecycle
-    snapshot = normalize_tracking_event(event)
-    with state.leap_lock:
-        state.leap_values.clear()
-        state.leap_values.update(snapshot)
-    state.leap_status = "tracking"
+    class _LeapTrackingListener(lib.Listener):
+        def on_tracking_event(self, event):  # type: ignore[no-untyped-def]
+            snapshot = normalize_tracking_event(event)
+            with state.leap_lock:
+                state.leap_values.clear()
+                state.leap_values.update(snapshot)
+            state.leap_status = "tracking"
+
+        def on_connection_lost_event(self, event):  # type: ignore[no-untyped-def]
+            state.leap_status = "disconnected"
+
+        def on_device_lost_event(self, event):  # type: ignore[no-untyped-def]
+            state.leap_status = "disconnected"
+
+        def on_error(self, error):  # type: ignore[no-untyped-def]
+            if type(error).__name__ in ("LeapTimeoutError", "LeapNotConnectedError"):
+                return  # idle poll / handshake in progress: not failures
+            state.leap_status = "disconnected"
+            log_error("Leap", f"poll: {error}")
+
+    return _LeapTrackingListener()
 
 
 def leap_control_loop() -> None:
-    """Leap Motion worker (e26s01): open while enabled, poll tracking frames.
+    """Leap Motion worker (e26s01): keep one auto-polling connection while enabled.
 
-    Manual polling (auto_poll=False, short timeout) mirrors the midi_control_loop
-    ownership pattern; a LeapTimeoutError per idle poll is normal and expected.
+    The library's own poll thread (auto_poll=True) owns the LeapC handshake and
+    event loop — the official example pattern; our listener normalizes tracking
+    frames into state.leap_values. The worker thread only manages the lifecycle:
+    open when enabled (retry/backoff on failure), watch the status, reconnect
+    after a loss, close when disabled.
     """
-    connection: Any = None
     missing_logged = False
     while True:
         if not state.leap_enabled:
-            connection = _leap_close_connection(connection)
             time.sleep(0.2)
             continue
         lib = _leap_lib()
         if lib is None:
-            connection = _leap_close_connection(connection)
             state.leap_status = "missing"
             if not missing_logged:
                 append_log("Leap", "library/service not available (leapc-python-api + Gemini)")
@@ -3670,33 +3684,27 @@ def leap_control_loop() -> None:
             time.sleep(5.0)
             continue
         missing_logged = False
-        if connection is None:
-            try:
-                connection = lib.Connection(poll_timeout=0.005)
-                connection.open(auto_poll=False, timeout=5)
-                connection.set_tracking_mode(lib.TrackingMode.Desktop)
-                state.leap_status = "connected"
-                append_log("Leap", "connected")
-            except Exception as e:
-                log_error("Leap", f"connect: {e}")
-                connection = _leap_close_connection(connection)
-                state.leap_status = "disconnected"
-                time.sleep(2.0)
-                continue
+        connection: Any = None
         try:
-            event = connection.poll()
+            connection = lib.Connection()
+            connection.add_listener(_leap_listener(lib))
+            connection.open(auto_poll=True, timeout=3)
+            connection.set_tracking_mode(lib.TrackingMode.Desktop)
+            state.leap_status = "connected"
+            append_log("Leap", "connected")
         except Exception as e:
-            # LeapTimeoutError is the normal empty-poll idle; anything else means
-            # the connection died (device unplugged / service stopped).
-            if type(e).__name__ != "LeapTimeoutError":
-                log_error("Leap", f"poll: {e}")
-                connection = _leap_close_connection(connection)
-                state.leap_status = "disconnected"
-                time.sleep(2.0)
-                continue
-            time.sleep(0.005)
+            log_error("Leap", f"connect: {e}")
+            with contextlib.suppress(Exception):
+                connection.disconnect()
+            state.leap_status = "disconnected"
+            time.sleep(2.0)
             continue
-        _leap_handle_event(event)
+        # Keep the connection open while enabled; a lost service/device flips the
+        # status to disconnected (listener) so this loop exits and reconnects.
+        while state.leap_enabled and state.leap_status != "disconnected":
+            time.sleep(0.5)
+        with contextlib.suppress(Exception):
+            connection.disconnect()
 
 
 def show_settings_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
