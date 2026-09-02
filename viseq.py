@@ -129,6 +129,11 @@ from viseqapp.constants import (
     VIOSC_LISTEN_PORT,
     VIOSC_PORT,
 )
+from viseqapp.leap import (
+    leap_init_from_config,
+    normalize_tracking_event,
+    set_leap_enabled,
+)
 from viseqapp.midi import (
     _clock_port_name,
     _close_midi_input,
@@ -965,10 +970,14 @@ def apply_boot_config() -> None:
     """Boot: apply the fallback theme, then restore the last project when flagged (e11s04)."""
     cfg = load_config()
     midi_init_from_config(cfg)  # e09: MIDI control mirrors (enabled, port, bindings)
+    leap_init_from_config(cfg)  # e26: Leap Motion engine mirror (enabled flag)
     if dpg.does_item_exist("midi_enable_cb"):
         # The MIDI window is built before the config loads, so the Enable checkbox
         # starts unchecked even when the engine is on — sync it (BUG-2026-08-29T102156).
         dpg.set_value("midi_enable_cb", state.midi_enabled)
+    if dpg.does_item_exist("leap_enable_cb"):
+        # e26: same boot-sync for the Leap Motion Enable checkbox (built before config).
+        dpg.set_value("leap_enable_cb", state.leap_enabled)
     _apply_theme_config(cfg["theme"])
     if dpg.does_item_exist("cb_restore_project_boot"):
         dpg.set_value("cb_restore_project_boot", cfg["projects"]["restore_last_on_boot"])
@@ -2900,6 +2909,18 @@ def show_midi_window(sender: Any = None, app_data: Any = None, user_data: Any = 
     dpg.focus_item("midi_window")  # e17: a shown window must come to the front
 
 
+def show_leap_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Open the Leap Motion window from Settings > Leap Motion (e26s01)."""
+    dpg.show_item("leap_window")
+    dpg.focus_item("leap_window")  # e17: a shown window must come to the front
+
+
+def on_leap_enable(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Leap window Enable checkbox: persist and apply the engine toggle (e26s01).
+    The worker loop reacts to state.leap_enabled on its own cadence."""
+    set_leap_enabled(bool(app_data))
+
+
 # ---------- e16/e22: Mapper (OSC property mappings -> per-source rows) ----------
 # e22s01: the body is one horizontal row per SOURCE — the source thumbnail at
 # the sequencer slot size, then that source's mapping mini-cards to the right.
@@ -3587,6 +3608,97 @@ def midi_clock_loop() -> None:
             time.sleep(10)
 
 
+# ---------- e26: Leap Motion worker ----------
+# Owns the LeapC connection lifecycle (open/poll/close) entirely on this one
+# daemon thread. The external 'leap' package is imported lazily (absolute
+# import — the suite/CI has no such package); when it or the Gemini service is
+# unavailable the loop degrades to status 'missing'/'disconnected' with slow
+# retries and never crashes the app (CONVENTIONS § Defensive Code). Tracking
+# frames normalize into state.leap_values under state.leap_lock; UI/status
+# updates go through the queues (HIGH-1: no dpg from this thread).
+
+
+def _leap_lib() -> Any:
+    """The external leap package, imported lazily; None when unavailable (e26s01)."""
+    try:
+        import leap  # type: ignore[import-not-found]
+
+        return leap
+    except Exception:
+        return None
+
+
+def _leap_close_connection(connection: Any) -> Any:
+    """Close an open LeapC connection (idempotent); returns None = closed state."""
+    if connection is not None:
+        with contextlib.suppress(Exception):
+            connection.disconnect()
+    return None
+
+
+def _leap_handle_event(event: Any) -> None:
+    """One polled LeapC event: tracking frames become the live snapshot (e26s01)."""
+    if getattr(event, "hands", None) is None:
+        return  # connection/device events: status handled by the loop's lifecycle
+    snapshot = normalize_tracking_event(event)
+    with state.leap_lock:
+        state.leap_values.clear()
+        state.leap_values.update(snapshot)
+    state.leap_status = "tracking"
+
+
+def leap_control_loop() -> None:
+    """Leap Motion worker (e26s01): open while enabled, poll tracking frames.
+
+    Manual polling (auto_poll=False, short timeout) mirrors the midi_control_loop
+    ownership pattern; a LeapTimeoutError per idle poll is normal and expected.
+    """
+    connection: Any = None
+    missing_logged = False
+    while True:
+        if not state.leap_enabled:
+            connection = _leap_close_connection(connection)
+            time.sleep(0.2)
+            continue
+        lib = _leap_lib()
+        if lib is None:
+            connection = _leap_close_connection(connection)
+            state.leap_status = "missing"
+            if not missing_logged:
+                append_log("Leap", "library/service not available (leapc-python-api + Gemini)")
+                missing_logged = True
+            time.sleep(5.0)
+            continue
+        missing_logged = False
+        if connection is None:
+            try:
+                connection = lib.Connection(poll_timeout=0.005)
+                connection.open(auto_poll=False, timeout=5)
+                connection.set_tracking_mode(lib.TrackingMode.Desktop)
+                state.leap_status = "connected"
+                append_log("Leap", "connected")
+            except Exception as e:
+                log_error("Leap", f"connect: {e}")
+                connection = _leap_close_connection(connection)
+                state.leap_status = "disconnected"
+                time.sleep(2.0)
+                continue
+        try:
+            event = connection.poll()
+        except Exception as e:
+            # LeapTimeoutError is the normal empty-poll idle; anything else means
+            # the connection died (device unplugged / service stopped).
+            if type(e).__name__ != "LeapTimeoutError":
+                log_error("Leap", f"poll: {e}")
+                connection = _leap_close_connection(connection)
+                state.leap_status = "disconnected"
+                time.sleep(2.0)
+                continue
+            time.sleep(0.005)
+            continue
+        _leap_handle_event(event)
+
+
 def show_settings_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     """Open the general settings window from the top menubar."""
     dpg.show_item("settings_window")
@@ -3658,6 +3770,7 @@ _FOCUS_TRACKED_WINDOWS: tuple[str, ...] = (
     "mapper_window",
     "settings_window",
     "midi_window",
+    "leap_window",
     "help_window",
 )
 
@@ -4682,6 +4795,24 @@ with dpg.window(label="MIDI", width=520, height=520, pos=(560, 320), tag="midi_w
     dpg.add_spacer(height=4)
     dpg.add_button(label="Save", callback=save_midi_controllers, width=80)
 
+# WINDOW 8: Leap Motion (hidden; opened from the menubar Settings > "Leap Motion").
+# e26: Enable switch + device/service status live here; the LIVE two-hand value
+# monitor rows are added by e26s02 (tick_leap_monitor refreshes them on the main
+# thread). The window never touches the external leap package at import time.
+with dpg.window(
+    label="Leap Motion", width=460, height=300, pos=(560, 420), tag="leap_window", show=False
+):
+    dpg.add_checkbox(
+        label="Enable Leap Motion",
+        tag="leap_enable_cb",
+        default_value=state.leap_enabled,
+        callback=on_leap_enable,
+    )
+    dpg.add_separator()
+    dpg.add_spacer(height=4)
+    dpg.add_text("", tag="leap_status_text")
+    dpg.add_spacer(height=4)
+
 # e16/e22/e23/e24: Mapper window — the body is rebuilt by refresh_mapper_ui()
 # (menu open, create, delete, prune, resize) as a stack of wrapping source
 # blocks. Hidden at boot and never part of the saved layout (transient
@@ -4721,6 +4852,7 @@ threading.Thread(target=fade_tick_loop, daemon=True).start()
 threading.Thread(target=spectrum_analyzer_loop, daemon=True).start()
 threading.Thread(target=midi_clock_loop, daemon=True).start()
 threading.Thread(target=midi_control_loop, daemon=True).start()  # e09: control worker
+threading.Thread(target=leap_control_loop, daemon=True).start()  # e26: leap worker
 
 threading.Thread(target=sequencer_tick, daemon=True).start()
 threading.Thread(target=visual_metronome_loop, daemon=True).start()
@@ -4754,6 +4886,7 @@ with dpg.viewport_menu_bar():
     with dpg.menu(label="Settings"):  # e12s01: config panels under one menu
         dpg.add_menu_item(label="General", callback=show_settings_window)
         dpg.add_menu_item(label="MIDI", callback=show_midi_window)
+        dpg.add_menu_item(label="Leap Motion", callback=show_leap_window)  # e26
 
 # e11s03/e13s02: project file dialogs are created ON DEMAND by
 # show_open_project_dialog / show_save_project_dialog (_recreate_project_dialog)

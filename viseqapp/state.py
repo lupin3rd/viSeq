@@ -268,6 +268,21 @@ _controller_lock = threading.Lock()
 _controller_profiles: dict[str, dict[str, Any]] = {}
 
 
+# e26: Leap Motion engine state (worker-owned). leap_values is mutated IN
+# PLACE (clear + update under leap_lock) so facade re-exports stay live; the
+# worker writes it from its own thread, the UI reads copies on the main thread.
+leap_enabled: bool = False
+
+
+leap_status: str = "missing"  # missing | disconnected | connected | tracking
+
+
+leap_values: dict[str, float] = {}
+
+
+leap_lock = threading.Lock()
+
+
 # e16: Mapper state — OSC property mappings (see viseqapp/mapper.py).
 # Each entry: {id, target_id, property, control, value}; ids come from the
 # monotonic counter (like monitor_player_counter).
