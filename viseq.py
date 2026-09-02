@@ -4,10 +4,12 @@ import json
 import math
 import os
 import random
+import shutil
 import threading
 import time
 from collections.abc import Callable
 from functools import partial
+from pathlib import Path
 from typing import Any
 
 import dearpygui.dearpygui as dpg
@@ -29,7 +31,7 @@ from viseqapp.audio import (
     lowpass_filter,
     rhythm_extractor,
 )
-from viseqapp.config import _sanitize_palette, load_config, save_config
+from viseqapp.config import _sanitize_palette, load_config, save_config, user_config_dir
 from viseqapp.constants import (
     BAND_BEAT_THRESHOLD,
     BEAT_SOURCE_ANALYSIS,
@@ -48,19 +50,33 @@ from viseqapp.constants import (
     LAYOUT_ALWAYS_HIDDEN_TAGS,
     LAYOUT_WINDOW_TAGS,
     LOG_HISTORY_LIMIT,
-    MAPPER_CARD_H,
-    MAPPER_CARD_STRIDE,
-    MAPPER_CARD_W,
-    MAPPER_THUMB_H,
-    MAPPER_THUMB_W,
+    MAPPER_CB_W,
+    MAPPER_CTRL_H,
+    MAPPER_DRAG_W,
+    MAPPER_KNOB_H,
+    MAPPER_MINI_W,
+    MAPPER_ROW_GAP,
+    MAPPER_ROW_PAD_V,
+    MAPPER_ROW_THUMB_H,
+    MAPPER_ROW_THUMB_W,
+    MAPPER_SMALL_CHAR_PX,
+    MAPPER_TEXT_H,
     MAPPER_WINDOW_HEIGHT,
     MAPPER_WINDOW_WIDTH,
+    MAPPER_X_H,
+    MAPPER_X_W,
+    MEDIA_ALPHA_SLIDER_W,
     MEDIA_BADGE_H,
     MEDIA_BADGE_W,
     MEDIA_TILE_H,
+    MEDIA_TILE_PAD,
     MEDIA_TITLE_CHAR_PX,
+    MEDIA_TITLE_CHARS_PER_LINE,
     MEDIA_TITLE_ELLIPSIS,
+    MEDIA_TITLE_FONT_SIZE,
+    MEDIA_TITLE_GAP,
     MEDIA_TITLE_MAX_LINES,
+    MEDIA_TITLE_RESERVE_PX,
     MEDIA_TITLE_WRAP,
     MIDI_ACTION_BEAT_SOURCE,
     MIDI_ACTION_MAPPER_MAPPING,
@@ -208,9 +224,9 @@ DEFAULT_MONITOR_PROPS = ["alpha", "seek", "speed"]  # requested when a monitor s
 
 
 # --- USER CONFIG + THEMING (e06) ---
-# Single JSON file next to viseq.py stores the window layout and the theme. The storage
-# mechanism was delegated to the agent by the user ("puoi decidere tu cosa utilizzare").
-CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
+# The per-user config lives under the XDG config dir (e21s01); the project
+# files folder and the eager boot dirs are e21s01 task 5 (AppImage-safe: the
+# app dir is read-only inside the bundle).
 
 # viseq application version — single source of truth (matches specs/release-plan.yaml, e08s02).
 # e13s01: this is the first real release of viSeq (user decision).
@@ -228,6 +244,16 @@ _HELP_MONO_FONT_PATHS: tuple[str, ...] = (
     "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
 )
 _help_mono_font: Any = None
+
+# Compact monospace font for the Mediagrid tile titles (ProggyTiny: the pixel-font
+# family of DPG's default ProggyClean, but smaller; its line height equals the font
+# size, so a two-line title stays tight). Bundled under viseqapp/assets so packaged
+# builds carry it; if missing the title falls back to the default 13 px font.
+_TILE_TITLE_FONT_PATHS: tuple[str, ...] = (
+    str(Path(__file__).resolve().parent / "viseqapp" / "assets" / "ProggyTiny.ttf"),
+    str(Path(__file__).resolve().parent / "assets" / "ProggyTiny.ttf"),
+)
+_tile_title_font: Any = None
 
 # --- e09: MIDI control engine (single mido stack; notes + CCs, user-configurable bindings) ---
 
@@ -342,8 +368,41 @@ def apply_window_layout(records: list[dict[str, Any]]) -> None:
 # PROJECT SAVE/LOAD (e11) — .viseq files capture window layout + theme + every
 # sequencer configuration; the viSeq menu (e11s03) drives the file dialogs.
 # ==============================================================================
-PROJECTS_DIR = os.path.join(CONFIG_DIR, "projects")
+PROJECTS_DIR = os.path.join(user_config_dir(), "projects")
+# The pre-e21 projects default (app dir); one-time migration source (e21s01).
+LEGACY_PROJECTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "projects")
 # Step fields that belong in a project file; the last_rand_* keys are runtime-only.
+
+
+def _migrate_legacy_projects() -> None:
+    """One-time copy of legacy app-dir .viseq projects into PROJECTS_DIR (e21s01).
+
+    Copy-only and skip-existing: user documents are never overwritten or
+    deleted; non-.viseq files and a missing legacy dir are ignored.
+    """
+    if os.path.abspath(LEGACY_PROJECTS_DIR) == os.path.abspath(PROJECTS_DIR):
+        return
+    try:
+        names = sorted(os.listdir(LEGACY_PROJECTS_DIR))
+    except OSError:
+        return
+    for name in names:
+        if not name.lower().endswith(PROJECT_FILE_EXTENSION):
+            continue
+        target = os.path.join(PROJECTS_DIR, name)
+        if os.path.exists(target):
+            continue
+        try:
+            shutil.copy2(os.path.join(LEGACY_PROJECTS_DIR, name), target)
+        except OSError as e:
+            log_error("Projects", f"migrate {name}: {e}")
+
+
+def ensure_user_dirs() -> None:
+    """Create the XDG user dirs at boot and migrate legacy projects (e21s01)."""
+    os.makedirs(user_config_dir(), exist_ok=True)
+    os.makedirs(PROJECTS_DIR, exist_ok=True)
+    _migrate_legacy_projects()
 
 
 def _step_persisted(step: dict[str, Any]) -> dict[str, Any]:
@@ -1492,14 +1551,32 @@ def apply_thumbnail_texture(name: str, idx: str, img_data: Any, w: int, h: int) 
     if is_first and not dpg.does_item_exist(img_tag) and dpg.does_item_exist(container_tag):
         if dpg.does_item_exist(loading_tag):
             dpg.delete_item(loading_tag)
-        dpg.add_image(texture_tag=tex_tag, tag=img_tag, width=115, height=65, parent=container_tag)
-
-        # e16: the img joins the tile's combined click registry (left = select,
-        # right = action popup) — the old per-item popup registry here was
-        # replaced by the click registry on the next rebuild, killing right-click.
-        click_reg_tag = media_tile_click_registry_tag(target_id)
-        if dpg.does_item_exist(click_reg_tag):
-            dpg.bind_item_handler_registry(img_tag, click_reg_tag)
+        draw_tag = f"thumb_draw_{target_id}"
+        badge_tag = f"tile_badge_bg_{target_id}"
+        if dpg.does_item_exist(draw_tag):
+            # the image goes BEHIND the index-badge overlay (before= insertion);
+            # draw commands can't host handler registries, so the drawlist stays
+            # the thumbnail's clickable surface (bound at tile build, e16).
+            if dpg.does_item_exist(badge_tag):
+                dpg.draw_image(
+                    texture_tag=tex_tag,
+                    pmin=(0, 0),
+                    pmax=(115, 65),
+                    parent=draw_tag,
+                    before=badge_tag,
+                    tag=img_tag,
+                )
+            else:
+                dpg.draw_image(
+                    texture_tag=tex_tag,
+                    pmin=(0, 0),
+                    pmax=(115, 65),
+                    parent=draw_tag,
+                    tag=img_tag,
+                )
+            click_reg_tag = media_tile_click_registry_tag(target_id)
+            if dpg.does_item_exist(click_reg_tag):
+                dpg.bind_item_handler_registry(draw_tag, click_reg_tag)
 
     for r, track in enumerate(tracks_data):
         if track.get("target_id") == target_id:
@@ -1529,11 +1606,12 @@ def advance_thumb_cycle(
 def _thumb_cycle_active() -> bool:
     """True while any thumbnail consumer window is visible (e10s05 gate).
 
-    The Mediagrid, the sequencer and every monitor player window each show
-    per-source thumbnails; cycling runs while at least one of them is open so
-    the animation follows the media wherever it is applied.
+    The Mediagrid, the sequencer, every monitor player window and the Mapper
+    each show per-source thumbnails; cycling runs while at least one of them
+    is open so the animation follows the media wherever it is applied
+    (e25s01: an open Mapper alone keeps the cycle running).
     """
-    for tag in ("vimix_media_window", "sequencer_window"):
+    for tag in ("vimix_media_window", "sequencer_window", "mapper_window"):
         if dpg.does_item_exist(tag) and dpg.is_item_shown(tag):
             return True
     for p in monitor_players:
@@ -1552,6 +1630,10 @@ def _apply_cycle_frame(target_id: str, tex_tag: str) -> None:
     img_tag = f"img_{target_id}"
     if dpg.does_item_exist(img_tag):
         dpg.configure_item(img_tag, texture_tag=tex_tag)
+    # e25s01: the Mapper row thumbnail cycles on the same cadence
+    mapper_img_tag = f"mapper_row_img_{target_id}"
+    if dpg.does_item_exist(mapper_img_tag):
+        dpg.configure_item(mapper_img_tag, texture_tag=tex_tag)
     for r, track in enumerate(tracks_data):
         if track.get("target_id") == target_id:
             slot_tag = f"seq_thumb_{r}"
@@ -1586,36 +1668,29 @@ def _show_failed_tile_label(target_id: str) -> None:
     """Flip the tile's pending label to the failed state in place.
 
     The request loop runs on the main thread; when the unanswered-request
-    counter crosses the threshold the existing "Loading..." label is replaced
-    by the failed label + retry popup without waiting for a grid rebuild
+    counter crosses the threshold the existing "Loading..." draw-text label is
+    re-worded and re-colored without waiting for a grid rebuild
     (BUG-2026-08-27T201742: the rebuild-only rendering kept the tile on
     "Loading..." forever).
     """
-    container_tag = f"thumb_container_{target_id}"
     loading_tag = f"loading_txt_{target_id}"
-    if not dpg.does_item_exist(container_tag) or dpg.does_item_exist(f"img_{target_id}"):
-        return
-    if dpg.does_item_exist(loading_tag):
-        dpg.delete_item(loading_tag)
-    dpg.add_text(
-        THUMB_FAIL_LABEL,
-        parent=container_tag,
+    if not dpg.does_item_exist(loading_tag):
+        return  # no pending label (thumbnail already shown, or grid not built)
+    dpg.configure_item(
+        loading_tag,
+        text=THUMB_FAIL_LABEL,
         color=palette_rgba(state.active_palette["warning"]),
-        tag=loading_tag,
     )
-    _text_color_bindings[loading_tag] = "text_dim"
-    click_reg_tag = media_tile_click_registry_tag(target_id)
-    if dpg.does_item_exist(click_reg_tag):
-        dpg.bind_item_handler_registry(loading_tag, click_reg_tag)
 
 
 def _char_width_px() -> int:
-    """Width of a single character in the live default font (e10s06).
+    """Width of a single character in the live default font (e10s06, e20s01).
 
     The default font is monospace (ProggyClean, 7 px); measuring 'M' (the
     widest glyph) keeps the budget conservative if a proportional font is ever
     loaded. Falls back to a constant until the font atlas is built
-    (get_text_size -> None).
+    (get_text_size -> None). Used by the mapper caption alignment; the tile
+    title uses its own fixed ProggyTiny budget (MEDIA_TITLE_CHARS_PER_LINE).
     """
     try:
         size = dpg.get_text_size("M")
@@ -1626,20 +1701,40 @@ def _char_width_px() -> int:
     return MEDIA_TITLE_CHAR_PX
 
 
+def _title_line_count(text: str) -> int:
+    """Number of wrapped lines a tile title occupies (1 or 2; truncation caps it at 2)."""
+    if not text:
+        return 1
+    return min(
+        MEDIA_TITLE_MAX_LINES,
+        max(1, -(-len(text) // MEDIA_TITLE_CHARS_PER_LINE)),
+    )
+
+
+def _title_reserve_padding(text: str) -> int:
+    """Spacer height that makes every tile title occupy exactly two lines.
+
+    1-line titles get one extra step so the thumbnail row sits at the same y in
+    every tile — uniform tiles regardless of the name length. MEDIA_TITLE_RESERVE_PX
+    is the NET layout step of a wrapped line (measured on DPG 2.3.1: a ProggyTiny-9
+    line adds 9 px of glyphs but the trailing item spacing shrinks by 3 px).
+    """
+    return (MEDIA_TITLE_MAX_LINES - _title_line_count(text)) * MEDIA_TITLE_RESERVE_PX
+
+
 def truncate_media_title(name: str) -> str:
     """Fit a media name into at most two Mediagrid title lines (e10s06).
 
-    The budget is PER WRAPPED LINE (MEDIA_TITLE_WRAP / char width), not a
-    total-width budget: a 245 px string at a 125 px wrap still needs three
-    lines (17 + 17 + 1 chars). The longest prefix that keeps
+    The budget is PER WRAPPED LINE (MEDIA_TITLE_CHARS_PER_LINE), not a
+    total-width budget: the wrap breaks every MEDIA_TITLE_WRAP px, so a
+    longer string still needs more lines. The longest prefix that keeps
     prefix+ellipsis within two lines is returned; the full name stays in the
     raw table and in target_id — only the display is truncated.
     """
     if not name:
         return name
     text = str(name)
-    chars_per_line = max(1, MEDIA_TITLE_WRAP // _char_width_px())
-    max_chars = chars_per_line * MEDIA_TITLE_MAX_LINES
+    max_chars = MEDIA_TITLE_CHARS_PER_LINE * MEDIA_TITLE_MAX_LINES
     if len(text) <= max_chars:
         return text
     keep = max(0, max_chars - len(MEDIA_TITLE_ELLIPSIS))
@@ -1682,6 +1777,20 @@ def on_media_tile_click(sender: Any = None, app_data: Any = None, user_data: Any
         return
     state.viseq_selected_source = target_id
     refresh_tile_selection_themes()
+
+
+def on_tile_alpha_slider(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Drag a tile's thin vertical alpha slider: set the source alpha (0..1).
+
+    The address /vimix/<target>/alpha is the same frozen-contract path the
+    sequencer (AlphaV/R/F) and the mapper use — no new OSC surface. The next
+    viOSC state push renders the new value back into the slider.
+    """
+    target_id = user_data
+    alpha = float(app_data)
+    addr = f"/vimix/{target_id}/alpha"
+    osc_client.send_message(addr, alpha)
+    append_log("OUT", f"{addr} [{alpha:.2f}]")
 
 
 def request_missing_thumbnails(now: float) -> None:
@@ -1888,62 +1997,110 @@ def update_vimix_sources_ui(json_string: str) -> None:
                         tag=title_tag,
                     )
                     _text_color_bindings[title_tag] = "text_bright"
+                    if _tile_title_font is not None:
+                        dpg.bind_item_font(title_tag, _tile_title_font)
 
-                    dpg.add_spacer(parent=cw, height=4)
+                    # Every tile reserves exactly two title lines: the computed display
+                    # name drives the extra spacer, so 1-line and 2-line titles leave the
+                    # thumbnail row at the same y (uniform tiles), then a small gap.
+                    display_name = str(name) if name else f"Idx: {idx}"
+                    dpg.add_spacer(
+                        parent=cw,
+                        height=MEDIA_TITLE_GAP
+                        + _title_reserve_padding(truncate_media_title(display_name)),
+                    )
                     container_tag = f"thumb_container_{target_id}"
                     if dpg.does_item_exist(container_tag):
                         dpg.delete_item(container_tag)
 
-                    g_id = dpg.add_group(parent=cw, tag=container_tag, indent=4)
-                    img_tag = f"img_{target_id}"
-                    loading_tag = None  # set only in the no-thumbs branch below
-                    if target_id in thumbnails_data:
-                        tex_tag = thumbnails_data[target_id][0]
-                        if dpg.does_item_exist(img_tag):
-                            dpg.delete_item(img_tag)
-                        dpg.add_image(
-                            texture_tag=tex_tag, parent=g_id, tag=img_tag, width=115, height=65
-                        )
-                    else:
-                        loading_tag = f"loading_txt_{target_id}"
-                        if dpg.does_item_exist(loading_tag):
-                            dpg.delete_item(loading_tag)
-                        is_failed = thumb_fail_count.get(target_id, 0) >= THUMB_FAIL_THRESHOLD
-                        dpg.add_text(
-                            THUMB_FAIL_LABEL if is_failed else " [ Loading... ]",
-                            parent=g_id,
-                            color=palette_rgba(
-                                state.active_palette["warning"]
-                                if is_failed
-                                else state.active_palette["text_dim"]
-                            ),
-                            tag=loading_tag,
-                        )
-                        _text_color_bindings[loading_tag] = "text_dim"
+                    # Compact media row: the thumbnail (with the index badge overlaid
+                    # on its top-left corner) plus a thin vertical alpha slider, same
+                    # height as the thumbnail — the badge+alpha line under the photo is
+                    # gone, so the tile is shorter and the grid denser. horizontal_spacing=0
+                    # keeps the slider flush against the image's right edge.
+                    with dpg.group(horizontal=True, parent=cw, horizontal_spacing=0):
+                        g_id = dpg.add_group(tag=container_tag)
+                        draw_tag = f"thumb_draw_{target_id}"
+                        img_tag = f"img_{target_id}"
+                        loading_tag = None  # set only in the no-thumbs branch below
+                        with dpg.drawlist(width=115, height=65, parent=g_id, tag=draw_tag):
+                            if target_id in thumbnails_data:
+                                tex_tag = thumbnails_data[target_id][0]
+                                if dpg.does_item_exist(img_tag):
+                                    dpg.delete_item(img_tag)
+                                dpg.draw_image(
+                                    texture_tag=tex_tag,
+                                    pmin=(0, 0),
+                                    pmax=(115, 65),
+                                    parent=draw_tag,
+                                    tag=img_tag,
+                                )
+                            # index badge overlay: top-left corner of the thumbnail (drawn
+                            # after the image so it always sits on top)
+                            index_tag = f"tile_index_{target_id}"
+                            themed_draw_rectangle(
+                                (2, 2),
+                                (2 + MEDIA_BADGE_W, 2 + MEDIA_BADGE_H),
+                                slot="badge_bg",
+                                color=(0, 0, 0, 0),
+                                rounding=2,
+                                tag=f"tile_badge_bg_{target_id}",
+                            )
+                            idx_val = data_dict[idx].get("index")
+                            idx_str = str(idx_val) if idx_val is not None else str(idx)
+                            dpg.draw_text(
+                                (2 + 10, 2 + 3),
+                                idx_str,
+                                color=palette_rgba(state.active_palette["text_bright"]),
+                                size=13,
+                                tag=index_tag,
+                            )
+                            _text_color_bindings[index_tag] = "text_bright"
+                            if target_id not in thumbnails_data:
+                                loading_tag = f"loading_txt_{target_id}"
+                                is_failed = (
+                                    thumb_fail_count.get(target_id, 0) >= THUMB_FAIL_THRESHOLD
+                                )
+                                dpg.draw_text(
+                                    (8, 26),
+                                    THUMB_FAIL_LABEL if is_failed else " [ Loading... ]",
+                                    color=palette_rgba(
+                                        state.active_palette["warning"]
+                                        if is_failed
+                                        else state.active_palette["text_dim"]
+                                    ),
+                                    size=13,
+                                    tag=loading_tag,
+                                )
+                                _text_color_bindings[loading_tag] = "text_dim"
 
-                    # Compact per-media readout: index badge + bare alpha value (e06)
-                    index_tag = f"tile_index_{target_id}"
-                    alpha_tag = f"tile_alpha_{target_id}"
-                    with dpg.group(horizontal=True, parent=cw):
-                        dpg.add_button(
-                            label="-",
-                            width=MEDIA_BADGE_W,
-                            height=MEDIA_BADGE_H,
-                            tag=index_tag,
+                        # thin vertical alpha slider, same height as the thumbnail
+                        alpha_tag = f"tile_alpha_{target_id}"
+                        dpg.add_slider_float(
+                            min_value=0.0,
+                            max_value=1.0,
+                            default_value=0.0,
+                            vertical=True,
+                            width=MEDIA_ALPHA_SLIDER_W,
+                            height=65,
+                            clamped=True,
+                            format="",  # no numeric readout: the slider position IS the value
+                            callback=on_tile_alpha_slider,
+                            user_data=target_id,
+                            tag=alpha_tag,
                         )
-                        dpg.bind_item_theme(index_tag, theme_media_badge)
-                        dpg.add_text("---", color=(200, 230, 200, 255), tag=alpha_tag)
+                        dpg.bind_item_theme(alpha_tag, theme_alpha_slider)
 
                     # e10s06: the tile's clickable children select the media on left
-                    # click (child windows can't host clicked handlers in DPG 2.x).
+                    # click (child windows can't host clicked handlers in DPG 2.x). Draw
+                    # commands can't host handler registries either, so the drawlist
+                    # carries the thumbnail clicks; the alpha slider stays out — dragging
+                    # it only sets alpha, it never steals the selection.
                     _bind_tile_click_targets(
                         click_reg_tag,
                         title_tag,
                         container_tag,
-                        img_tag,
-                        loading_tag,
-                        index_tag,
-                        alpha_tag,
+                        draw_tag,
                     )
 
                 for _ in range(num_cols - len(row_indices)):
@@ -1964,10 +2121,6 @@ def update_vimix_sources_ui(json_string: str) -> None:
                 if dpg.does_item_exist(tile_tag):
                     dpg.bind_item_theme(tile_tag, _tile_theme_for(idx, target_id))
                 _set_media_cell(f"tile_title_{target_id}", truncate_media_title(display_name))
-                if dpg.does_item_exist(f"tile_index_{target_id}"):
-                    idx_val = props.get("index")
-                    idx_str = str(idx_val) if idx_val is not None else str(idx)
-                    dpg.configure_item(f"tile_index_{target_id}", label=idx_str)
             state.last_ui_signature = current_signature
 
         # Value per-source updates: every cell write goes through the per-cell cache, so a
@@ -1978,8 +2131,11 @@ def update_vimix_sources_ui(json_string: str) -> None:
             name = props.get("name")
             target_id = str(name) if name else str(idx)
             alpha_val = props.get("alpha")
-            alpha_str = f"{alpha_val:.2f}" if isinstance(alpha_val, float) else "---"
-            _set_media_cell(f"tile_alpha_{target_id}", alpha_str)
+            if isinstance(alpha_val, (int, float)):
+                alpha_display = float(max(0.0, min(1.0, float(alpha_val))))
+            else:
+                alpha_display = 0.0
+            _set_media_cell(f"tile_alpha_{target_id}", alpha_display)
 
             for prop in ALL_PROPERTIES:
                 val = props.get(prop)
@@ -2743,85 +2899,149 @@ def show_midi_window(sender: Any = None, app_data: Any = None, user_data: Any = 
     dpg.focus_item("midi_window")  # e17: a shown window must come to the front
 
 
-# ---------- e16: Mapper (OSC property mappings -> compact controls) ----------
-def _mapper_columns() -> int:
-    """Number of mapping cards per row, derived from the current window width."""
-    width = dpg.get_item_width("mapper_window")
-    if not width:
-        width = MAPPER_WINDOW_WIDTH
-    return max(1, int((width - 20) / MAPPER_CARD_STRIDE))
+# ---------- e16/e22: Mapper (OSC property mappings -> per-source rows) ----------
+# e22s01: the body is one horizontal row per SOURCE — the source thumbnail at
+# the sequencer slot size, then that source's mapping mini-cards to the right.
 
 
-def _mapper_card_thumb(target_id: str) -> None:
-    """The tiny source thumbnail on a card; a placeholder when none exists yet."""
-    tex_tags = thumbnails_data.get(target_id)
-    if tex_tags:
-        tex_tag = tex_tags[0]
-        if dpg.does_item_exist(tex_tag):
-            dpg.add_image(texture_tag=tex_tag, width=MAPPER_THUMB_W, height=MAPPER_THUMB_H)
-            return
-    themed_text("no thumb", slot="text_dim")
+def _mapper_font() -> Any:
+    """The small ProggyTiny font the Mapper texts/controls use (e23 compact).
+
+    Same 10 px font as the Vimix-sources tile titles; None when the bundled
+    asset is missing (then the default font is used and the compact geometry
+    still fits — labels are the widest at ~7 px/char)."""
+    return _tile_title_font
+
+
+def _bind_mapper_font(tag: str) -> None:
+    """Bind the compact mapper font to an item tag when it exists."""
+    font = _mapper_font()
+    if font is not None and dpg.does_item_exist(tag):
+        dpg.bind_item_font(tag, font)
 
 
 def _mapper_caption_spacer(label: str, spec: dict[str, Any]) -> int:
-    """Spacer width that right-aligns the value caption on a card (e20s01).
+    """Spacer width that right-aligns the enable checkbox + X on a caption (e24).
 
-    The caption is ONE row: label + spacer + value. The spacer fills the gap so
-    the longest possible "%.2f" string of the property (min and max can differ
-    in sign/length, e.g. alpha -1.00..1.00 or posterize 1.00..256.00) ends
-    flush at the card's right edge, measured with the live font width.
+    The caption is ONE row: label + spacer + enable checkbox + X. Labels render
+    in the 10 px ProggyTiny mapper font (MAPPER_SMALL_CHAR_PX = 6 px/char), so
+    the budget uses that advance and subtracts the checkbox + X blocks + item
+    gaps: every catalog property label fits on a single caption row.
     """
-    char_px = _char_width_px()
-    value_px = char_px * max(len(f"{spec['min']:.2f}"), len(f"{spec['max']:.2f}"))
-    return max(2, MAPPER_CARD_W - 24 - char_px * len(label) - value_px)
+    return max(
+        2,
+        MAPPER_MINI_W - 24 - MAPPER_SMALL_CHAR_PX * len(label) - MAPPER_CB_W - MAPPER_X_W,
+    )
 
 
-def _render_mapper_card(mapping: dict[str, Any], parent: Any) -> None:
-    """One compact mapping card: thumbnail + X, one-line caption, the control.
+def _mapper_row_height(mappings: list[dict[str, Any]]) -> int:
+    """Compact uniform height for one source row (e23 bugfix).
 
-    Row order (e20s01): the source thumbnail (full card width) with the X
-    delete button, then the property caption (label left, value right on a
-    single row), then the control. Tags are unchanged so the band/MIDI drive
-    and the source menu keep working.
+    Fits the tallest mini-card in the row: the 6+6 px content inset, the
+    caption row (the 16 px X button), the control (slider/button box 14 px,
+    knob fixed 44 px), the 'output:' line, and the 'input:' line when ANY card
+    in the row has a bound source. Measured on DPG 2.3.1 with the compact
+    mapper theme (10 px ProggyTiny font, WindowPadding 4, FramePadding y 2,
+    ItemSpacing y 2): slider rows are ~60 px, knob rows ~90 px.
+    """
+    control = MAPPER_KNOB_H if any(m["control"] == "knob" for m in mappings) else MAPPER_CTRL_H
+    height = (
+        MAPPER_ROW_PAD_V + MAPPER_X_H + MAPPER_ROW_GAP + control + MAPPER_ROW_GAP + MAPPER_TEXT_H
+    )
+    if any(m.get("band") is not None or m.get("midi") is not None for m in mappings):
+        height += MAPPER_ROW_GAP + MAPPER_TEXT_H
+    # the row always fits the 70 px source thumbnail (plus 2 px air)
+    return max(MAPPER_ROW_THUMB_H + 2, height)
+
+
+def _mapper_row_thumb(target_id: str, parent: Any, height: int) -> None:
+    """The source thumbnail slot at the start of a mapper row (e22s01).
+
+    A fixed-width slot as tall as the row with the sequencer-size thumbnail
+    (110x70) vertically centered inside, so the image aligns with the mini-card
+    content next to it; when no texture exists yet the slot shows a "no thumb"
+    placeholder (same footprint, rows stay aligned).
+    """
+    with dpg.child_window(
+        parent=parent,
+        width=MAPPER_ROW_THUMB_W,
+        height=height,
+        border=False,
+        no_scrollbar=True,
+        tag=f"mapper_row_thumb_{target_id}",
+    ):
+        dpg.add_spacer(height=max(0, (height - MAPPER_ROW_THUMB_H) // 2))
+        tex_tags = thumbnails_data.get(target_id)
+        if tex_tags:
+            tex_tag = tex_tags[0]
+            if dpg.does_item_exist(tex_tag):
+                dpg.add_image(
+                    texture_tag=tex_tag,
+                    width=MAPPER_ROW_THUMB_W,
+                    height=MAPPER_ROW_THUMB_H,
+                    tag=f"mapper_row_img_{target_id}",  # e25: stable tag for the frame cycle
+                )
+                return
+        themed_text("no thumb", slot="text_dim")
+
+
+def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> None:
+    """One bordered mapping mini-card inside a source row (e22s01, e23s01).
+
+    e23 anatomy (top to bottom): the caption row — dim property label left, X
+    delete button right (NO value text: the control shows the value) — then the
+    control spanning the full content width with the mapping's OUTPUT range,
+    then the small 'output:' from/to line. The 'input:' line (e23s02) follows
+    when a band or MIDI source is bound. The card height is the row height
+    (per-content, see _mapper_row_height). Tags are unchanged so the band/MIDI
+    drive and delete keep working; the right-click source menu lives on the
+    CARD (buttons cannot host DPG handler registries).
     """
     mid = mapping["id"]
     spec = mapper.MAPPER_PROPERTIES[mapping["property"]]
+    out_from = mapping["output_from"]
+    out_to = mapping["output_to"]
+    content_w = MAPPER_MINI_W - 8  # 4 px card padding each side
     with dpg.child_window(
         parent=parent,
-        width=MAPPER_CARD_W,
-        height=MAPPER_CARD_H,
+        width=MAPPER_MINI_W,
+        height=height,
         border=True,
         no_scrollbar=True,
         tag=f"mapper_card_{mid}",
     ):
         with dpg.group(horizontal=True):
-            _mapper_card_thumb(mapping["target_id"])
+            themed_text(spec["label"], slot="text_dim", tag=f"mapper_prop_{mid}")
+            dpg.add_spacer(width=_mapper_caption_spacer(spec["label"], spec))
+            dpg.add_checkbox(
+                default_value=mapping.get("enabled", False),
+                callback=on_mapper_enable,
+                user_data=mid,
+                tag=f"mapper_enable_{mid}",
+            )
             dpg.add_button(
                 label="X",
-                width=18,
-                height=18,
+                width=MAPPER_X_W,
+                height=MAPPER_X_H,
                 callback=delete_mapping,
                 user_data=mid,
                 tag=f"mapper_del_{mid}",
             )
-        with dpg.group(horizontal=True):
-            themed_text(spec["label"], slot="text_dim", tag=f"mapper_prop_{mid}")
-            dpg.add_spacer(width=_mapper_caption_spacer(spec["label"], spec))
-            themed_text(f"{mapping['value']:.2f}", slot="text_bright", tag=f"mapper_val_{mid}")
+        _bind_mapper_font(f"mapper_prop_{mid}")
         if mapping["control"] == "slider":
             dpg.add_slider_float(
-                min_value=spec["min"],
-                max_value=spec["max"],
+                min_value=out_from,
+                max_value=out_to,
                 default_value=mapping["value"],
-                width=MAPPER_CARD_W - 24,
+                width=content_w,
                 callback=on_mapper_control,
                 user_data=mid,
                 tag=f"mapper_slider_{mid}",
             )
         elif mapping["control"] == "knob":
             dpg.add_knob_float(
-                min_value=spec["min"],
-                max_value=spec["max"],
+                min_value=out_from,
+                max_value=out_to,
                 default_value=mapping["value"],
                 width=44,
                 callback=on_mapper_control,
@@ -2831,24 +3051,92 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any) -> None:
         else:
             dpg.add_button(
                 label=f"{spec['label']}: {mapping['value']:.2f}",
-                width=MAPPER_CARD_W - 24,
+                width=content_w,
                 callback=on_mapper_button,
                 user_data=mid,
                 tag=f"mapper_btn_{mid}",
             )
+        _bind_mapper_font(
+            f"mapper_{'btn' if mapping['control'] == 'button' else mapping['control']}_{mid}"
+        )
+        # e23s01: the OSC output range of the control travel (from/to)
+        with dpg.group(horizontal=True):
+            themed_text("output:", slot="text_dim", tag=f"mapper_out_lbl_{mid}")
+            dpg.add_drag_float(
+                default_value=out_from,
+                width=MAPPER_DRAG_W,
+                format="%.2f",
+                speed=0.01,
+                callback=on_mapper_output,
+                user_data=(mid, "from"),
+                tag=f"mapper_out_from_{mid}",
+            )
+            dpg.add_drag_float(
+                default_value=out_to,
+                width=MAPPER_DRAG_W,
+                format="%.2f",
+                speed=0.01,
+                callback=on_mapper_output,
+                user_data=(mid, "to"),
+                tag=f"mapper_out_to_{mid}",
+            )
+        _bind_mapper_font(f"mapper_out_lbl_{mid}")
+        _bind_mapper_font(f"mapper_out_from_{mid}")
+        _bind_mapper_font(f"mapper_out_to_{mid}")
+        # e23s02: the raw input range of the bound source (band or MIDI)
+        if mapping.get("band") is not None or mapping.get("midi") is not None:
+            in_from = mapping.get("input_from")
+            in_to = mapping.get("input_to")
+            with dpg.group(horizontal=True):
+                themed_text("input:", slot="text_dim", tag=f"mapper_in_lbl_{mid}")
+                dpg.add_drag_float(
+                    default_value=in_from if in_from is not None else 0.0,
+                    width=MAPPER_DRAG_W,
+                    format="%.2f",
+                    speed=0.01,
+                    callback=on_mapper_input,
+                    user_data=(mid, "from"),
+                    tag=f"mapper_in_from_{mid}",
+                )
+                dpg.add_drag_float(
+                    default_value=in_to if in_to is not None else 1.0,
+                    width=MAPPER_DRAG_W,
+                    format="%.2f",
+                    speed=0.01,
+                    callback=on_mapper_input,
+                    user_data=(mid, "to"),
+                    tag=f"mapper_in_to_{mid}",
+                )
+            _bind_mapper_font(f"mapper_in_lbl_{mid}")
+            _bind_mapper_font(f"mapper_in_from_{mid}")
+            _bind_mapper_font(f"mapper_in_to_{mid}")
         _render_mapper_source_menu(mapping)
 
 
 def _render_mapper_source_menu(mapping: dict[str, Any]) -> None:
-    """Right-click menu on a mapper control: Band 2/3 / MIDI Learn / Clear (e18).
+    """Right-click source menu on a mini-card (e18, e23 bugfix).
 
-    The menu lives on the CONTROL widget (slider/knob/button); the ACTIVE source
-    is marked with a checkmark. Band and MIDI sources are mutually exclusive
-    (see mapper.set_mapping_band).
+    DearPyGui's dpg.popup() cannot attach to a BUTTON control (buttons cannot
+    host the handler registry popup builds -> 1005 at refresh, which aborts the
+    whole body and hides every card after it) and child windows reject its
+    clicked handler (1000). So, like the Mediagrid tiles, the menu is a popup
+    WINDOW shown by a per-card item-handler registry bound to every card
+    child (all item types host an item-clicked registry on DPG 2.3.1):
+    right-clicking anywhere on the bordered card opens Band 2/3 / MIDI Learn /
+    Clear source. The ACTIVE source is marked with a checkmark; band and MIDI
+    sources are mutually exclusive (see mapper.set_mapping_band).
     """
     mid = mapping["id"]
-    control_tag = f"mapper_{mapping['control']}_{mid}"
-    with dpg.popup(control_tag, mousebutton=dpg.mvMouseButton_Right):
+    # the control tag is mapper_slider_N / mapper_knob_N / mapper_BTN_N
+    # ('btn' — building it from the control name would look for the
+    # nonexistent mapper_button_N and abort the whole refresh).
+    control_kind = "btn" if mapping["control"] == "button" else mapping["control"]
+    menu_tag = f"mapper_menu_{mid}"
+    reg_tag = f"mapper_menu_reg_{mid}"
+    for stale in (menu_tag, reg_tag):
+        if dpg.does_item_exist(stale):
+            dpg.delete_item(stale)
+    with dpg.window(popup=True, show=False, no_title_bar=True, autosize=True, tag=menu_tag):
         dpg.add_menu_item(
             label="Map Band 2",
             check=True,
@@ -2872,6 +3160,41 @@ def _render_mapper_source_menu(mapping: dict[str, Any]) -> None:
         )
         dpg.add_separator()
         dpg.add_menu_item(label="Clear source", callback=clear_mapping_source, user_data=mid)
+    with dpg.item_handler_registry(tag=reg_tag):
+        dpg.add_item_clicked_handler(1, callback=lambda *_, m=mid: _show_mapper_menu(m))
+    for tag in (
+        f"mapper_prop_{mid}",
+        f"mapper_enable_{mid}",
+        f"mapper_del_{mid}",
+        f"mapper_{control_kind}_{mid}",
+        f"mapper_out_lbl_{mid}",
+        f"mapper_out_from_{mid}",
+        f"mapper_out_to_{mid}",
+        f"mapper_in_lbl_{mid}",
+        f"mapper_in_from_{mid}",
+        f"mapper_in_to_{mid}",
+    ):
+        if dpg.does_item_exist(tag):
+            dpg.bind_item_handler_registry(tag, reg_tag)
+
+
+def _show_mapper_menu(mid: int) -> None:
+    """Open the right-click source menu of a mini-card at the cursor (e18).
+
+    get_mouse_pos() is SCREEN-absolute while window positions are viewport-
+    relative, so the popup must be placed at mouse minus the viewport origin —
+    otherwise it opens offset by the window position.
+    """
+    menu_tag = f"mapper_menu_{mid}"
+    if not dpg.does_item_exist(menu_tag):
+        return
+    try:
+        mouse_x, mouse_y = dpg.get_mouse_pos()
+        vp_x, vp_y = dpg.get_viewport_pos()
+        dpg.set_item_pos(menu_tag, (mouse_x - vp_x, mouse_y - vp_y))
+    except Exception:
+        dpg.set_item_pos(menu_tag, dpg.get_mouse_pos())
+    dpg.show_item(menu_tag)
 
 
 def set_mapping_band(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -2888,8 +3211,11 @@ def clear_mapping_source(sender: Any = None, app_data: Any = None, user_data: An
 
 
 def _set_mapper_control_value(mapping_id: int, value: float) -> None:
-    """Move a mapping's control + caption from an external source (band/MIDI, e18)."""
-    _set_mapper_caption(mapping_id, value)
+    """Move a mapping's control widget from an external source (band/MIDI, e18).
+
+    e23s01: the value caption is gone — the control's own readout shows the
+    output value, so only the widget values are set here.
+    """
     for kind in ("slider", "knob"):
         tag = f"mapper_{kind}_{mapping_id}"
         if dpg.does_item_exist(tag):
@@ -2900,11 +3226,12 @@ def drive_mapper_band(band_id: int, level: float) -> None:
     """Push an audio-band level into every control mapped to that band (e18).
 
     Called by refresh_band_value (main thread, ~30 fps while the band is
-    enabled); the level is remapped onto each mapping's property range.
+    enabled). e23s02: the raw level (0..1) is remapped through each mapping's
+    input range (default 0..1), then through its output range.
     """
     for m in state.mapper_mappings:
         if m.get("band") == band_id:
-            value = mapper.apply_unit_value(m["id"], level)
+            value = mapper.apply_input_value(m["id"], level)
             _set_mapper_control_value(m["id"], value)
 
 
@@ -2955,9 +3282,13 @@ def map_mapping_midi_learn(sender: Any = None, app_data: Any = None, user_data: 
 
 
 def midi_mapping_value(mapping_id: int, midi_value: int) -> None:
-    """Drive a mapper control from a learned MIDI value (0..127 -> range, e18)."""
-    unit = max(0.0, min(1.0, midi_value / 127.0))
-    value = mapper.apply_unit_value(mapping_id, unit)
+    """Drive a mapper control from a learned MIDI value (e23s02).
+
+    The raw 0..127 value is remapped through the mapping's input range
+    (default 0..127), then through its output range, and the control widget
+    follows.
+    """
+    value = mapper.apply_input_value(mapping_id, midi_value)
     _set_mapper_control_value(mapping_id, value)
 
 
@@ -2970,8 +3301,34 @@ def tick_midi_learn_timeout() -> None:
         _close_mapper_learn_window()
 
 
+def _mapper_cards_per_line() -> int:
+    """How many mapping mini-cards fit one source line at the live window width.
+
+    e24s02: the Mapper wraps instead of overflowing — the capacity derives from
+    the current mapper window width minus the 110 px thumbnail block, over the
+    card pitch (MAPPER_MINI_W + the 4 px horizontal item spacing).
+    """
+    width = dpg.get_item_width("mapper_window")
+    if not width:
+        width = MAPPER_WINDOW_WIDTH
+    available = width - 8  # window content padding
+    pitch = MAPPER_MINI_W + 4
+    return max(1, int((available - (MAPPER_ROW_THUMB_W + 4)) // pitch))
+
+
 def refresh_mapper_ui() -> None:
-    """Rebuild the Mapper window body from state.mapper_mappings (main thread)."""
+    """Rebuild the Mapper window body from state.mapper_mappings (main thread).
+
+    e22s01/e24s02: the body is a vertical stack of SOURCE BLOCKS. Rows derive
+    from the flat mapping list at every rebuild — one block per distinct
+    target_id in first-appearance order, mappings inside in list (creation)
+    order. Each block wraps its mappings onto as many aligned LINES as the
+    live window width fits: the source thumbnail slot leads the FIRST line
+    only, later lines start with an empty spacer the width of the thumbnail
+    slot so the cards align under the first line's cards. A source whose last
+    mapping was deleted produces no block, so it disappears on the redraw;
+    a window resize re-runs this rebuild (see the mapper_resize registry).
+    """
     if not dpg.does_item_exist("mapper_mappings_group"):
         return
     dpg.delete_item("mapper_mappings_group", children_only=True)
@@ -2979,20 +3336,30 @@ def refresh_mapper_ui() -> None:
         # explicit parent: at runtime (menu callback) DPG cannot deduce the
         # implicit container, so a parentless add_text would raise 1011
         themed_text(
-            "No mappings yet — right-click a source in the Mediagrid.",
+            "No mappings yet — right-click a source in Vimix sources.",
             slot="text_dim",
             wrap=MAPPER_WINDOW_WIDTH - 40,
             parent="mapper_mappings_group",
         )
         return
-    # e20s02: cards sit in horizontal row groups (fixed-width child windows
-    # align across rows) — the old table grid drew an outer frame and shipped
-    # its own right-click menu that fought the per-card popup.
-    cols = _mapper_columns()
-    for i in range(0, len(state.mapper_mappings), cols):
-        row = dpg.add_group(horizontal=True, parent="mapper_mappings_group")
-        for mapping in state.mapper_mappings[i : i + cols]:
-            _render_mapper_card(mapping, parent=row)
+    # group the flat list by source; dict order = first appearance of the source
+    rows: dict[str, list[dict[str, Any]]] = {}
+    for mapping in state.mapper_mappings:
+        rows.setdefault(mapping["target_id"], []).append(mapping)
+    per_line = _mapper_cards_per_line()
+    for target_id, mappings in rows.items():
+        block = dpg.add_group(parent="mapper_mappings_group")
+        row_height = _mapper_row_height(mappings)
+        for line_index in range(0, len(mappings), per_line):
+            line = dpg.add_group(horizontal=True, parent=block)
+            if line_index == 0:
+                _mapper_row_thumb(target_id, parent=line, height=row_height)
+            else:
+                # alignment slot: continuation lines start where the cards of
+                # the first line start (the thumbnail is rendered once)
+                dpg.add_spacer(width=MAPPER_ROW_THUMB_W, parent=line)
+            for mapping in mappings[line_index : line_index + per_line]:
+                _render_mapper_card(mapping, parent=line, height=row_height)
 
 
 def show_mapper_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -3002,31 +3369,78 @@ def show_mapper_window(sender: Any = None, app_data: Any = None, user_data: Any 
     dpg.focus_item("mapper_window")  # e17: a shown window must come to the front
 
 
-def _set_mapper_caption(mid: int, value: float) -> None:
-    """Refresh a card's value caption after a control change."""
-    val_tag = f"mapper_val_{mid}"
-    if dpg.does_item_exist(val_tag):
-        dpg.set_value(val_tag, f"{value:.2f}")
+def on_mapper_enable(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Tick the enable checkbox: arm/mute the mapping (no body refresh, e24)."""
+    mapper.set_mapping_enabled(int(user_data), bool(app_data))
 
 
 def on_mapper_control(sender: Any, app_data: Any, user_data: Any) -> None:
-    """Slider/knob change: send the clamped OSC value, refresh the caption."""
+    """Slider/knob change: send the clamped OUTPUT value (e23s01)."""
     mid = int(user_data)
-    value = mapper.send_mapping_value(mid, float(app_data))
-    _set_mapper_caption(mid, value)
+    mapper.send_mapping_value(mid, float(app_data))
 
 
 def on_mapper_button(sender: Any, app_data: Any, user_data: Any) -> None:
-    """Button press: toggle min/max, send OSC, refresh the card label + caption."""
+    """Button press: toggle output_from (OFF) / output_to (ON), send OSC, refresh the label."""
     mid = int(user_data)
     value = mapper.send_button_mapping(mid)
-    _set_mapper_caption(mid, value)
     mapping = mapper.find_mapping(mid)
     if mapping is not None:
         spec = mapper.MAPPER_PROPERTIES[mapping["property"]]
         btn_tag = f"mapper_btn_{mid}"
         if dpg.does_item_exist(btn_tag):
             dpg.configure_item(btn_tag, label=f"{spec['label']}: {value:.2f}")
+
+
+def _sync_mapper_control(mid: int) -> None:
+    """Reconfigure a mapping's control widget to its current output range (e23s01).
+
+    Called after an output-box edit so the control min/max follow the new
+    (possibly reversed) output range and the stored value stays inside it.
+    """
+    mapping = mapper.find_mapping(mid)
+    if mapping is None:
+        return
+    kind = mapping["control"]
+    tag = f"mapper_{kind}_{mid}"
+    if not dpg.does_item_exist(tag):
+        return
+    out_from = mapping["output_from"]
+    out_to = mapping["output_to"]
+    if kind in ("slider", "knob"):
+        dpg.configure_item(tag, min_value=out_from, max_value=out_to)
+        dpg.set_value(tag, mapping["value"])
+    else:  # button: its label shows the current output value
+        spec = mapper.MAPPER_PROPERTIES[mapping["property"]]
+        dpg.configure_item(tag, label=f"{spec['label']}: {mapping['value']:.2f}")
+
+
+def on_mapper_output(sender: Any, app_data: Any, user_data: Any) -> None:
+    """Drag an output from/to box: store the new output range and re-fit the control.
+
+    Reads BOTH boxes (the edited one via the sender, the other via get_value)
+    so the pair is always consistent; the control is reconfigured in place —
+    no full body rebuild (a refresh mid-drag would kill the drag).
+    """
+    mid, _edge = user_data
+    from_tag = f"mapper_out_from_{mid}"
+    to_tag = f"mapper_out_to_{mid}"
+    out_from = float(dpg.get_value(from_tag))
+    out_to = float(dpg.get_value(to_tag))
+    mapper.set_mapping_output(mid, out_from, out_to)
+    _sync_mapper_control(mid)
+
+
+def on_mapper_input(sender: Any, app_data: Any, user_data: Any) -> None:
+    """Drag an input from/to box: store the new input range of the bound source.
+
+    Reads BOTH boxes (edited via the sender, the other via get_value) so the
+    pair is consistent; no body rebuild (a refresh mid-drag would kill it).
+    """
+    mid, _edge = user_data
+    from_tag = f"mapper_in_from_{mid}"
+    to_tag = f"mapper_in_to_{mid}"
+    mapper.set_mapping_input(mid, float(dpg.get_value(from_tag)), float(dpg.get_value(to_tag)))
 
 
 def delete_mapping(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -3212,23 +3626,71 @@ def show_help_window(sender: Any = None, app_data: Any = None, user_data: Any = 
 
 # ---------- e17: window switching (Windows-menu list + Ctrl+Tab) ----------
 def _window_menu_entries() -> list[tuple[str, str]]:
-    """Workspace windows in switching order: (tag, menu label).
+    """Windows in switching order: (tag, real window-title label).
 
-    Monitor Players are appended live so the list (and Ctrl+Tab) always match
-    the windows that exist.
+    The main window (Step Sequencer) is always on screen and is not a switching
+    target; Monitor Players are appended live so the list (and Ctrl+Tab) always
+    match the windows that exist.
     """
     entries = [
-        ("sequencer_window", "Sequencer"),
-        ("audio_window", "Audio"),
-        ("vimix_media_window", "Media"),
+        ("sequencer_window", "Step Sequencer"),
+        ("audio_window", "Audio analyzer"),
+        ("vimix_media_window", "Vimix sources"),
         ("logs_window", "Logs"),
         ("mapper_window", "Mapper"),
     ]
-    entries += [(p["tag"], f"Monitor {p['id']}") for p in monitor_players]
+    entries += [(p["tag"], f"Monitor Player {p['id']}") for p in monitor_players]
     return entries
 
 
 _window_menu_dynamic_tags: list[str] = []  # live list items, deleted on refresh
+
+
+# The app's windows (BUG-2026-09-01T194500). Opening a menu makes DPG report the
+# menu itself as the active window (mvContainers.cpp: menu draw sets
+# GContext->activeWindow), so the focus track must accept ONLY real windows.
+_FOCUS_TRACKED_WINDOWS: tuple[str, ...] = (
+    "sequencer_window",
+    "audio_window",
+    "vimix_media_window",
+    "logs_window",
+    "mapper_window",
+    "settings_window",
+    "midi_window",
+    "help_window",
+)
+
+
+def _is_tracked_window(tag: Any) -> bool:
+    """True when the active item is one of the app's windows, not a menu/popup."""
+    s = str(tag)
+    return s in _FOCUS_TRACKED_WINDOWS or s.startswith("monitor_player_")
+
+
+def _active_window_tag(tag: Any) -> str | None:
+    """Resolve the active item to its app window (BUG-2026-09-01T194500).
+
+    DPG reports arbitrary widgets as the active window (verified live: clicking
+    a step pad makes get_active_window() return the pad tag, e.g. 'seq_cell_2_4')
+    and the open menu itself while a menu is shown. Walk up the item tree to the
+    first tracked window; return None for menus/popups/unknowns.
+    """
+    item = tag
+    for _ in range(64):  # bounded parent walk
+        if item is None:
+            return None
+        s = str(item)
+        if _is_tracked_window(s):
+            return s
+        # Real DPG raises get_item_info on stale/unknown ids (boot returns 0)
+        # — bail out before the walk instead of crashing.
+        if not dpg.does_item_exist(item):
+            return None
+        parent = dpg.get_item_parent(item)
+        if parent is None or str(parent) == s:
+            return None
+        item = parent
+    return None
 
 
 _window_menu_sig: tuple[Any, ...] | None = None  # last (active, monitor tags) seen
@@ -3245,8 +3707,10 @@ def refresh_window_menu() -> None:
         if dpg.does_item_exist(tag):
             dpg.delete_item(tag)
     _window_menu_dynamic_tags.clear()
-    active = dpg.get_active_window()
+    active = state.current_window
     for tag, label in _window_menu_entries():
+        if not (dpg.does_item_exist(tag) and dpg.is_item_shown(tag)):
+            continue  # only list windows that are actually open
         if not dpg.does_item_exist(tag):
             continue
         item_tag = dpg.add_menu_item(
@@ -3263,12 +3727,25 @@ def refresh_window_menu() -> None:
 def tick_window_menu() -> None:
     """Per-frame gate: refresh the Windows-menu list only when it can have changed.
 
-    The signature is (active window, monitor-player tags); anything else the list
-    shows (the fixed windows) is static. One get_active_window per frame is the
-    whole cost when nothing changed.
+    The signature is (tracked current window, shown window tags); anything else
+    the list shows is static. We remember the last focused window: get_active_window()
+    reports arbitrary widgets (step pads, combos) and the open menu itself, so
+    the track resolves the active item up to its app window and never clears on
+    a menu/popup/None result (BUG-2026-09-01T194500).
     """
     global _window_menu_sig
-    sig = (dpg.get_active_window(), tuple(p["tag"] for p in monitor_players))
+    active = dpg.get_active_window()
+    window = _active_window_tag(active)
+    if window is not None:
+        state.current_window = window
+    sig = (
+        state.current_window,
+        tuple(
+            tag
+            for tag, _ in _window_menu_entries()
+            if dpg.does_item_exist(tag) and dpg.is_item_shown(tag)
+        ),
+    )
     if sig != _window_menu_sig:
         _window_menu_sig = sig
         refresh_window_menu()
@@ -3280,6 +3757,7 @@ def switch_to_window(sender: Any = None, app_data: Any = None, user_data: Any = 
     if dpg.does_item_exist(tag):
         dpg.show_item(tag)
         dpg.focus_item(tag)
+        state.current_window = tag
 
 
 def on_cycle_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -3287,6 +3765,8 @@ def on_cycle_window(sender: Any = None, app_data: Any = None, user_data: Any = N
 
     DPG 2.3.1 key handlers have no modifier support, so the wrapper checks the
     modifier keys itself; Tab keeps its normal role while an input is focused.
+    The anchor is the tracked current window (not DPG get_active_window, which
+    is None while the menu bar has focus — BUG-2026-09-01T194500).
     """
     if not dpg.is_key_down(dpg.mvKey_ModCtrl) or _any_input_focused():
         return
@@ -3294,7 +3774,7 @@ def on_cycle_window(sender: Any = None, app_data: Any = None, user_data: Any = N
     entries = _window_menu_entries()
     if not entries:
         return
-    active = dpg.get_active_window()
+    active = state.current_window
     try:
         idx = next(i for i, (tag, _) in enumerate(entries) if str(tag) == str(active))
     except StopIteration:
@@ -3659,6 +4139,14 @@ for _help_mono_font_path in _HELP_MONO_FONT_PATHS:
             _help_mono_font = dpg.add_font(_help_mono_font_path, size=13)
         break
 
+# Compact ProggyTiny font for the Mediagrid tile titles (same guarded pattern; a missing
+# asset leaves _tile_title_font None and the titles use the default 13 px font).
+for _tile_title_font_path in _TILE_TITLE_FONT_PATHS:
+    if os.path.exists(_tile_title_font_path):
+        with dpg.font_registry():
+            _tile_title_font = dpg.add_font(_tile_title_font_path, size=MEDIA_TITLE_FONT_SIZE)
+        break
+
 with dpg.handler_registry():
     # DPG 2.3.1 key handlers have no modifier support: the wrapper checks Ctrl itself
     dpg.add_key_press_handler(dpg.mvKey_C, callback=_on_copy_key)
@@ -3687,11 +4175,15 @@ with dpg.theme() as theme_selected_clip, dpg.theme_component(dpg.mvChildWindow):
     theme_color(dpg.mvThemeCol_Border, "border_active")
     theme_color(dpg.mvThemeCol_ChildBg, "accent_bg")
     dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 5)
+    dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, MEDIA_TILE_PAD, MEDIA_TILE_PAD)
+    dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 2, 2)
 
 with dpg.theme() as theme_normal_clip, dpg.theme_component(dpg.mvChildWindow):
     theme_color(dpg.mvThemeCol_Border, "border")
     theme_color(dpg.mvThemeCol_ChildBg, "panel_bg")
     dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 5)
+    dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, MEDIA_TILE_PAD, MEDIA_TILE_PAD)
+    dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 2, 2)
 
 with dpg.theme() as theme_vimix_current_clip, dpg.theme_component(dpg.mvChildWindow):
     # Vimix's current source in a lighter, non-green border (e10s06): clearly
@@ -3699,6 +4191,8 @@ with dpg.theme() as theme_vimix_current_clip, dpg.theme_component(dpg.mvChildWin
     theme_color(dpg.mvThemeCol_Border, "text_dim")
     theme_color(dpg.mvThemeCol_ChildBg, "panel_bg")
     dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 5)
+    dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, MEDIA_TILE_PAD, MEDIA_TILE_PAD)
+    dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 2, 2)
 
 with dpg.theme() as theme_compact_table, dpg.theme_component(dpg.mvTable):
     dpg.add_theme_style(dpg.mvStyleVar_CellPadding, 1, 1)
@@ -3727,13 +4221,33 @@ with dpg.theme() as theme_slot_clear, dpg.theme_component(dpg.mvChildWindow):
     # borderless clip slot: no frame, no background (border=False + transparent ChildBg)
     dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (0, 0, 0, 0))
 
-with dpg.theme() as theme_media_badge, dpg.theme_component(dpg.mvButton):
-    # Mediagrid index badge: a slate box with a bright digit (e06 palette)
-    theme_color(dpg.mvThemeCol_Button, "badge_bg")
-    theme_color(dpg.mvThemeCol_ButtonHovered, "badge_bg")
-    theme_color(dpg.mvThemeCol_ButtonActive, "badge_bg")
-    theme_color(dpg.mvThemeCol_Text, "text_bright")
+with dpg.theme() as theme_alpha_slider, dpg.theme_component(dpg.mvSliderFloat):
+    # Thin vertical alpha slider on a Mediagrid tile: subtle rail + accent grabber.
+    # The rail uses the border slot (palette-driven); the grabber matches the app
+    # accent so the value reads at a glance on the dark tile.
+    theme_color(dpg.mvThemeCol_FrameBg, "border")
+    theme_color(dpg.mvThemeCol_FrameBgHovered, "border")
+    theme_color(dpg.mvThemeCol_FrameBgActive, "border")
+    theme_color(dpg.mvThemeCol_SliderGrab, "accent")
+    theme_color(dpg.mvThemeCol_SliderGrabActive, "accent")
     dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 2)
+    dpg.add_theme_style(dpg.mvStyleVar_GrabRounding, 2)
+
+with dpg.theme() as theme_mapper_compact, dpg.theme_component(dpg.mvAll):
+    # e23: compact Mapper — tight paddings/frames so the source rows and the
+    # mini-cards shrink (the texts/controls also use the 10 px ProggyTiny
+    # font). Measured against DPG 2.3.1: rows become ~60 px and the mini-cards
+    # 150 px wide.
+    theme_color(dpg.mvThemeCol_FrameBg, "border")
+    theme_color(dpg.mvThemeCol_FrameBgHovered, "border")
+    theme_color(dpg.mvThemeCol_FrameBgActive, "border")
+    theme_color(dpg.mvThemeCol_SliderGrab, "accent")
+    theme_color(dpg.mvThemeCol_SliderGrabActive, "accent")
+    dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, 4, 4)
+    dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 6, 2)
+    dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 4, 2)
+    dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 3)
+    dpg.add_theme_style(dpg.mvStyleVar_GrabRounding, 2)
 
 with dpg.theme() as theme_seq_row_compact, dpg.theme_component(dpg.mvAll):
     # Tighter item spacing for the sequencer transport/beat-source row (e10s08):
@@ -4076,7 +4590,7 @@ with dpg.window(
 # WINDOW 4: VIMIX MEDIA
 with (
     dpg.window(
-        label="Mediagrid",
+        label="Vimix sources",
         width=550,
         height=690,
         pos=(1100, 10),
@@ -4167,11 +4681,17 @@ with dpg.window(label="MIDI", width=520, height=520, pos=(560, 320), tag="midi_w
     dpg.add_spacer(height=4)
     dpg.add_button(label="Save", callback=save_midi_controllers, width=80)
 
-# e16: Mapper window — compact grid of OSC property mapping cards; the body is
-# rebuilt by refresh_mapper_ui() (menu open, create, delete, prune). Hidden at
-# boot and never part of the saved layout (transient workspace, like Logs).
-# e20s02: only the mapping cards — no header line, and the scroll
-# container is borderless so no outer frame wraps the grid.
+# e16/e22/e23/e24: Mapper window — the body is rebuilt by refresh_mapper_ui()
+# (menu open, create, delete, prune, resize) as a stack of wrapping source
+# blocks. Hidden at boot and never part of the saved layout (transient
+# workspace, like Logs).
+# e20s02: only the mapping blocks — no header line, and the scroll container is
+# borderless so no outer frame wraps the content.
+# e23: compact theme (theme_mapper_compact).
+# e24s02: sources WRAP onto multiple lines (no overflow), so the scroll child
+# keeps NO horizontal_scrollbar (DPG would force both scrollbar tracks) and its
+# vertical scrollbar appears only when the wrapped content is taller than the
+# window. A resize item handler reflows the body live.
 with (
     dpg.window(
         label="Mapper",
@@ -4181,10 +4701,19 @@ with (
         tag="mapper_window",
         show=False,
     ),
-    dpg.child_window(height=MAPPER_WINDOW_HEIGHT - 8, border=False, tag="mapper_scroll"),
+    dpg.child_window(
+        height=MAPPER_WINDOW_HEIGHT - 8,
+        border=False,
+        tag="mapper_scroll",
+    ),
     dpg.group(tag="mapper_mappings_group"),
 ):
     pass
+dpg.bind_item_theme("mapper_window", theme_mapper_compact)
+with dpg.item_handler_registry(tag="mapper_resize_reg"):
+    # e24s02: reflow the wrapping body whenever the user resizes the window
+    dpg.add_item_resize_handler(callback=lambda s, a: refresh_mapper_ui())
+dpg.bind_item_handler_registry("mapper_window", "mapper_resize_reg")
 
 # NEW THREAD FOR HIGH-FREQUENCY FADES
 threading.Thread(target=fade_tick_loop, daemon=True).start()
@@ -4204,14 +4733,15 @@ dpg.create_viewport(title="viSeq - Audio-Reactive VJ Controller", width=1700, he
 dpg.set_exit_callback(show_exit_confirm)
 dpg.configure_viewport("__viewport", disable_close=True)
 apply_boot_config()  # e06: apply the saved theme + (optionally) the saved window layout
+ensure_user_dirs()  # e21s01: eager XDG user dirs (config + projects) + legacy .viseq migration
 with dpg.viewport_menu_bar():
     with dpg.menu(label="viSeq"):  # e11s03: first menubar menu — project file flows
         dpg.add_menu_item(label="New project", callback=show_new_project_confirm)  # e15s01
         dpg.add_menu_item(label="Open project", callback=show_open_project_dialog)
         with dpg.menu(label="Last project", tag="menu_last_project"):
             pass  # children rebuilt by rebuild_last_project_menu() (boot + after every save/open)
-        dpg.add_separator()
         dpg.add_menu_item(label="Save project", callback=show_save_project_dialog)
+        dpg.add_separator()
         dpg.add_menu_item(label="Exit", callback=exit_app)
     with dpg.menu(label="Windows", tag="menu_windows"):  # e12s01 + e17 (window list)
         dpg.add_menu_item(label="New Monitor Player", callback=new_monitor_player)

@@ -1,8 +1,10 @@
 """Controller profile system (REFACTOR_LATEST.md commit 4/13).
 
-External JSON profiles in CONTROLLERS_DIR describe MIDI controller models
-(port-name matching, grid geometry + note formula, LED color palette,
-setup SysEx); dropping a file adds a model with no code changes. Pure
+External JSON profiles in CONTROLLERS_DIR (bundled, read-only — AppImage-safe)
+and in USER_CONTROLLERS_DIR (per-user, $XDG_CONFIG_HOME/viseq/controllers)
+describe MIDI controller models (port-name matching, grid geometry + note
+formula, LED color palette, setup SysEx); dropping a file adds a model with no
+code changes. User-dir profiles override bundled ones by id (e21s01). Pure
 module: no dpg, no app state.
 """
 
@@ -11,11 +13,15 @@ import json
 import os
 from typing import Any
 
+from viseqapp.config import user_config_dir
 from viseqapp.queues import log_error
 
 CONTROLLERS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "controllers"
 )
+
+# User-dropped profiles live per-user so they survive app updates (e21s01).
+USER_CONTROLLERS_DIR = os.path.join(user_config_dir(), "controllers")
 
 # Built-in profiles: the three Launchpad families (e09s03 behavior reproduced
 # exactly). They double as the fallback when the controllers/ folder is missing
@@ -138,23 +144,35 @@ def _grid_note(profile: dict[str, Any], row: int, col: int) -> int:
 
 
 def load_controller_profiles() -> dict[str, dict[str, Any]]:
-    """Load every controllers/*.json profile over the built-ins; corrupt files skip (e14s01)."""
+    """Load every profile over the built-ins; corrupt files skip (e14s01).
+
+    Bundled dir loads first, then user-dropped profiles override by id (e21s01);
+    missing dirs are tolerated.
+    """
     profiles = {pid: copy.deepcopy(profile) for pid, profile in DEFAULT_PROFILES.items()}
+    profiles.update(_load_profiles_from(CONTROLLERS_DIR))
+    profiles.update(_load_profiles_from(USER_CONTROLLERS_DIR))
+    return profiles
+
+
+def _load_profiles_from(directory: str) -> dict[str, dict[str, Any]]:
+    """Load sanitized *.json profiles from one directory; missing dirs/corrupt skip (e21s01)."""
+    loaded: dict[str, dict[str, Any]] = {}
     try:
-        names = sorted(os.listdir(CONTROLLERS_DIR))
+        names = sorted(os.listdir(directory))
     except OSError:
-        return profiles
+        return loaded
     for name in names:
         if not name.lower().endswith(".json"):
             continue
-        path = os.path.join(CONTROLLERS_DIR, name)
+        path = os.path.join(directory, name)
         try:
             with open(path, encoding="utf-8") as f:
                 profile = _sanitize_profile(json.load(f))
-            profiles[profile["id"]] = profile
+            loaded[profile["id"]] = profile
         except (OSError, ValueError) as e:
             log_error("Profiles", f"skip {name}: {e}")
-    return profiles
+    return loaded
 
 
 def match_controller_profile(

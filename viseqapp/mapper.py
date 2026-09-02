@@ -68,6 +68,17 @@ def add_mapping(target_id: str, prop: str, control: str) -> dict[str, Any]:
         "value": _midpoint(spec["min"], spec["max"]),
         "band": None,  # e18: audio-band source (2 or 3), exclusive with midi
         "midi": None,  # e18: learned MIDI source {device, type, number}
+        # e23: value remap. output_from/to = the OSC range the control travel
+        # sweeps (default = the vimix catalog range; editable to sub-ranges or
+        # reversed). input_from/to = the raw source range a bound band/MIDI
+        # source maps through (seeded on bind: band 0..1, MIDI 0..127).
+        # e24: enabled = the mapping's master switch (default False: the
+        # control stores values but sends no OSC until armed).
+        "output_from": spec["min"],
+        "output_to": spec["max"],
+        "input_from": None,
+        "input_to": None,
+        "enabled": False,
     }
     state.mapper_mappings.append(mapping)
     return mapping
@@ -101,30 +112,77 @@ def prune_mappings(live_ids: set[str]) -> list[dict[str, Any]]:
 
 
 def set_mapping_value(mapping_id: int, value: float) -> None:
-    """Store a clamped value on the mapping (no OSC; e16s01)."""
+    """Store a clamped value on the mapping (no OSC; e16s01).
+
+    e23: the clamp bounds are the mapping's OUTPUT interval (min/max of the
+    output range), not the catalog range — the stored value is the output.
+    """
     mapping = find_mapping(mapping_id)
     if mapping is None:
         return
-    spec = _spec_of(mapping["property"])
-    mapping["value"] = _clamp(float(value), spec["min"], spec["max"])
+    lo, hi = _output_bounds(mapping)
+    mapping["value"] = _clamp(float(value), lo, hi)
+
+
+def set_mapping_output(mapping_id: int, out_from: float, out_to: float) -> None:
+    """Set the OSC output range of a mapping (e23); from > to reverses the sweep.
+
+    The stored value is re-clamped into the (possibly reversed) new interval.
+    """
+    mapping = find_mapping(mapping_id)
+    if mapping is None:
+        return
+    mapping["output_from"] = float(out_from)
+    mapping["output_to"] = float(out_to)
+    lo, hi = _output_bounds(mapping)
+    mapping["value"] = _clamp(mapping["value"], lo, hi)
+
+
+def _output_bounds(mapping: dict[str, Any]) -> tuple[float, float]:
+    """The sorted output interval of a mapping (e23): min/max of its range."""
+    return min(mapping["output_from"], mapping["output_to"]), max(
+        mapping["output_from"], mapping["output_to"]
+    )
 
 
 def toggle_mapping_value(mapping_id: int) -> float:
-    """Button behavior: flip the stored value between min and max; returns the new value."""
+    """Button behavior: flip the stored value between output_from (OFF) and
+    output_to (ON); returns the new value (e23s01).
+
+    First press (the default midpoint, neither end) turns the button ON
+    (output_to), matching the old 'first press = on' behaviour.
+    """
     mapping = find_mapping(mapping_id)
     if mapping is None:
         return 0.0
-    spec = _spec_of(mapping["property"])
-    low, high = spec["min"], spec["max"]
-    # Strict >: a mapping at the neutral midpoint (default) flips to max first
-    # (first press = "on"), then alternates min/max.
-    new_value = low if mapping["value"] > _midpoint(low, high) else high
+    frm, to = mapping["output_from"], mapping["output_to"]
+    if mapping["value"] == frm:
+        new_value = to
+    elif mapping["value"] == to:
+        new_value = frm
+    else:  # default/undetermined state: first press = ON
+        new_value = to
     mapping["value"] = new_value
     return new_value
 
 
+def set_mapping_enabled(mapping_id: int, enabled: bool) -> None:
+    """Arm or mute a mapping (e24): disabled mappings send no OSC."""
+    mapping = find_mapping(mapping_id)
+    if mapping is None:
+        return
+    mapping["enabled"] = bool(enabled)
+
+
 def _send(mapping: dict[str, Any]) -> None:
-    """Send the mapping's current value to vimix and log it (worker-safe)."""
+    """Send the mapping's current value to vimix and log it (worker-safe).
+
+    e24: a DISABLED mapping is muted here — the value is stored by the caller
+    and the control moves, but no OSC message leaves and nothing is logged
+    until the mapping is enabled.
+    """
+    if not mapping.get("enabled", False):
+        return
     addr = f"/vimix/{mapping['target_id']}/{mapping['property']}"
     osc_client.send_message(addr, float(mapping["value"]))
     append_log("OUT", f"{addr} [{mapping['value']:.2f}]")
@@ -154,7 +212,8 @@ def set_mapping_band(mapping_id: int, band_id: int | None) -> None:
     """Set/clear the audio-band source of a mapping (e18).
 
     Band and MIDI sources are mutually exclusive: setting a band clears any
-    MIDI source, and vice versa.
+    MIDI source, and vice versa. e23s02: binding a band seeds the input range
+    to 0..1 (the raw band level scale).
     """
     mapping = find_mapping(mapping_id)
     if mapping is None:
@@ -162,10 +221,16 @@ def set_mapping_band(mapping_id: int, band_id: int | None) -> None:
     mapping["band"] = band_id
     if band_id is not None:
         mapping["midi"] = None
+        mapping["input_from"] = 0.0
+        mapping["input_to"] = 1.0
 
 
 def set_mapping_midi(mapping_id: int, binding: dict[str, Any]) -> None:
-    """Set the MIDI source of a mapping from a learned binding (e18)."""
+    """Set the MIDI source of a mapping from a learned binding (e18).
+
+    e23s02: binding a MIDI source seeds the input range to 0..127 (the raw
+    MIDI value scale).
+    """
     mapping = find_mapping(mapping_id)
     if mapping is None:
         return
@@ -175,6 +240,17 @@ def set_mapping_midi(mapping_id: int, binding: dict[str, Any]) -> None:
         "number": binding.get("number"),
     }
     mapping["band"] = None
+    mapping["input_from"] = 0.0
+    mapping["input_to"] = 127.0
+
+
+def set_mapping_input(mapping_id: int, in_from: float, in_to: float) -> None:
+    """Set the input range a bound source maps through (e23s02); from > to reverses it."""
+    mapping = find_mapping(mapping_id)
+    if mapping is None:
+        return
+    mapping["input_from"] = float(in_from)
+    mapping["input_to"] = float(in_to)
 
 
 def clear_mapping_source(mapping_id: int) -> None:
@@ -186,18 +262,39 @@ def clear_mapping_source(mapping_id: int) -> None:
     mapping["midi"] = None
 
 
-def apply_unit_value(mapping_id: int, unit: float) -> float:
-    """Drive a mapping from a 0..1 unit value (band level / MIDI 0..127).
+def apply_input_value(mapping_id: int, raw: float) -> float:
+    """Drive a mapping from a raw source value (band level / MIDI value, e23s02).
 
-    The unit value is remapped onto the property range (min + unit*(max-min)),
-    clamped, stored on the mapping and sent as OSC; returns the effective
-    value (0.0 for an unknown id). Worker-safe, HIGH-1.
+    The raw value is remapped through the mapping's input range onto a clamped
+    0..1 unit, then through the output range (apply_unit_value) and sent as
+    OSC. Sub-ranges restrict the travel, reversed ranges (from > to) invert
+    the response; a degenerate range yields unit 0 (output_from). Returns the
+    effective value (0.0 for an unknown id). Worker-safe, HIGH-1.
     """
     mapping = find_mapping(mapping_id)
     if mapping is None:
         return 0.0
-    spec = _spec_of(mapping["property"])
-    value = spec["min"] + _clamp(unit, 0.0, 1.0) * (spec["max"] - spec["min"])
+    in_from, in_to = mapping["input_from"], mapping["input_to"]
+    if in_from is None or in_to is None or in_from == in_to:
+        unit = 0.0
+    else:
+        unit = _clamp((float(raw) - in_from) / (in_to - in_from), 0.0, 1.0)
+    return apply_unit_value(mapping_id, unit)
+
+
+def apply_unit_value(mapping_id: int, unit: float) -> float:
+    """Drive a mapping from a clamped 0..1 unit value (e18).
+
+    e23: the unit is remapped onto the mapping's OUTPUT range
+    (output_from + unit*(output_to-output_from)), stored on the mapping and
+    sent as OSC; a reversed output range sweeps the other way. Returns the
+    effective value (0.0 for an unknown id). Worker-safe, HIGH-1.
+    """
+    mapping = find_mapping(mapping_id)
+    if mapping is None:
+        return 0.0
+    u = _clamp(unit, 0.0, 1.0)
+    value = mapping["output_from"] + u * (mapping["output_to"] - mapping["output_from"])
     mapping["value"] = value
     _send(mapping)
     return value

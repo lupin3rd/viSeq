@@ -81,15 +81,35 @@ SLOT_BUTTON_INDENT = (SLOT_WIDTH - SLOT_BUTTON_WIDTH) // 2
 SLOT_BUTTON_TOP_SPACER = (SLOT_HEIGHT - SLOT_BUTTON_HEIGHT) // 2 - SLOT_BUTTON_FRAME_INSET
 
 
-# Mediagrid tile: index badge box + compact layout (audit L-6)
-# e10s06: the tile title fits at most two wrapped lines, truncated with an ellipsis
-MEDIA_BADGE_W = 28  # px width of the media-index badge button
+# Mediagrid tile: index badge overlay + compact layout (audit L-6)
+# e10s06: the tile title fits at most two wrapped lines, truncated with an ellipsis.
+# The title font is ProggyTiny (monospace, pixel family of the default ProggyClean):
+# at 9 px its line height equals the font size and the advance is ~5.4 px.
+MEDIA_TITLE_FONT_SIZE = 10  # px font size of the media tile title
 
 
-MEDIA_BADGE_H = 20  # px height of the media-index badge button
+MEDIA_TITLE_CHARS_PER_LINE = 20  # ProggyTiny-10 wrap capacity at MEDIA_TITLE_WRAP (measured)
 
 
-MEDIA_TILE_H = 146  # px height of a media tile (title + photo + badge row)
+MEDIA_TITLE_RESERVE_PX = 7  # net layout step per wrapped title line (DPG 2.3.1 measured)
+
+
+MEDIA_TILE_PAD = 5  # px uniform WindowPadding of a media tile (equal gaps all around)
+
+
+MEDIA_TITLE_GAP = 2  # px base gap between the tile title and the thumbnail row
+
+
+MEDIA_BADGE_W = 28  # px width of the media-index badge overlay on the thumbnail
+
+
+MEDIA_BADGE_H = 20  # px height of the media-index badge overlay on the thumbnail
+
+
+MEDIA_TILE_H = 104  # px height of a media tile (two-line title + thumbnail + alpha slider)
+
+
+MEDIA_ALPHA_SLIDER_W = 10  # px width of the thin vertical alpha slider on a tile
 
 
 MEDIA_TITLE_WRAP = 125  # px wrap width of the media tile title
@@ -128,30 +148,64 @@ MONITOR_DISC_RPM = 33.0  # disc rotations per minute at speed 1.0 (vinyl standar
 MONITOR_SPEED_TEXT_SIZE = 12  # px font size of the speed label inside the disc
 
 
-# e16/e20: Mapper window geometry + card layout (compact by design). Cards sit in a
-# grid whose column count derives from the window width (see _mapper_columns).
-# e20s01: cards grew (118x132 -> 150x146) to fit a REAL source thumbnail
-# (46x26 -> 100x56, ~16:9 like the Mediagrid 115x65) plus a one-line caption;
-# the window width keeps the same 4 columns per row ((660-20)/156 = 4.10).
+# e16/e20/e22/e23: Mapper window geometry — the body is a vertical stack of
+# source rows (e22s01): one horizontal line per vimix source = the source
+# thumbnail at the sequencer slot size (110x70, bare) + one bordered mini-card
+# per mapping. e23: each mini-card holds — caption (label + X) above a control
+# that spans the content width, then the 'output:' from/to line and the
+# 'input:' from/to line (visible when a source is bound) under it. e23 iteration:
+# everything renders COMPACT — the 10 px ProggyTiny font (MEDIA_TITLE_FONT_SIZE)
+# for texts/controls, tight frame/item paddings, small X (16 px) and 40 px
+# drag boxes — so rows are short and the mini-cards narrow. Rows are sized to
+# their OWN content (see _mapper_row_height): slider rows ~60 px, knob rows
+# taller, +16 px when a source is bound. Measured on DearPyGui 2.3.1 with the
+# compact theme (WindowPadding 4/FramePadding y 2/ItemSpacing 2): content inset
+# ~6 px top + ~12 px bottom air (MAPPER_ROW_PAD_V = 18), a small-font text/drag row is
+# 17 px, a slider/button box 17 px, the knob a fixed 44 px, gaps 2 px; the
+# ProggyTiny-10 advance is 6 px/char (widest label 'Transparency' = 72 px).
 MAPPER_WINDOW_WIDTH = 660
 
 
 MAPPER_WINDOW_HEIGHT = 460
 
 
-MAPPER_CARD_W = 150  # px width of one mapping card
+MAPPER_ROW_THUMB_W = SLOT_BUTTON_WIDTH  # px width of the row thumbnail (= the sequencer slot)
 
 
-MAPPER_CARD_H = 146  # px height of one mapping card (fits the 44 px knob)
+MAPPER_ROW_THUMB_H = SLOT_BUTTON_HEIGHT  # px height of the row thumbnail
 
 
-MAPPER_THUMB_W = 100  # px width of the source thumbnail on a card (~16:9)
+MAPPER_TEXT_H = 17  # px height of one compact text/drag row (measured: drag box 17 px)
 
 
-MAPPER_THUMB_H = 56  # px height of the source thumbnail on a card (~16:9)
+MAPPER_CTRL_H = 17  # px height of a compact slider/button box (measured)
 
 
-MAPPER_CARD_STRIDE = 156  # px horizontal pitch (card + gutter) for the column math
+MAPPER_KNOB_H = 44  # px height of the fixed knob widget
+
+
+MAPPER_ROW_GAP = 2  # px item spacing between the card rows
+
+
+MAPPER_ROW_PAD_V = 18  # card inset: 6 top + 12 bottom air (guards the last line vs font drift)
+
+
+MAPPER_SMALL_CHAR_PX = 6  # px advance of the 10 px ProggyTiny mapper font (measured)
+
+
+MAPPER_MINI_W = 150  # px width of one mapping mini-card (caption + output line fit)
+
+
+MAPPER_X_W = 16  # px width of the X delete button on a mini-card caption row
+
+
+MAPPER_X_H = 16  # px height of the X delete button
+
+
+MAPPER_CB_W = 16  # px width of the enable checkbox on a caption row (measured, compact theme)
+
+
+MAPPER_DRAG_W = 40  # px width of the from/to drag boxes on the output/input lines
 
 
 VIOSC_IP = "127.0.0.1"

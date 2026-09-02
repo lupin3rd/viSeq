@@ -1,9 +1,9 @@
 """User-config I/O for viseq (REFACTOR_LATEST.md commit 5/13).
 
-load_config/save_config read and write the JSON config next to the
-composition root (CONFIG_PATH is owned here so the test suite can point it
-at a temp file); missing/corrupt files fall back to defaults. No dpg, no
-app state.
+load_config/save_config read and write the JSON config under the per-user XDG
+config dir (CONFIG_PATH is owned here so the test suite can point it at a temp
+file); missing/corrupt files fall back to defaults. A legacy app-directory
+config migrates once to the XDG path (e21s01). No dpg, no app state.
 """
 
 import copy
@@ -14,9 +14,42 @@ from typing import Any
 from viseqapp.constants import DEFAULT_CONFIG, DEFAULT_PALETTE, DPG_COLOR_SCALE, PALETTE_SLOTS
 from viseqapp.queues import log_error
 
-CONFIG_PATH = os.path.join(
+
+def user_config_dir() -> str:
+    """Per-user viseq config dir: $XDG_CONFIG_HOME/viseq, else ~/.config/viseq (e21s01)."""
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(base, "viseq")
+
+
+CONFIG_PATH = os.path.join(user_config_dir(), "viseq_config.json")
+
+# The pre-e21 location (next to the app); the source of a one-time migration.
+LEGACY_CONFIG_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "viseq_config.json"
 )
+
+
+def _migrate_legacy_config() -> None:
+    """One-time move of a legacy app-directory config to the XDG path (e21s01).
+
+    Copy first (atomic tmp + replace), remove the legacy file only after the new
+    copy is in place, so a failed migration never loses user settings. Tests
+    point both paths at temp files; the harness redirects LEGACY_CONFIG_PATH so
+    the suite never touches the developer's live repo-root config.
+    """
+    if os.path.exists(CONFIG_PATH) or not os.path.exists(LEGACY_CONFIG_PATH):
+        return
+    try:
+        with open(LEGACY_CONFIG_PATH, encoding="utf-8") as f:
+            data = f.read()
+        os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+        tmp = f"{CONFIG_PATH}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(data)
+        os.replace(tmp, CONFIG_PATH)
+        os.remove(LEGACY_CONFIG_PATH)
+    except OSError:
+        pass  # keep the legacy file; load_config falls back to defaults
 
 
 def _recover_channel(c: float) -> int:
@@ -50,6 +83,7 @@ def _sanitize_palette(colors: Any) -> dict[str, list[int]]:
 
 def load_config() -> dict[str, Any]:
     """Read the user config; missing/corrupt file falls back to defaults (never crashes)."""
+    _migrate_legacy_config()
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
             loaded = json.load(f)
@@ -76,6 +110,7 @@ def load_config() -> dict[str, Any]:
 def save_config(cfg: dict[str, Any]) -> None:
     """Atomically write the user config; failures are logged, never fatal."""
     try:
+        os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
         tmp = f"{CONFIG_PATH}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)

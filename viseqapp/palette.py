@@ -123,8 +123,12 @@ def themed_text(*args: Any, slot: str, **kwargs: Any) -> Any:
     return tag
 
 
-def _set_media_cell(tag: str, value: str) -> None:
-    """set_value for a media-grid cell, skipping writes whose displayed string is unchanged."""
+def _set_media_cell(tag: str, value: str | float) -> None:
+    """set_value for a media-grid cell, skipping writes whose displayed value is unchanged.
+
+    Text cells pass strings; the tile alpha slider passes a float. The cache
+    stores whichever type the cell uses, so an identical push writes nothing.
+    """
     if _media_cell_cache.get(tag) != value and dpg.does_item_exist(tag):
         dpg.set_value(tag, value)
     _media_cell_cache[tag] = value

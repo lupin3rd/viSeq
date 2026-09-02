@@ -92,7 +92,7 @@ ui_task_queue: queue.Queue[Callable[[], None]] = (
 )  # UI mutations from worker threads, drained on the main thread
 
 
-_media_cell_cache: dict[str, str] = {}
+_media_cell_cache: dict[str, str | float] = {}
 
 
 global_vimix_state: dict[str, Any] = {"current_source": None, "sources": {}}
@@ -278,3 +278,9 @@ mapper_counter: int = 0
 
 
 mapper_pending_target: str | None = None  # source the New-mapping dialog targets
+
+
+# e17 / BUG-2026-09-01T194500: last focused workspace window. DPG's
+# get_active_window() returns None while the viewport menu bar has focus, so
+# the Windows-menu mark and the Ctrl+Tab anchor come from this tracking instead.
+current_window: str | None = None
