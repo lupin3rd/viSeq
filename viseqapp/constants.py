@@ -202,6 +202,9 @@ MAPPER_X_W = 16  # px width of the X delete button on a mini-card caption row
 MAPPER_X_H = 16  # px height of the X delete button
 
 
+MAPPER_CB_W = 16  # px width of the enable checkbox on a caption row (measured, compact theme)
+
+
 MAPPER_DRAG_W = 40  # px width of the from/to drag boxes on the output/input lines
 
 

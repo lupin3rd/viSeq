@@ -72,10 +72,13 @@ def add_mapping(target_id: str, prop: str, control: str) -> dict[str, Any]:
         # sweeps (default = the vimix catalog range; editable to sub-ranges or
         # reversed). input_from/to = the raw source range a bound band/MIDI
         # source maps through (seeded on bind: band 0..1, MIDI 0..127).
+        # e24: enabled = the mapping's master switch (default False: the
+        # control stores values but sends no OSC until armed).
         "output_from": spec["min"],
         "output_to": spec["max"],
         "input_from": None,
         "input_to": None,
+        "enabled": False,
     }
     state.mapper_mappings.append(mapping)
     return mapping
@@ -163,8 +166,23 @@ def toggle_mapping_value(mapping_id: int) -> float:
     return new_value
 
 
+def set_mapping_enabled(mapping_id: int, enabled: bool) -> None:
+    """Arm or mute a mapping (e24): disabled mappings send no OSC."""
+    mapping = find_mapping(mapping_id)
+    if mapping is None:
+        return
+    mapping["enabled"] = bool(enabled)
+
+
 def _send(mapping: dict[str, Any]) -> None:
-    """Send the mapping's current value to vimix and log it (worker-safe)."""
+    """Send the mapping's current value to vimix and log it (worker-safe).
+
+    e24: a DISABLED mapping is muted here — the value is stored by the caller
+    and the control moves, but no OSC message leaves and nothing is logged
+    until the mapping is enabled.
+    """
+    if not mapping.get("enabled", False):
+        return
     addr = f"/vimix/{mapping['target_id']}/{mapping['property']}"
     osc_client.send_message(addr, float(mapping["value"]))
     append_log("OUT", f"{addr} [{mapping['value']:.2f}]")

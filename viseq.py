@@ -50,6 +50,7 @@ from viseqapp.constants import (
     LAYOUT_ALWAYS_HIDDEN_TAGS,
     LAYOUT_WINDOW_TAGS,
     LOG_HISTORY_LIMIT,
+    MAPPER_CB_W,
     MAPPER_CTRL_H,
     MAPPER_DRAG_W,
     MAPPER_KNOB_H,
@@ -2915,14 +2916,17 @@ def _bind_mapper_font(tag: str) -> None:
 
 
 def _mapper_caption_spacer(label: str, spec: dict[str, Any]) -> int:
-    """Spacer width that right-aligns the X button on a mini-card caption (e23).
+    """Spacer width that right-aligns the enable checkbox + X on a caption (e24).
 
-    The caption is ONE row: label + spacer + X. Labels render in the 10 px
-    ProggyTiny mapper font (MAPPER_SMALL_CHAR_PX = 6 px/char), so the budget
-    uses that advance and subtracts the X block + item gaps: every catalog
-    property label fits on a single caption row inside the card width.
+    The caption is ONE row: label + spacer + enable checkbox + X. Labels render
+    in the 10 px ProggyTiny mapper font (MAPPER_SMALL_CHAR_PX = 6 px/char), so
+    the budget uses that advance and subtracts the checkbox + X blocks + item
+    gaps: every catalog property label fits on a single caption row.
     """
-    return max(2, MAPPER_MINI_W - 20 - MAPPER_SMALL_CHAR_PX * len(label) - MAPPER_X_W)
+    return max(
+        2,
+        MAPPER_MINI_W - 24 - MAPPER_SMALL_CHAR_PX * len(label) - MAPPER_CB_W - MAPPER_X_W,
+    )
 
 
 def _mapper_row_height(mappings: list[dict[str, Any]]) -> int:
@@ -3003,6 +3007,12 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
         with dpg.group(horizontal=True):
             themed_text(spec["label"], slot="text_dim", tag=f"mapper_prop_{mid}")
             dpg.add_spacer(width=_mapper_caption_spacer(spec["label"], spec))
+            dpg.add_checkbox(
+                default_value=mapping.get("enabled", False),
+                callback=on_mapper_enable,
+                user_data=mid,
+                tag=f"mapper_enable_{mid}",
+            )
             dpg.add_button(
                 label="X",
                 width=MAPPER_X_W,
@@ -3148,6 +3158,7 @@ def _render_mapper_source_menu(mapping: dict[str, Any]) -> None:
         dpg.add_item_clicked_handler(1, callback=lambda *_, m=mid: _show_mapper_menu(m))
     for tag in (
         f"mapper_prop_{mid}",
+        f"mapper_enable_{mid}",
         f"mapper_del_{mid}",
         f"mapper_{control_kind}_{mid}",
         f"mapper_out_lbl_{mid}",
@@ -3369,6 +3380,11 @@ def show_mapper_window(sender: Any = None, app_data: Any = None, user_data: Any 
     refresh_mapper_ui()
     dpg.show_item("mapper_window")
     dpg.focus_item("mapper_window")  # e17: a shown window must come to the front
+
+
+def on_mapper_enable(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Tick the enable checkbox: arm/mute the mapping (no body refresh, e24)."""
+    mapper.set_mapping_enabled(int(user_data), bool(app_data))
 
 
 def on_mapper_control(sender: Any, app_data: Any, user_data: Any) -> None:
