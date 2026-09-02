@@ -153,11 +153,16 @@ MONITOR_SPEED_TEXT_SIZE = 12  # px font size of the speed label inside the disc
 # thumbnail at the sequencer slot size (110x70, bare) + one bordered mini-card
 # per mapping. e23: each mini-card holds — caption (label + X) above a control
 # that spans the content width, then the 'output:' from/to line and the
-# 'input:' from/to line (visible when a source is bound) under it. Each row is
-# sized to its OWN content (see _mapper_row_height): slider rows are short,
-# knob rows taller — no dead space under the lines. MAPPER_MINI_W fits label+X
-# and 'output:' + two drag boxes within the control width (measured,
-# ProggyClean 7 px/char on DPG 2.3.1: widest label 'Transparency' = 84 px).
+# 'input:' from/to line (visible when a source is bound) under it. e23 iteration:
+# everything renders COMPACT — the 10 px ProggyTiny font (MEDIA_TITLE_FONT_SIZE)
+# for texts/controls, tight frame/item paddings, small X (16 px) and 40 px
+# drag boxes — so rows are short and the mini-cards narrow. Rows are sized to
+# their OWN content (see _mapper_row_height): slider rows ~60 px, knob rows
+# taller, +16 px when a source is bound. Measured on DearPyGui 2.3.1 with the
+# compact theme (WindowPadding 4/FramePadding y 2/ItemSpacing 2): content inset
+# ~6 px top + ~12 px bottom air (MAPPER_ROW_PAD_V = 18), a small-font text/drag row is
+# 17 px, a slider/button box 17 px, the knob a fixed 44 px, gaps 2 px; the
+# ProggyTiny-10 advance is 6 px/char (widest label 'Transparency' = 72 px).
 MAPPER_WINDOW_WIDTH = 660
 
 
@@ -170,33 +175,34 @@ MAPPER_ROW_THUMB_W = SLOT_BUTTON_WIDTH  # px width of the row thumbnail (= the s
 MAPPER_ROW_THUMB_H = SLOT_BUTTON_HEIGHT  # px height of the row thumbnail
 
 
-# e23 measured layout (DearPyGui 2.3.1): a text/slider/drag/button row is 19 px
-# tall, the knob is a fixed 44 px, the item spacing is 4 px and the bordered
-# child content inset is 8 px top + 8 px bottom. Source rows size their
-# mini-cards to their CONTENT (see _mapper_row_height) so no dead space shows
-# under the 'output:'/'input:' lines.
-MAPPER_LINE_H = 19
+MAPPER_TEXT_H = 17  # px height of one compact text/drag row (measured: drag box 17 px)
 
 
-MAPPER_KNOB_H = 44
+MAPPER_CTRL_H = 17  # px height of a compact slider/button box (measured)
 
 
-MAPPER_ROW_GAP = 4
+MAPPER_KNOB_H = 44  # px height of the fixed knob widget
 
 
-MAPPER_ROW_PAD_V = 16
+MAPPER_ROW_GAP = 2  # px item spacing between the card rows
 
 
-MAPPER_MINI_W = 190  # px width of one mapping mini-card
+MAPPER_ROW_PAD_V = 18  # card inset: 6 top + 12 bottom air (guards the last line vs font drift)
 
 
-MAPPER_X_W = 18  # px width of the X delete button on a mini-card caption row
+MAPPER_SMALL_CHAR_PX = 6  # px advance of the 10 px ProggyTiny mapper font (measured)
 
 
-MAPPER_X_H = 18  # px height of the X delete button
+MAPPER_MINI_W = 150  # px width of one mapping mini-card (caption + output line fit)
 
 
-MAPPER_DRAG_W = 56  # px width of the from/to drag boxes on the output/input lines
+MAPPER_X_W = 16  # px width of the X delete button on a mini-card caption row
+
+
+MAPPER_X_H = 16  # px height of the X delete button
+
+
+MAPPER_DRAG_W = 40  # px width of the from/to drag boxes on the output/input lines
 
 
 VIOSC_IP = "127.0.0.1"

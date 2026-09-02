@@ -50,14 +50,16 @@ from viseqapp.constants import (
     LAYOUT_ALWAYS_HIDDEN_TAGS,
     LAYOUT_WINDOW_TAGS,
     LOG_HISTORY_LIMIT,
+    MAPPER_CTRL_H,
     MAPPER_DRAG_W,
     MAPPER_KNOB_H,
-    MAPPER_LINE_H,
     MAPPER_MINI_W,
     MAPPER_ROW_GAP,
     MAPPER_ROW_PAD_V,
     MAPPER_ROW_THUMB_H,
     MAPPER_ROW_THUMB_W,
+    MAPPER_SMALL_CHAR_PX,
+    MAPPER_TEXT_H,
     MAPPER_WINDOW_HEIGHT,
     MAPPER_WINDOW_WIDTH,
     MAPPER_X_H,
@@ -2896,35 +2898,51 @@ def show_midi_window(sender: Any = None, app_data: Any = None, user_data: Any = 
 # the sequencer slot size, then that source's mapping mini-cards to the right.
 
 
-def _mapper_caption_spacer(label: str, spec: dict[str, Any]) -> int:
-    """Spacer width that right-aligns the X button on a mini-card caption (e20s01, e23s01).
+def _mapper_font() -> Any:
+    """The small ProggyTiny font the Mapper texts/controls use (e23 compact).
 
-    The caption is ONE row: label + spacer + X — the value text is gone (the
-    control itself shows the value). The spacer fills the gap so the X sits at
-    the card's right edge, measured with the live font width; the budget
-    subtracts the X block (MAPPER_X_W + item spacing), so every catalog
-    property label fits on a single caption row inside the control width.
+    Same 10 px font as the Vimix-sources tile titles; None when the bundled
+    asset is missing (then the default font is used and the compact geometry
+    still fits — labels are the widest at ~7 px/char)."""
+    return _tile_title_font
+
+
+def _bind_mapper_font(tag: str) -> None:
+    """Bind the compact mapper font to an item tag when it exists."""
+    font = _mapper_font()
+    if font is not None and dpg.does_item_exist(tag):
+        dpg.bind_item_font(tag, font)
+
+
+def _mapper_caption_spacer(label: str, spec: dict[str, Any]) -> int:
+    """Spacer width that right-aligns the X button on a mini-card caption (e23).
+
+    The caption is ONE row: label + spacer + X. Labels render in the 10 px
+    ProggyTiny mapper font (MAPPER_SMALL_CHAR_PX = 6 px/char), so the budget
+    uses that advance and subtracts the X block + item gaps: every catalog
+    property label fits on a single caption row inside the card width.
     """
-    char_px = _char_width_px()
-    return max(2, MAPPER_MINI_W - 24 - char_px * len(label) - MAPPER_X_W)
+    return max(2, MAPPER_MINI_W - 20 - MAPPER_SMALL_CHAR_PX * len(label) - MAPPER_X_W)
 
 
 def _mapper_row_height(mappings: list[dict[str, Any]]) -> int:
     """Compact uniform height for one source row (e23 bugfix).
 
-    Fits the tallest mini-card in the row: child padding + the caption line +
-    the control (the knob is a fixed 44 px, taller than a 19 px slider/button
-    row) + the 'output:' line + the 'input:' line when ANY card in the row has
-    a bound source. Rows of plain sliders get short cards instead of a fixed
-    tall box — no dead space under the lines (measured on DPG 2.3.1).
+    Fits the tallest mini-card in the row: the 6+6 px content inset, the
+    caption row (the 16 px X button), the control (slider/button box 14 px,
+    knob fixed 44 px), the 'output:' line, and the 'input:' line when ANY card
+    in the row has a bound source. Measured on DPG 2.3.1 with the compact
+    mapper theme (10 px ProggyTiny font, WindowPadding 4, FramePadding y 2,
+    ItemSpacing y 2): slider rows are ~60 px, knob rows ~90 px.
     """
-    control = MAPPER_KNOB_H if any(m["control"] == "knob" for m in mappings) else MAPPER_LINE_H
+    control = MAPPER_KNOB_H if any(m["control"] == "knob" for m in mappings) else MAPPER_CTRL_H
     height = (
-        MAPPER_ROW_PAD_V + MAPPER_LINE_H + MAPPER_ROW_GAP + control + MAPPER_ROW_GAP + MAPPER_LINE_H
+        MAPPER_ROW_PAD_V + MAPPER_X_H + MAPPER_ROW_GAP + control + MAPPER_ROW_GAP + MAPPER_TEXT_H
     )
     if any(m.get("band") is not None or m.get("midi") is not None for m in mappings):
-        height += MAPPER_ROW_GAP + MAPPER_LINE_H
-    return height
+        height += MAPPER_ROW_GAP + MAPPER_TEXT_H
+    # the row always fits the 70 px source thumbnail (plus 2 px air)
+    return max(MAPPER_ROW_THUMB_H + 2, height)
 
 
 def _mapper_row_thumb(target_id: str, parent: Any, height: int) -> None:
@@ -2973,6 +2991,7 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
     spec = mapper.MAPPER_PROPERTIES[mapping["property"]]
     out_from = mapping["output_from"]
     out_to = mapping["output_to"]
+    content_w = MAPPER_MINI_W - 8  # 4 px card padding each side
     with dpg.child_window(
         parent=parent,
         width=MAPPER_MINI_W,
@@ -2992,12 +3011,13 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
                 user_data=mid,
                 tag=f"mapper_del_{mid}",
             )
+        _bind_mapper_font(f"mapper_prop_{mid}")
         if mapping["control"] == "slider":
             dpg.add_slider_float(
                 min_value=out_from,
                 max_value=out_to,
                 default_value=mapping["value"],
-                width=MAPPER_MINI_W - 16,
+                width=content_w,
                 callback=on_mapper_control,
                 user_data=mid,
                 tag=f"mapper_slider_{mid}",
@@ -3015,11 +3035,14 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
         else:
             dpg.add_button(
                 label=f"{spec['label']}: {mapping['value']:.2f}",
-                width=MAPPER_MINI_W - 16,
+                width=content_w,
                 callback=on_mapper_button,
                 user_data=mid,
                 tag=f"mapper_btn_{mid}",
             )
+        _bind_mapper_font(
+            f"mapper_{'btn' if mapping['control'] == 'button' else mapping['control']}_{mid}"
+        )
         # e23s01: the OSC output range of the control travel (from/to)
         with dpg.group(horizontal=True):
             themed_text("output:", slot="text_dim", tag=f"mapper_out_lbl_{mid}")
@@ -3041,6 +3064,9 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
                 user_data=(mid, "to"),
                 tag=f"mapper_out_to_{mid}",
             )
+        _bind_mapper_font(f"mapper_out_lbl_{mid}")
+        _bind_mapper_font(f"mapper_out_from_{mid}")
+        _bind_mapper_font(f"mapper_out_to_{mid}")
         # e23s02: the raw input range of the bound source (band or MIDI)
         if mapping.get("band") is not None or mapping.get("midi") is not None:
             in_from = mapping.get("input_from")
@@ -3065,6 +3091,9 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
                     user_data=(mid, "to"),
                     tag=f"mapper_in_to_{mid}",
                 )
+            _bind_mapper_font(f"mapper_in_lbl_{mid}")
+            _bind_mapper_font(f"mapper_in_from_{mid}")
+            _bind_mapper_font(f"mapper_in_to_{mid}")
         _render_mapper_source_menu(mapping)
 
 
@@ -3133,11 +3162,22 @@ def _render_mapper_source_menu(mapping: dict[str, Any]) -> None:
 
 
 def _show_mapper_menu(mid: int) -> None:
-    """Open the right-click source menu of a mini-card at the cursor (e18)."""
+    """Open the right-click source menu of a mini-card at the cursor (e18).
+
+    get_mouse_pos() is SCREEN-absolute while window positions are viewport-
+    relative, so the popup must be placed at mouse minus the viewport origin —
+    otherwise it opens offset by the window position.
+    """
     menu_tag = f"mapper_menu_{mid}"
-    if dpg.does_item_exist(menu_tag):
+    if not dpg.does_item_exist(menu_tag):
+        return
+    try:
+        mouse_x, mouse_y = dpg.get_mouse_pos()
+        vp_x, vp_y = dpg.get_viewport_pos()
+        dpg.set_item_pos(menu_tag, (mouse_x - vp_x, mouse_y - vp_y))
+    except Exception:
         dpg.set_item_pos(menu_tag, dpg.get_mouse_pos())
-        dpg.show_item(menu_tag)
+    dpg.show_item(menu_tag)
 
 
 def set_mapping_band(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -3244,6 +3284,50 @@ def tick_midi_learn_timeout() -> None:
         _close_mapper_learn_window()
 
 
+# e23: the mapper scroll child shows its horizontal scrollbar ONLY when a
+# source row overflows the window — DPG's horizontal_scrollbar flag forces
+# BOTH scrollbar tracks to render always, so it must be toggled by rebuilding
+# the scroll child when the need changes (measured on DPG 2.3.1).
+_mapper_scroll_has_hbar = False
+
+
+def _mapper_rows_need_hscroll() -> bool:
+    """True when any source row would overflow the Mapper window width (e23)."""
+    rows: dict[str, list[dict[str, Any]]] = {}
+    for mapping in state.mapper_mappings:
+        rows.setdefault(mapping["target_id"], []).append(mapping)
+    content = MAPPER_WINDOW_WIDTH - 28  # window + child paddings and margins
+    for mappings in rows.values():
+        width = MAPPER_ROW_THUMB_W + len(mappings) * (MAPPER_MINI_W + 4)
+        if width > content:
+            return True
+    return False
+
+
+def _sync_mapper_scroll() -> None:
+    """Rebuild the mapper scroll child when the horizontal-scrollbar need changed.
+
+    The flag is creation-only in effect (configure_item does not remove the
+    forced scrollbar tracks), so a changed need deletes and recreates the
+    borderless scroll child + its mappings group (same tags).
+    """
+    global _mapper_scroll_has_hbar
+    need = _mapper_rows_need_hscroll()
+    if need == _mapper_scroll_has_hbar:
+        return
+    _mapper_scroll_has_hbar = need
+    if dpg.does_item_exist("mapper_scroll"):
+        dpg.delete_item("mapper_scroll")
+    with dpg.child_window(
+        parent="mapper_window",
+        height=MAPPER_WINDOW_HEIGHT - 8,
+        border=False,
+        horizontal_scrollbar=need,
+        tag="mapper_scroll",
+    ):
+        dpg.add_group(tag="mapper_mappings_group")
+
+
 def refresh_mapper_ui() -> None:
     """Rebuild the Mapper window body from state.mapper_mappings (main thread).
 
@@ -3256,6 +3340,7 @@ def refresh_mapper_ui() -> None:
     """
     if not dpg.does_item_exist("mapper_mappings_group"):
         return
+    _sync_mapper_scroll()
     dpg.delete_item("mapper_mappings_group", children_only=True)
     if not state.mapper_mappings:
         # explicit parent: at runtime (menu callback) DPG cannot deduce the
@@ -4145,6 +4230,22 @@ with dpg.theme() as theme_alpha_slider, dpg.theme_component(dpg.mvSliderFloat):
     dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 2)
     dpg.add_theme_style(dpg.mvStyleVar_GrabRounding, 2)
 
+with dpg.theme() as theme_mapper_compact, dpg.theme_component(dpg.mvAll):
+    # e23: compact Mapper — tight paddings/frames so the source rows and the
+    # mini-cards shrink (the texts/controls also use the 10 px ProggyTiny
+    # font). Measured against DPG 2.3.1: rows become ~60 px and the mini-cards
+    # 150 px wide.
+    theme_color(dpg.mvThemeCol_FrameBg, "border")
+    theme_color(dpg.mvThemeCol_FrameBgHovered, "border")
+    theme_color(dpg.mvThemeCol_FrameBgActive, "border")
+    theme_color(dpg.mvThemeCol_SliderGrab, "accent")
+    theme_color(dpg.mvThemeCol_SliderGrabActive, "accent")
+    dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, 4, 4)
+    dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 6, 2)
+    dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 4, 2)
+    dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 3)
+    dpg.add_theme_style(dpg.mvStyleVar_GrabRounding, 2)
+
 with dpg.theme() as theme_seq_row_compact, dpg.theme_component(dpg.mvAll):
     # Tighter item spacing for the sequencer transport/beat-source row (e10s08):
     # the default 8 px between ~19 items pushed the row past the window width.
@@ -4577,13 +4678,15 @@ with dpg.window(label="MIDI", width=520, height=520, pos=(560, 320), tag="midi_w
     dpg.add_spacer(height=4)
     dpg.add_button(label="Save", callback=save_midi_controllers, width=80)
 
-# e16/e22: Mapper window — the body is rebuilt by refresh_mapper_ui() (menu
+# e16/e22/e23: Mapper window — the body is rebuilt by refresh_mapper_ui() (menu
 # open, create, delete, prune) as a stack of per-source rows. Hidden at boot and
 # never part of the saved layout (transient workspace, like Logs).
 # e20s02: only the mapping rows — no header line, and the scroll container is
 # borderless so no outer frame wraps the rows.
-# e22s02: horizontal_scrollbar so a source row wider than the window scrolls
-# instead of clipping (rows never wrap; the window keeps its size).
+# e23: compact theme (theme_mapper_compact) + the horizontal scrollbar is
+# created WITHOUT the always-on flag; refresh_mapper_ui rebuilds the scroll
+# child with horizontal_scrollbar only when a row overflows (DPG forces both
+# scrollbar tracks visible whenever the flag is on).
 with (
     dpg.window(
         label="Mapper",
@@ -4596,12 +4699,12 @@ with (
     dpg.child_window(
         height=MAPPER_WINDOW_HEIGHT - 8,
         border=False,
-        horizontal_scrollbar=True,
         tag="mapper_scroll",
     ),
     dpg.group(tag="mapper_mappings_group"),
 ):
     pass
+dpg.bind_item_theme("mapper_window", theme_mapper_compact)
 
 # NEW THREAD FOR HIGH-FREQUENCY FADES
 threading.Thread(target=fade_tick_loop, daemon=True).start()
