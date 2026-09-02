@@ -20,7 +20,7 @@ from PIL import Image
 from pythonosc import dispatcher, udp_client
 
 import viseqapp  # noqa: F401  scaffold hook (REFACTOR_LATEST.md commit 1): proves the package import path works at boot
-from viseqapp import mapper, state
+from viseqapp import leap, mapper, state
 from viseqapp.audio import (
     _set_band_variable,
     apply_spectrum_agc,
@@ -2921,6 +2921,41 @@ def on_leap_enable(sender: Any = None, app_data: Any = None, user_data: Any = No
     set_leap_enabled(bool(app_data))
 
 
+def _leap_monitor_set_text(tag: str, text: str) -> None:
+    """Update one leap-window text tag only when its rendered text changed (e26s02)."""
+    if state.leap_monitor_cache.get(tag) != text:
+        state.leap_monitor_cache[tag] = text
+        if dpg.does_item_exist(tag):
+            dpg.set_value(tag, text)
+
+
+def tick_leap_monitor() -> None:
+    """Refresh the Leap Motion window on the main loop (e26s02): status line +
+    live two-hand values from the worker snapshot, writing only on change.
+
+    No-op while the window does not exist or is hidden. Values are read under
+    state.leap_lock (shallow copy) and rendered via leap.format_value; an
+    absent hand or a disabled engine shows the placeholder (cache-gated, so a
+    still hand or an idle window costs nothing).
+    """
+    if not dpg.does_item_exist("leap_window"):
+        return
+    if not dpg.is_item_shown("leap_window"):
+        return
+    enabled = state.leap_enabled
+    _leap_monitor_set_text("leap_status_text", leap.leap_status_label(enabled, state.leap_status))
+    if enabled:
+        with state.leap_lock:
+            snapshot = dict(state.leap_values)
+    else:
+        snapshot = {}
+    for hand in leap.LEAP_HANDS:
+        for field in leap.LEAP_FIELDS:
+            raw = snapshot.get(f"{hand}.{field}") if enabled else None
+            text = leap.LEAP_MONITOR_PLACEHOLDER if raw is None else leap.format_value(field, raw)
+            _leap_monitor_set_text(f"leap_mon_{hand}_{field}", text)
+
+
 # ---------- e16/e22: Mapper (OSC property mappings -> per-source rows) ----------
 # e22s01: the body is one horizontal row per SOURCE — the source thumbnail at
 # the sequencer slot size, then that source's mapping mini-cards to the right.
@@ -4806,12 +4841,14 @@ with dpg.window(label="MIDI", width=520, height=520, pos=(560, 320), tag="midi_w
     dpg.add_spacer(height=4)
     dpg.add_button(label="Save", callback=save_midi_controllers, width=80)
 
-# WINDOW 8: Leap Motion (hidden; opened from the menubar Settings > "Leap Motion").
-# e26: Enable switch + device/service status live here; the LIVE two-hand value
-# monitor rows are added by e26s02 (tick_leap_monitor refreshes them on the main
-# thread). The window never touches the external leap package at import time.
+# WINDOW 8: Leap Motion (hidden; opened from Settings > "Leap Motion"). One
+# window hosts EVERYTHING (user request, e26s02): the Enable switch, the
+# device/service status line and the LIVE two-hand value monitor — static rows
+# built ONCE at construction (one row per snapshot field, both hands), refreshed
+# by tick_leap_monitor on the main thread. Never touches the external leap
+# package at import time.
 with dpg.window(
-    label="Leap Motion", width=460, height=300, pos=(560, 420), tag="leap_window", show=False
+    label="Leap Motion", width=560, height=680, pos=(560, 300), tag="leap_window", show=False
 ):
     dpg.add_checkbox(
         label="Enable Leap Motion",
@@ -4823,6 +4860,18 @@ with dpg.window(
     dpg.add_spacer(height=4)
     dpg.add_text("", tag="leap_status_text")
     dpg.add_spacer(height=4)
+    with dpg.child_window(height=560, tag="leap_monitor_scroll"), dpg.group(horizontal=True):
+        for hand in leap.LEAP_HANDS:
+            with dpg.group(tag=f"leap_mon_{hand}_col"):
+                themed_text(f"{hand.capitalize()} hand", slot="text_bright")
+                for field in leap.LEAP_FIELDS:
+                    meta = leap.leap_field(field)
+                    with dpg.group(horizontal=True):
+                        themed_text(meta["label"], slot="text_dim")
+                        dpg.add_text(
+                            leap.LEAP_MONITOR_PLACEHOLDER,
+                            tag=f"leap_mon_{hand}_{field}",
+                        )
 
 # e16/e22/e23/e24: Mapper window — the body is rebuilt by refresh_mapper_ui()
 # (menu open, create, delete, prune, resize) as a stack of wrapping source
@@ -4953,6 +5002,8 @@ try:
         tick_window_menu()  # e17: keep the Windows-menu list + active mark fresh
 
         tick_midi_learn_timeout()  # e18: expire stale MIDI Learn sessions (incl. mapper)
+
+        tick_leap_monitor()  # e26s02: live two-hand values in the Leap Motion window
 
         request_missing_thumbnails(time.time())
 

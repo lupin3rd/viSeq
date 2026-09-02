@@ -283,6 +283,11 @@ leap_values: dict[str, float] = {}
 leap_lock = threading.Lock()
 
 
+# e26s02: leap window tag -> last rendered text (main-thread only, avoids
+# re-writing unchanged monitor cells / the status line on every main tick).
+leap_monitor_cache: dict[str, str] = {}
+
+
 # e16: Mapper state — OSC property mappings (see viseqapp/mapper.py).
 # Each entry: {id, target_id, property, control, value}; ids come from the
 # monotonic counter (like monitor_player_counter).

@@ -185,6 +185,36 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
 # Digit order of hand.digits (thumb..pinky) maps onto the ext_* field names.
 _FINGER_FIELDS: tuple[str, ...] = ("thumb", "index", "middle", "ring", "pinky")
 
+# e26s02: placeholder the live monitor shows while a hand is absent (no key in
+# the snapshot) or the engine is disabled. ASCII hyphen: U+2014 em dash renders
+# as a fallback glyph in ProggyClean (e13s01 convention).
+LEAP_MONITOR_PLACEHOLDER: str = "-"
+
+
+def format_value(field: str, value: float) -> str:
+    """Render one snapshot value for the live monitor (e26s02).
+
+    Decimals and the unit suffix come from the field metadata: 87.1 mm,
+    0.43, 1.20 rad, 2.50 s, 1.
+    """
+    meta = leap_field(field)
+    text = f"{float(value):.{int(meta['decimals'])}f}"
+    suffix = str(meta.get("suffix") or "")
+    return f"{text} {suffix}" if suffix else text
+
+
+def leap_status_label(enabled: bool, status: str) -> str:
+    """Status line text for the Leap Motion window (e26s02)."""
+    if not enabled:
+        return "Disabled"
+    labels = {
+        "missing": "Leap library/service not available",
+        "disconnected": "Disconnected - retrying...",
+        "connected": "Connected - waiting for a hand...",
+        "tracking": "Tracking...",
+    }
+    return labels.get(status, status)
+
 
 def leap_field(field: str) -> dict[str, Any]:
     """The metadata entry for a snapshot field (KeyError = catalog bug)."""
