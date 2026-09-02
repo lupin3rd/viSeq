@@ -3688,7 +3688,10 @@ def leap_control_loop() -> None:
         try:
             connection = lib.Connection()
             connection.add_listener(_leap_listener(lib))
-            connection.open(auto_poll=True, timeout=3)
+            # NOTE: connection.open() is a @contextmanager — calling it without
+            # `with` is a silent no-op. connect() is the plain-method equivalent
+            # that keeps the connection open for this worker's keep-alive loop.
+            connection.connect(auto_poll=True, timeout=3)
             connection.set_tracking_mode(lib.TrackingMode.Desktop)
             state.leap_status = "connected"
             append_log("Leap", "connected")

@@ -11,6 +11,12 @@ Snapshot model: one flat dict of floats keyed ``"<hand>.<field>"``
 ``LEAP_FIELDS`` is the single metadata table: label/suffix/decimals for the
 live monitor (e26s02) plus ``bindable`` and the default input range for the
 mapper catalog (e26s03).
+
+DEVIATION (live-verified 2026-09-02, Gemini 5.17.1.0 + LMC fw 1.7.0): the
+service never populates LEAP_PALM.stabilized_position (it stays 0.0 even with
+a hand held still for 20 s while position/velocity read real values), so the
+``palm_*`` keys come from the RAW palm position (jitter accepted; rate-capped
+driving + remap ranges keep mappings usable).
 """
 
 from typing import Any
@@ -50,9 +56,6 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
         "input_from": 0.0,
         "input_to": 350.0,
     },
-    "rx": {"label": "Raw X", "suffix": "mm", "decimals": 1, "bindable": False},
-    "ry": {"label": "Raw Y", "suffix": "mm", "decimals": 1, "bindable": False},
-    "rz": {"label": "Raw Z", "suffix": "mm", "decimals": 1, "bindable": False},
     "vel_x": {
         "label": "Velocity X",
         "suffix": "mm/s",
@@ -234,24 +237,22 @@ def normalize_tracking_event(event: Any) -> dict[str, float]:
     """One flat float snapshot from a LeapC TrackingEvent.
 
     Keys are ``<hand>.<field>`` for EVERY present hand plus
-    ``<hand>.present = 1.0``. The stabilized palm position feeds the palm_*
-    keys (jitter-free) while the raw position lives under rx/ry/rz. A frame
-    with no hands yields an empty dict; absent hands produce no keys.
+    ``<hand>.present = 1.0``. The raw palm position feeds the palm_* keys
+    (stabilized_position is never populated by the Gemini 5.17.1.0 service on
+    the original controller — module docstring). A frame with no hands yields
+    an empty dict; absent hands produce no keys.
     """
     out: dict[str, float] = {}
     for hand in event.hands or []:
         side = _hand_side(hand)
         palm = hand.palm
-        stab, raw, vel, nrm = palm.stabilized_position, palm.position, palm.velocity, palm.normal
+        pos, vel, nrm = palm.position, palm.velocity, palm.normal
         out.update(
             {
                 f"{side}.present": 1.0,
-                f"{side}.palm_x": float(stab.x),
-                f"{side}.palm_y": float(stab.y),
-                f"{side}.palm_z": float(stab.z),
-                f"{side}.rx": float(raw.x),
-                f"{side}.ry": float(raw.y),
-                f"{side}.rz": float(raw.z),
+                f"{side}.palm_x": float(pos.x),
+                f"{side}.palm_y": float(pos.y),
+                f"{side}.palm_z": float(pos.z),
                 f"{side}.vel_x": float(vel.x),
                 f"{side}.vel_y": float(vel.y),
                 f"{side}.vel_z": float(vel.z),
