@@ -68,6 +68,14 @@ def add_mapping(target_id: str, prop: str, control: str) -> dict[str, Any]:
         "value": _midpoint(spec["min"], spec["max"]),
         "band": None,  # e18: audio-band source (2 or 3), exclusive with midi
         "midi": None,  # e18: learned MIDI source {device, type, number}
+        # e23: value remap. output_from/to = the OSC range the control travel
+        # sweeps (default = the vimix catalog range; editable to sub-ranges or
+        # reversed). input_from/to = the raw source range a bound band/MIDI
+        # source maps through (seeded on bind: band 0..1, MIDI 0..127).
+        "output_from": spec["min"],
+        "output_to": spec["max"],
+        "input_from": None,
+        "input_to": None,
     }
     state.mapper_mappings.append(mapping)
     return mapping
@@ -101,24 +109,56 @@ def prune_mappings(live_ids: set[str]) -> list[dict[str, Any]]:
 
 
 def set_mapping_value(mapping_id: int, value: float) -> None:
-    """Store a clamped value on the mapping (no OSC; e16s01)."""
+    """Store a clamped value on the mapping (no OSC; e16s01).
+
+    e23: the clamp bounds are the mapping's OUTPUT interval (min/max of the
+    output range), not the catalog range — the stored value is the output.
+    """
     mapping = find_mapping(mapping_id)
     if mapping is None:
         return
-    spec = _spec_of(mapping["property"])
-    mapping["value"] = _clamp(float(value), spec["min"], spec["max"])
+    lo, hi = _output_bounds(mapping)
+    mapping["value"] = _clamp(float(value), lo, hi)
+
+
+def set_mapping_output(mapping_id: int, out_from: float, out_to: float) -> None:
+    """Set the OSC output range of a mapping (e23); from > to reverses the sweep.
+
+    The stored value is re-clamped into the (possibly reversed) new interval.
+    """
+    mapping = find_mapping(mapping_id)
+    if mapping is None:
+        return
+    mapping["output_from"] = float(out_from)
+    mapping["output_to"] = float(out_to)
+    lo, hi = _output_bounds(mapping)
+    mapping["value"] = _clamp(mapping["value"], lo, hi)
+
+
+def _output_bounds(mapping: dict[str, Any]) -> tuple[float, float]:
+    """The sorted output interval of a mapping (e23): min/max of its range."""
+    return min(mapping["output_from"], mapping["output_to"]), max(
+        mapping["output_from"], mapping["output_to"]
+    )
 
 
 def toggle_mapping_value(mapping_id: int) -> float:
-    """Button behavior: flip the stored value between min and max; returns the new value."""
+    """Button behavior: flip the stored value between output_from (OFF) and
+    output_to (ON); returns the new value (e23s01).
+
+    First press (the default midpoint, neither end) turns the button ON
+    (output_to), matching the old 'first press = on' behaviour.
+    """
     mapping = find_mapping(mapping_id)
     if mapping is None:
         return 0.0
-    spec = _spec_of(mapping["property"])
-    low, high = spec["min"], spec["max"]
-    # Strict >: a mapping at the neutral midpoint (default) flips to max first
-    # (first press = "on"), then alternates min/max.
-    new_value = low if mapping["value"] > _midpoint(low, high) else high
+    frm, to = mapping["output_from"], mapping["output_to"]
+    if mapping["value"] == frm:
+        new_value = to
+    elif mapping["value"] == to:
+        new_value = frm
+    else:  # default/undetermined state: first press = ON
+        new_value = to
     mapping["value"] = new_value
     return new_value
 
@@ -187,17 +227,18 @@ def clear_mapping_source(mapping_id: int) -> None:
 
 
 def apply_unit_value(mapping_id: int, unit: float) -> float:
-    """Drive a mapping from a 0..1 unit value (band level / MIDI 0..127).
+    """Drive a mapping from a clamped 0..1 unit value (e18).
 
-    The unit value is remapped onto the property range (min + unit*(max-min)),
-    clamped, stored on the mapping and sent as OSC; returns the effective
-    value (0.0 for an unknown id). Worker-safe, HIGH-1.
+    e23: the unit is remapped onto the mapping's OUTPUT range
+    (output_from + unit*(output_to-output_from)), stored on the mapping and
+    sent as OSC; a reversed output range sweeps the other way. Returns the
+    effective value (0.0 for an unknown id). Worker-safe, HIGH-1.
     """
     mapping = find_mapping(mapping_id)
     if mapping is None:
         return 0.0
-    spec = _spec_of(mapping["property"])
-    value = spec["min"] + _clamp(unit, 0.0, 1.0) * (spec["max"] - spec["min"])
+    u = _clamp(unit, 0.0, 1.0)
+    value = mapping["output_from"] + u * (mapping["output_to"] - mapping["output_from"])
     mapping["value"] = value
     _send(mapping)
     return value

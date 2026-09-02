@@ -50,6 +50,7 @@ from viseqapp.constants import (
     LAYOUT_ALWAYS_HIDDEN_TAGS,
     LAYOUT_WINDOW_TAGS,
     LOG_HISTORY_LIMIT,
+    MAPPER_DRAG_W,
     MAPPER_MINI_W,
     MAPPER_ROW_H,
     MAPPER_ROW_THUMB_H,
@@ -2893,18 +2894,16 @@ def show_midi_window(sender: Any = None, app_data: Any = None, user_data: Any = 
 
 
 def _mapper_caption_spacer(label: str, spec: dict[str, Any]) -> int:
-    """Spacer width that right-aligns the value caption on a mini-card (e20s01, e22s01).
+    """Spacer width that right-aligns the X button on a mini-card caption (e20s01, e23s01).
 
-    The caption is ONE row: label + spacer + value + X. The spacer fills the gap so
-    the longest possible "%.2f" string of the property (min and max can differ
-    in sign/length, e.g. alpha -1.00..1.00 or posterize 1.00..256.00) ends flush
-    left of the X button, measured with the live font width. The budget subtracts
-    the X block (MAPPER_X_W + item spacing), so every catalog property fits on a
-    single caption row.
+    The caption is ONE row: label + spacer + X — the value text is gone (the
+    control itself shows the value). The spacer fills the gap so the X sits at
+    the card's right edge, measured with the live font width; the budget
+    subtracts the X block (MAPPER_X_W + item spacing), so every catalog
+    property label fits on a single caption row inside the control width.
     """
     char_px = _char_width_px()
-    value_px = char_px * max(len(f"{spec['min']:.2f}"), len(f"{spec['max']:.2f}"))
-    return max(2, MAPPER_MINI_W - 24 - char_px * len(label) - value_px - MAPPER_X_W - 4)
+    return max(2, MAPPER_MINI_W - 24 - char_px * len(label) - MAPPER_X_W)
 
 
 def _mapper_row_thumb(target_id: str, parent: Any) -> None:
@@ -2938,16 +2937,19 @@ def _mapper_row_thumb(target_id: str, parent: Any) -> None:
 
 
 def _render_mapper_card(mapping: dict[str, Any], parent: Any) -> None:
-    """One bordered mapping mini-card inside a source row (e22s01).
+    """One bordered mapping mini-card inside a source row (e22s01, e23s01).
 
-    The source thumbnail lives on the ROW (rendered once per source, before the
-    cards), so the mini-card holds the one-line caption — dim label left,
-    bright live value right, X delete button at the top-right corner — and the
-    control below it. Tags are unchanged so the band/MIDI drive, the right-click
-    source menu and delete keep working.
+    e23 anatomy (top to bottom): the caption row — dim property label left, X
+    delete button right (NO value text: the control shows the value) — then the
+    control spanning the full content width with the mapping's OUTPUT range,
+    then the small 'output:' from/to line. The 'input:' line (e23s02) follows
+    when a band or MIDI source is bound. Tags are unchanged so the band/MIDI
+    drive, the right-click source menu and delete keep working.
     """
     mid = mapping["id"]
     spec = mapper.MAPPER_PROPERTIES[mapping["property"]]
+    out_from = mapping["output_from"]
+    out_to = mapping["output_to"]
     with dpg.child_window(
         parent=parent,
         width=MAPPER_MINI_W,
@@ -2959,7 +2961,6 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any) -> None:
         with dpg.group(horizontal=True):
             themed_text(spec["label"], slot="text_dim", tag=f"mapper_prop_{mid}")
             dpg.add_spacer(width=_mapper_caption_spacer(spec["label"], spec))
-            themed_text(f"{mapping['value']:.2f}", slot="text_bright", tag=f"mapper_val_{mid}")
             dpg.add_button(
                 label="X",
                 width=MAPPER_X_W,
@@ -2970,18 +2971,18 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any) -> None:
             )
         if mapping["control"] == "slider":
             dpg.add_slider_float(
-                min_value=spec["min"],
-                max_value=spec["max"],
+                min_value=out_from,
+                max_value=out_to,
                 default_value=mapping["value"],
-                width=MAPPER_MINI_W - 24,
+                width=MAPPER_MINI_W - 16,
                 callback=on_mapper_control,
                 user_data=mid,
                 tag=f"mapper_slider_{mid}",
             )
         elif mapping["control"] == "knob":
             dpg.add_knob_float(
-                min_value=spec["min"],
-                max_value=spec["max"],
+                min_value=out_from,
+                max_value=out_to,
                 default_value=mapping["value"],
                 width=44,
                 callback=on_mapper_control,
@@ -2991,10 +2992,31 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any) -> None:
         else:
             dpg.add_button(
                 label=f"{spec['label']}: {mapping['value']:.2f}",
-                width=MAPPER_MINI_W - 24,
+                width=MAPPER_MINI_W - 16,
                 callback=on_mapper_button,
                 user_data=mid,
                 tag=f"mapper_btn_{mid}",
+            )
+        # e23s01: the OSC output range of the control travel (from/to)
+        with dpg.group(horizontal=True):
+            themed_text("output:", slot="text_dim")
+            dpg.add_drag_float(
+                default_value=out_from,
+                width=MAPPER_DRAG_W,
+                format="%.2f",
+                speed=0.01,
+                callback=on_mapper_output,
+                user_data=(mid, "from"),
+                tag=f"mapper_out_from_{mid}",
+            )
+            dpg.add_drag_float(
+                default_value=out_to,
+                width=MAPPER_DRAG_W,
+                format="%.2f",
+                speed=0.01,
+                callback=on_mapper_output,
+                user_data=(mid, "to"),
+                tag=f"mapper_out_to_{mid}",
             )
         _render_mapper_source_menu(mapping)
 
@@ -3048,8 +3070,11 @@ def clear_mapping_source(sender: Any = None, app_data: Any = None, user_data: An
 
 
 def _set_mapper_control_value(mapping_id: int, value: float) -> None:
-    """Move a mapping's control + caption from an external source (band/MIDI, e18)."""
-    _set_mapper_caption(mapping_id, value)
+    """Move a mapping's control widget from an external source (band/MIDI, e18).
+
+    e23s01: the value caption is gone — the control's own readout shows the
+    output value, so only the widget values are set here.
+    """
     for kind in ("slider", "knob"):
         tag = f"mapper_{kind}_{mapping_id}"
         if dpg.does_item_exist(tag):
@@ -3171,31 +3196,61 @@ def show_mapper_window(sender: Any = None, app_data: Any = None, user_data: Any 
     dpg.focus_item("mapper_window")  # e17: a shown window must come to the front
 
 
-def _set_mapper_caption(mid: int, value: float) -> None:
-    """Refresh a card's value caption after a control change."""
-    val_tag = f"mapper_val_{mid}"
-    if dpg.does_item_exist(val_tag):
-        dpg.set_value(val_tag, f"{value:.2f}")
-
-
 def on_mapper_control(sender: Any, app_data: Any, user_data: Any) -> None:
-    """Slider/knob change: send the clamped OSC value, refresh the caption."""
+    """Slider/knob change: send the clamped OUTPUT value (e23s01)."""
     mid = int(user_data)
-    value = mapper.send_mapping_value(mid, float(app_data))
-    _set_mapper_caption(mid, value)
+    mapper.send_mapping_value(mid, float(app_data))
 
 
 def on_mapper_button(sender: Any, app_data: Any, user_data: Any) -> None:
-    """Button press: toggle min/max, send OSC, refresh the card label + caption."""
+    """Button press: toggle output_from (OFF) / output_to (ON), send OSC, refresh the label."""
     mid = int(user_data)
     value = mapper.send_button_mapping(mid)
-    _set_mapper_caption(mid, value)
     mapping = mapper.find_mapping(mid)
     if mapping is not None:
         spec = mapper.MAPPER_PROPERTIES[mapping["property"]]
         btn_tag = f"mapper_btn_{mid}"
         if dpg.does_item_exist(btn_tag):
             dpg.configure_item(btn_tag, label=f"{spec['label']}: {value:.2f}")
+
+
+def _sync_mapper_control(mid: int) -> None:
+    """Reconfigure a mapping's control widget to its current output range (e23s01).
+
+    Called after an output-box edit so the control min/max follow the new
+    (possibly reversed) output range and the stored value stays inside it.
+    """
+    mapping = mapper.find_mapping(mid)
+    if mapping is None:
+        return
+    kind = mapping["control"]
+    tag = f"mapper_{kind}_{mid}"
+    if not dpg.does_item_exist(tag):
+        return
+    out_from = mapping["output_from"]
+    out_to = mapping["output_to"]
+    if kind in ("slider", "knob"):
+        dpg.configure_item(tag, min_value=out_from, max_value=out_to)
+        dpg.set_value(tag, mapping["value"])
+    else:  # button: its label shows the current output value
+        spec = mapper.MAPPER_PROPERTIES[mapping["property"]]
+        dpg.configure_item(tag, label=f"{spec['label']}: {mapping['value']:.2f}")
+
+
+def on_mapper_output(sender: Any, app_data: Any, user_data: Any) -> None:
+    """Drag an output from/to box: store the new output range and re-fit the control.
+
+    Reads BOTH boxes (the edited one via the sender, the other via get_value)
+    so the pair is always consistent; the control is reconfigured in place —
+    no full body rebuild (a refresh mid-drag would kill the drag).
+    """
+    mid, _edge = user_data
+    from_tag = f"mapper_out_from_{mid}"
+    to_tag = f"mapper_out_to_{mid}"
+    out_from = float(dpg.get_value(from_tag))
+    out_to = float(dpg.get_value(to_tag))
+    mapper.set_mapping_output(mid, out_from, out_to)
+    _sync_mapper_control(mid)
 
 
 def delete_mapping(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
