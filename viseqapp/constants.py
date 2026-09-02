@@ -151,12 +151,13 @@ MONITOR_SPEED_TEXT_SIZE = 12  # px font size of the speed label inside the disc
 # e16/e20/e22/e23: Mapper window geometry — the body is a vertical stack of
 # source rows (e22s01): one horizontal line per vimix source = the source
 # thumbnail at the sequencer slot size (110x70, bare) + one bordered mini-card
-# per mapping. e23: the mini-card grows — caption (label + X) above a control
+# per mapping. e23: each mini-card holds — caption (label + X) above a control
 # that spans the content width, then the 'output:' from/to line and the
-# 'input:' from/to line (visible when a source is bound) under it; MAPPER_ROW_H
-# fits all four lines + the 44 px knob, MAPPER_MINI_W fits label+X and
-# 'output:' + two drag boxes within the control width (measured, ProggyClean
-# 7 px/char on DPG 2.3.1: widest label 'Transparency' = 84 px).
+# 'input:' from/to line (visible when a source is bound) under it. Each row is
+# sized to its OWN content (see _mapper_row_height): slider rows are short,
+# knob rows taller — no dead space under the lines. MAPPER_MINI_W fits label+X
+# and 'output:' + two drag boxes within the control width (measured,
+# ProggyClean 7 px/char on DPG 2.3.1: widest label 'Transparency' = 84 px).
 MAPPER_WINDOW_WIDTH = 660
 
 
@@ -169,7 +170,21 @@ MAPPER_ROW_THUMB_W = SLOT_BUTTON_WIDTH  # px width of the row thumbnail (= the s
 MAPPER_ROW_THUMB_H = SLOT_BUTTON_HEIGHT  # px height of the row thumbnail
 
 
-MAPPER_ROW_H = 140  # px height of one source row / mapping mini-card
+# e23 measured layout (DearPyGui 2.3.1): a text/slider/drag/button row is 19 px
+# tall, the knob is a fixed 44 px, the item spacing is 4 px and the bordered
+# child content inset is 8 px top + 8 px bottom. Source rows size their
+# mini-cards to their CONTENT (see _mapper_row_height) so no dead space shows
+# under the 'output:'/'input:' lines.
+MAPPER_LINE_H = 19
+
+
+MAPPER_KNOB_H = 44
+
+
+MAPPER_ROW_GAP = 4
+
+
+MAPPER_ROW_PAD_V = 16
 
 
 MAPPER_MINI_W = 190  # px width of one mapping mini-card

@@ -51,8 +51,11 @@ from viseqapp.constants import (
     LAYOUT_WINDOW_TAGS,
     LOG_HISTORY_LIMIT,
     MAPPER_DRAG_W,
+    MAPPER_KNOB_H,
+    MAPPER_LINE_H,
     MAPPER_MINI_W,
-    MAPPER_ROW_H,
+    MAPPER_ROW_GAP,
+    MAPPER_ROW_PAD_V,
     MAPPER_ROW_THUMB_H,
     MAPPER_ROW_THUMB_W,
     MAPPER_WINDOW_HEIGHT,
@@ -2906,23 +2909,41 @@ def _mapper_caption_spacer(label: str, spec: dict[str, Any]) -> int:
     return max(2, MAPPER_MINI_W - 24 - char_px * len(label) - MAPPER_X_W)
 
 
-def _mapper_row_thumb(target_id: str, parent: Any) -> None:
+def _mapper_row_height(mappings: list[dict[str, Any]]) -> int:
+    """Compact uniform height for one source row (e23 bugfix).
+
+    Fits the tallest mini-card in the row: child padding + the caption line +
+    the control (the knob is a fixed 44 px, taller than a 19 px slider/button
+    row) + the 'output:' line + the 'input:' line when ANY card in the row has
+    a bound source. Rows of plain sliders get short cards instead of a fixed
+    tall box — no dead space under the lines (measured on DPG 2.3.1).
+    """
+    control = MAPPER_KNOB_H if any(m["control"] == "knob" for m in mappings) else MAPPER_LINE_H
+    height = (
+        MAPPER_ROW_PAD_V + MAPPER_LINE_H + MAPPER_ROW_GAP + control + MAPPER_ROW_GAP + MAPPER_LINE_H
+    )
+    if any(m.get("band") is not None or m.get("midi") is not None for m in mappings):
+        height += MAPPER_ROW_GAP + MAPPER_LINE_H
+    return height
+
+
+def _mapper_row_thumb(target_id: str, parent: Any, height: int) -> None:
     """The source thumbnail slot at the start of a mapper row (e22s01).
 
-    A fixed-width slot as tall as the row (MAPPER_ROW_H) with the sequencer-size
-    thumbnail (110x70) vertically centered inside, so the image aligns with the
-    mini-card content next to it; when no texture exists yet the slot shows a
-    "no thumb" placeholder (same footprint, rows stay aligned).
+    A fixed-width slot as tall as the row with the sequencer-size thumbnail
+    (110x70) vertically centered inside, so the image aligns with the mini-card
+    content next to it; when no texture exists yet the slot shows a "no thumb"
+    placeholder (same footprint, rows stay aligned).
     """
     with dpg.child_window(
         parent=parent,
         width=MAPPER_ROW_THUMB_W,
-        height=MAPPER_ROW_H,
+        height=height,
         border=False,
         no_scrollbar=True,
         tag=f"mapper_row_thumb_{target_id}",
     ):
-        dpg.add_spacer(height=(MAPPER_ROW_H - MAPPER_ROW_THUMB_H) // 2)
+        dpg.add_spacer(height=max(0, (height - MAPPER_ROW_THUMB_H) // 2))
         tex_tags = thumbnails_data.get(target_id)
         if tex_tags:
             tex_tag = tex_tags[0]
@@ -2936,15 +2957,17 @@ def _mapper_row_thumb(target_id: str, parent: Any) -> None:
         themed_text("no thumb", slot="text_dim")
 
 
-def _render_mapper_card(mapping: dict[str, Any], parent: Any) -> None:
+def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> None:
     """One bordered mapping mini-card inside a source row (e22s01, e23s01).
 
     e23 anatomy (top to bottom): the caption row — dim property label left, X
     delete button right (NO value text: the control shows the value) — then the
     control spanning the full content width with the mapping's OUTPUT range,
     then the small 'output:' from/to line. The 'input:' line (e23s02) follows
-    when a band or MIDI source is bound. Tags are unchanged so the band/MIDI
-    drive, the right-click source menu and delete keep working.
+    when a band or MIDI source is bound. The card height is the row height
+    (per-content, see _mapper_row_height). Tags are unchanged so the band/MIDI
+    drive and delete keep working; the right-click source menu lives on the
+    CARD (buttons cannot host DPG handler registries).
     """
     mid = mapping["id"]
     spec = mapper.MAPPER_PROPERTIES[mapping["property"]]
@@ -2953,7 +2976,7 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any) -> None:
     with dpg.child_window(
         parent=parent,
         width=MAPPER_MINI_W,
-        height=MAPPER_ROW_H,
+        height=height,
         border=True,
         no_scrollbar=True,
         tag=f"mapper_card_{mid}",
@@ -2999,7 +3022,7 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any) -> None:
             )
         # e23s01: the OSC output range of the control travel (from/to)
         with dpg.group(horizontal=True):
-            themed_text("output:", slot="text_dim")
+            themed_text("output:", slot="text_dim", tag=f"mapper_out_lbl_{mid}")
             dpg.add_drag_float(
                 default_value=out_from,
                 width=MAPPER_DRAG_W,
@@ -3023,7 +3046,7 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any) -> None:
             in_from = mapping.get("input_from")
             in_to = mapping.get("input_to")
             with dpg.group(horizontal=True):
-                themed_text("input:", slot="text_dim")
+                themed_text("input:", slot="text_dim", tag=f"mapper_in_lbl_{mid}")
                 dpg.add_drag_float(
                     default_value=in_from if in_from is not None else 0.0,
                     width=MAPPER_DRAG_W,
@@ -3046,15 +3069,29 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any) -> None:
 
 
 def _render_mapper_source_menu(mapping: dict[str, Any]) -> None:
-    """Right-click menu on a mapper control: Band 2/3 / MIDI Learn / Clear (e18).
+    """Right-click source menu on a mini-card (e18, e23 bugfix).
 
-    The menu lives on the CONTROL widget (slider/knob/button); the ACTIVE source
-    is marked with a checkmark. Band and MIDI sources are mutually exclusive
-    (see mapper.set_mapping_band).
+    DearPyGui's dpg.popup() cannot attach to a BUTTON control (buttons cannot
+    host the handler registry popup builds -> 1005 at refresh, which aborts the
+    whole body and hides every card after it) and child windows reject its
+    clicked handler (1000). So, like the Mediagrid tiles, the menu is a popup
+    WINDOW shown by a per-card item-handler registry bound to every card
+    child (all item types host an item-clicked registry on DPG 2.3.1):
+    right-clicking anywhere on the bordered card opens Band 2/3 / MIDI Learn /
+    Clear source. The ACTIVE source is marked with a checkmark; band and MIDI
+    sources are mutually exclusive (see mapper.set_mapping_band).
     """
     mid = mapping["id"]
-    control_tag = f"mapper_{mapping['control']}_{mid}"
-    with dpg.popup(control_tag, mousebutton=dpg.mvMouseButton_Right):
+    # the control tag is mapper_slider_N / mapper_knob_N / mapper_BTN_N
+    # ('btn' — building it from the control name would look for the
+    # nonexistent mapper_button_N and abort the whole refresh).
+    control_kind = "btn" if mapping["control"] == "button" else mapping["control"]
+    menu_tag = f"mapper_menu_{mid}"
+    reg_tag = f"mapper_menu_reg_{mid}"
+    for stale in (menu_tag, reg_tag):
+        if dpg.does_item_exist(stale):
+            dpg.delete_item(stale)
+    with dpg.window(popup=True, show=False, no_title_bar=True, autosize=True, tag=menu_tag):
         dpg.add_menu_item(
             label="Map Band 2",
             check=True,
@@ -3078,6 +3115,29 @@ def _render_mapper_source_menu(mapping: dict[str, Any]) -> None:
         )
         dpg.add_separator()
         dpg.add_menu_item(label="Clear source", callback=clear_mapping_source, user_data=mid)
+    with dpg.item_handler_registry(tag=reg_tag):
+        dpg.add_item_clicked_handler(1, callback=lambda *_, m=mid: _show_mapper_menu(m))
+    for tag in (
+        f"mapper_prop_{mid}",
+        f"mapper_del_{mid}",
+        f"mapper_{control_kind}_{mid}",
+        f"mapper_out_lbl_{mid}",
+        f"mapper_out_from_{mid}",
+        f"mapper_out_to_{mid}",
+        f"mapper_in_lbl_{mid}",
+        f"mapper_in_from_{mid}",
+        f"mapper_in_to_{mid}",
+    ):
+        if dpg.does_item_exist(tag):
+            dpg.bind_item_handler_registry(tag, reg_tag)
+
+
+def _show_mapper_menu(mid: int) -> None:
+    """Open the right-click source menu of a mini-card at the cursor (e18)."""
+    menu_tag = f"mapper_menu_{mid}"
+    if dpg.does_item_exist(menu_tag):
+        dpg.set_item_pos(menu_tag, dpg.get_mouse_pos())
+        dpg.show_item(menu_tag)
 
 
 def set_mapping_band(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -3213,9 +3273,10 @@ def refresh_mapper_ui() -> None:
         rows.setdefault(mapping["target_id"], []).append(mapping)
     for target_id, mappings in rows.items():
         row = dpg.add_group(horizontal=True, parent="mapper_mappings_group")
-        _mapper_row_thumb(target_id, parent=row)
+        row_height = _mapper_row_height(mappings)
+        _mapper_row_thumb(target_id, parent=row, height=row_height)
         for mapping in mappings:
-            _render_mapper_card(mapping, parent=row)
+            _render_mapper_card(mapping, parent=row, height=row_height)
 
 
 def show_mapper_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
