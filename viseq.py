@@ -1606,11 +1606,12 @@ def advance_thumb_cycle(
 def _thumb_cycle_active() -> bool:
     """True while any thumbnail consumer window is visible (e10s05 gate).
 
-    The Mediagrid, the sequencer and every monitor player window each show
-    per-source thumbnails; cycling runs while at least one of them is open so
-    the animation follows the media wherever it is applied.
+    The Mediagrid, the sequencer, every monitor player window and the Mapper
+    each show per-source thumbnails; cycling runs while at least one of them
+    is open so the animation follows the media wherever it is applied
+    (e25s01: an open Mapper alone keeps the cycle running).
     """
-    for tag in ("vimix_media_window", "sequencer_window"):
+    for tag in ("vimix_media_window", "sequencer_window", "mapper_window"):
         if dpg.does_item_exist(tag) and dpg.is_item_shown(tag):
             return True
     for p in monitor_players:
@@ -1629,6 +1630,10 @@ def _apply_cycle_frame(target_id: str, tex_tag: str) -> None:
     img_tag = f"img_{target_id}"
     if dpg.does_item_exist(img_tag):
         dpg.configure_item(img_tag, texture_tag=tex_tag)
+    # e25s01: the Mapper row thumbnail cycles on the same cadence
+    mapper_img_tag = f"mapper_row_img_{target_id}"
+    if dpg.does_item_exist(mapper_img_tag):
+        dpg.configure_item(mapper_img_tag, texture_tag=tex_tag)
     for r, track in enumerate(tracks_data):
         if track.get("target_id") == target_id:
             slot_tag = f"seq_thumb_{r}"
@@ -2974,6 +2979,7 @@ def _mapper_row_thumb(target_id: str, parent: Any, height: int) -> None:
                     texture_tag=tex_tag,
                     width=MAPPER_ROW_THUMB_W,
                     height=MAPPER_ROW_THUMB_H,
+                    tag=f"mapper_row_img_{target_id}",  # e25: stable tag for the frame cycle
                 )
                 return
         themed_text("no thumb", slot="text_dim")
