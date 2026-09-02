@@ -231,7 +231,8 @@ DEFAULT_MONITOR_PROPS = ["alpha", "seek", "speed"]  # requested when a monitor s
 # viseq application version — single source of truth (matches specs/release-plan.yaml, e08s02).
 # e13s01: this is the first real release of viSeq (user decision).
 # e20s03: 0.2.0 — viseqapp refactor + controller profiles + new project + Mapper family.
-APP_VERSION: str = "0.2.0"
+# 0.3.0 — Mapper family (rows/remap/enable/cycle), compact Vimix-sources grid, windows, XDG.
+APP_VERSION: str = "0.3.0"
 
 # Author's GitHub profile, shown as a link in the About window (e08s01, user request).
 GITHUB_URL: str = "https://github.com/lupin3rd"
