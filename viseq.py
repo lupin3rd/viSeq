@@ -4418,11 +4418,13 @@ with dpg.window(label="MIDI", width=520, height=520, pos=(560, 320), tag="midi_w
     dpg.add_spacer(height=4)
     dpg.add_button(label="Save", callback=save_midi_controllers, width=80)
 
-# e16: Mapper window — compact grid of OSC property mapping cards; the body is
-# rebuilt by refresh_mapper_ui() (menu open, create, delete, prune). Hidden at
-# boot and never part of the saved layout (transient workspace, like Logs).
-# e20s02: only the mapping cards — no header line, and the scroll
-# container is borderless so no outer frame wraps the grid.
+# e16/e22: Mapper window — the body is rebuilt by refresh_mapper_ui() (menu
+# open, create, delete, prune) as a stack of per-source rows. Hidden at boot and
+# never part of the saved layout (transient workspace, like Logs).
+# e20s02: only the mapping rows — no header line, and the scroll container is
+# borderless so no outer frame wraps the rows.
+# e22s02: horizontal_scrollbar so a source row wider than the window scrolls
+# instead of clipping (rows never wrap; the window keeps its size).
 with (
     dpg.window(
         label="Mapper",
@@ -4432,7 +4434,12 @@ with (
         tag="mapper_window",
         show=False,
     ),
-    dpg.child_window(height=MAPPER_WINDOW_HEIGHT - 8, border=False, tag="mapper_scroll"),
+    dpg.child_window(
+        height=MAPPER_WINDOW_HEIGHT - 8,
+        border=False,
+        horizontal_scrollbar=True,
+        tag="mapper_scroll",
+    ),
     dpg.group(tag="mapper_mappings_group"),
 ):
     pass
