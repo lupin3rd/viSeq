@@ -16,6 +16,8 @@ venv/
 # AppImage build artifacts (e21s02)
 dist/
 .appimage-cache/
+# Local AppImage build tooling — kept local only (release repo stays minimal)
+scripts/
 
 # Gate tooling caches (G6)
 .mypy_cache/
