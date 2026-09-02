@@ -148,30 +148,36 @@ MONITOR_DISC_RPM = 33.0  # disc rotations per minute at speed 1.0 (vinyl standar
 MONITOR_SPEED_TEXT_SIZE = 12  # px font size of the speed label inside the disc
 
 
-# e16/e20: Mapper window geometry + card layout (compact by design). Cards sit in a
-# grid whose column count derives from the window width (see _mapper_columns).
-# e20s01: cards grew (118x132 -> 150x146) to fit a REAL source thumbnail
-# (46x26 -> 100x56, ~16:9 like the Mediagrid 115x65) plus a one-line caption;
-# the window width keeps the same 4 columns per row ((660-20)/156 = 4.10).
+# e16/e20/e22: Mapper window geometry — the body is a vertical stack of source
+# rows (e22s01): one horizontal line per vimix source = the source thumbnail at
+# the sequencer slot size (110x70, bare) + one bordered mini-card per mapping.
+# MAPPER_ROW_H is a little taller than the thumbnail (fits the one-line caption
+# + the fixed 44 px knob + child padding); MAPPER_MINI_W fits the caption row
+# (label + spacer + value + the 18 px X block) for every catalog property,
+# measured against real DearPyGui 2.3.1 (widest: "Transparency" + posterize
+# 256.00 -> 180 px leaves an 8 px spacer).
 MAPPER_WINDOW_WIDTH = 660
 
 
 MAPPER_WINDOW_HEIGHT = 460
 
 
-MAPPER_CARD_W = 150  # px width of one mapping card
+MAPPER_ROW_THUMB_W = SLOT_BUTTON_WIDTH  # px width of the row thumbnail (= the sequencer slot)
 
 
-MAPPER_CARD_H = 146  # px height of one mapping card (fits the 44 px knob)
+MAPPER_ROW_THUMB_H = SLOT_BUTTON_HEIGHT  # px height of the row thumbnail
 
 
-MAPPER_THUMB_W = 100  # px width of the source thumbnail on a card (~16:9)
+MAPPER_ROW_H = 90  # px height of one source row / mapping mini-card
 
 
-MAPPER_THUMB_H = 56  # px height of the source thumbnail on a card (~16:9)
+MAPPER_MINI_W = 180  # px width of one mapping mini-card (caption + X block fit)
 
 
-MAPPER_CARD_STRIDE = 156  # px horizontal pitch (card + gutter) for the column math
+MAPPER_X_W = 18  # px width of the X delete button on a mini-card caption row
+
+
+MAPPER_X_H = 18  # px height of the X delete button
 
 
 VIOSC_IP = "127.0.0.1"

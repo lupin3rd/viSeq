@@ -50,13 +50,14 @@ from viseqapp.constants import (
     LAYOUT_ALWAYS_HIDDEN_TAGS,
     LAYOUT_WINDOW_TAGS,
     LOG_HISTORY_LIMIT,
-    MAPPER_CARD_H,
-    MAPPER_CARD_STRIDE,
-    MAPPER_CARD_W,
-    MAPPER_THUMB_H,
-    MAPPER_THUMB_W,
+    MAPPER_MINI_W,
+    MAPPER_ROW_H,
+    MAPPER_ROW_THUMB_H,
+    MAPPER_ROW_THUMB_W,
     MAPPER_WINDOW_HEIGHT,
     MAPPER_WINDOW_WIDTH,
+    MAPPER_X_H,
+    MAPPER_X_W,
     MEDIA_ALPHA_SLIDER_W,
     MEDIA_BADGE_H,
     MEDIA_BADGE_W,
@@ -2886,77 +2887,91 @@ def show_midi_window(sender: Any = None, app_data: Any = None, user_data: Any = 
     dpg.focus_item("midi_window")  # e17: a shown window must come to the front
 
 
-# ---------- e16: Mapper (OSC property mappings -> compact controls) ----------
-def _mapper_columns() -> int:
-    """Number of mapping cards per row, derived from the current window width."""
-    width = dpg.get_item_width("mapper_window")
-    if not width:
-        width = MAPPER_WINDOW_WIDTH
-    return max(1, int((width - 20) / MAPPER_CARD_STRIDE))
-
-
-def _mapper_card_thumb(target_id: str) -> None:
-    """The tiny source thumbnail on a card; a placeholder when none exists yet."""
-    tex_tags = thumbnails_data.get(target_id)
-    if tex_tags:
-        tex_tag = tex_tags[0]
-        if dpg.does_item_exist(tex_tag):
-            dpg.add_image(texture_tag=tex_tag, width=MAPPER_THUMB_W, height=MAPPER_THUMB_H)
-            return
-    themed_text("no thumb", slot="text_dim")
+# ---------- e16/e22: Mapper (OSC property mappings -> per-source rows) ----------
+# e22s01: the body is one horizontal row per SOURCE — the source thumbnail at
+# the sequencer slot size, then that source's mapping mini-cards to the right.
 
 
 def _mapper_caption_spacer(label: str, spec: dict[str, Any]) -> int:
-    """Spacer width that right-aligns the value caption on a card (e20s01).
+    """Spacer width that right-aligns the value caption on a mini-card (e20s01, e22s01).
 
-    The caption is ONE row: label + spacer + value. The spacer fills the gap so
+    The caption is ONE row: label + spacer + value + X. The spacer fills the gap so
     the longest possible "%.2f" string of the property (min and max can differ
-    in sign/length, e.g. alpha -1.00..1.00 or posterize 1.00..256.00) ends
-    flush at the card's right edge, measured with the live font width.
+    in sign/length, e.g. alpha -1.00..1.00 or posterize 1.00..256.00) ends flush
+    left of the X button, measured with the live font width. The budget subtracts
+    the X block (MAPPER_X_W + item spacing), so every catalog property fits on a
+    single caption row.
     """
     char_px = _char_width_px()
     value_px = char_px * max(len(f"{spec['min']:.2f}"), len(f"{spec['max']:.2f}"))
-    return max(2, MAPPER_CARD_W - 24 - char_px * len(label) - value_px)
+    return max(2, MAPPER_MINI_W - 24 - char_px * len(label) - value_px - MAPPER_X_W - 4)
+
+
+def _mapper_row_thumb(target_id: str, parent: Any) -> None:
+    """The source thumbnail slot at the start of a mapper row (e22s01).
+
+    A fixed slot at the sequencer thumbnail size holding the source's first
+    texture; when no texture exists yet the slot shows a "no thumb" placeholder,
+    so every row keeps the same footprint and the mini-cards align across rows.
+    """
+    with dpg.child_window(
+        parent=parent,
+        width=MAPPER_ROW_THUMB_W,
+        height=MAPPER_ROW_THUMB_H,
+        border=False,
+        no_scrollbar=True,
+        tag=f"mapper_row_thumb_{target_id}",
+    ):
+        tex_tags = thumbnails_data.get(target_id)
+        if tex_tags:
+            tex_tag = tex_tags[0]
+            if dpg.does_item_exist(tex_tag):
+                dpg.add_image(
+                    texture_tag=tex_tag,
+                    width=MAPPER_ROW_THUMB_W,
+                    height=MAPPER_ROW_THUMB_H,
+                )
+                return
+        themed_text("no thumb", slot="text_dim")
 
 
 def _render_mapper_card(mapping: dict[str, Any], parent: Any) -> None:
-    """One compact mapping card: thumbnail + X, one-line caption, the control.
+    """One bordered mapping mini-card inside a source row (e22s01).
 
-    Row order (e20s01): the source thumbnail (full card width) with the X
-    delete button, then the property caption (label left, value right on a
-    single row), then the control. Tags are unchanged so the band/MIDI drive
-    and the source menu keep working.
+    The source thumbnail lives on the ROW (rendered once per source, before the
+    cards), so the mini-card holds the one-line caption — dim label left,
+    bright live value right, X delete button at the top-right corner — and the
+    control below it. Tags are unchanged so the band/MIDI drive, the right-click
+    source menu and delete keep working.
     """
     mid = mapping["id"]
     spec = mapper.MAPPER_PROPERTIES[mapping["property"]]
     with dpg.child_window(
         parent=parent,
-        width=MAPPER_CARD_W,
-        height=MAPPER_CARD_H,
+        width=MAPPER_MINI_W,
+        height=MAPPER_ROW_H,
         border=True,
         no_scrollbar=True,
         tag=f"mapper_card_{mid}",
     ):
         with dpg.group(horizontal=True):
-            _mapper_card_thumb(mapping["target_id"])
+            themed_text(spec["label"], slot="text_dim", tag=f"mapper_prop_{mid}")
+            dpg.add_spacer(width=_mapper_caption_spacer(spec["label"], spec))
+            themed_text(f"{mapping['value']:.2f}", slot="text_bright", tag=f"mapper_val_{mid}")
             dpg.add_button(
                 label="X",
-                width=18,
-                height=18,
+                width=MAPPER_X_W,
+                height=MAPPER_X_H,
                 callback=delete_mapping,
                 user_data=mid,
                 tag=f"mapper_del_{mid}",
             )
-        with dpg.group(horizontal=True):
-            themed_text(spec["label"], slot="text_dim", tag=f"mapper_prop_{mid}")
-            dpg.add_spacer(width=_mapper_caption_spacer(spec["label"], spec))
-            themed_text(f"{mapping['value']:.2f}", slot="text_bright", tag=f"mapper_val_{mid}")
         if mapping["control"] == "slider":
             dpg.add_slider_float(
                 min_value=spec["min"],
                 max_value=spec["max"],
                 default_value=mapping["value"],
-                width=MAPPER_CARD_W - 24,
+                width=MAPPER_MINI_W - 24,
                 callback=on_mapper_control,
                 user_data=mid,
                 tag=f"mapper_slider_{mid}",
@@ -2974,7 +2989,7 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any) -> None:
         else:
             dpg.add_button(
                 label=f"{spec['label']}: {mapping['value']:.2f}",
-                width=MAPPER_CARD_W - 24,
+                width=MAPPER_MINI_W - 24,
                 callback=on_mapper_button,
                 user_data=mid,
                 tag=f"mapper_btn_{mid}",
@@ -3114,7 +3129,15 @@ def tick_midi_learn_timeout() -> None:
 
 
 def refresh_mapper_ui() -> None:
-    """Rebuild the Mapper window body from state.mapper_mappings (main thread)."""
+    """Rebuild the Mapper window body from state.mapper_mappings (main thread).
+
+    e22s01: the body is a vertical stack of SOURCE ROWS. Rows derive from the
+    flat mapping list at every rebuild — one horizontal row per distinct
+    target_id in first-appearance order, mappings inside in list (creation)
+    order, each row leading with its source thumbnail slot. A source whose
+    last mapping was deleted produces no row, so its whole line (thumbnail
+    included) disappears on the redraw.
+    """
     if not dpg.does_item_exist("mapper_mappings_group"):
         return
     dpg.delete_item("mapper_mappings_group", children_only=True)
@@ -3128,13 +3151,14 @@ def refresh_mapper_ui() -> None:
             parent="mapper_mappings_group",
         )
         return
-    # e20s02: cards sit in horizontal row groups (fixed-width child windows
-    # align across rows) — the old table grid drew an outer frame and shipped
-    # its own right-click menu that fought the per-card popup.
-    cols = _mapper_columns()
-    for i in range(0, len(state.mapper_mappings), cols):
+    # group the flat list by source; dict order = first appearance of the source
+    rows: dict[str, list[dict[str, Any]]] = {}
+    for mapping in state.mapper_mappings:
+        rows.setdefault(mapping["target_id"], []).append(mapping)
+    for target_id, mappings in rows.items():
         row = dpg.add_group(horizontal=True, parent="mapper_mappings_group")
-        for mapping in state.mapper_mappings[i : i + cols]:
+        _mapper_row_thumb(target_id, parent=row)
+        for mapping in mappings:
             _render_mapper_card(mapping, parent=row)
 
 
