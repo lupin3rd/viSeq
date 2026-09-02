@@ -92,7 +92,7 @@ ui_task_queue: queue.Queue[Callable[[], None]] = (
 )  # UI mutations from worker threads, drained on the main thread
 
 
-_media_cell_cache: dict[str, str] = {}
+_media_cell_cache: dict[str, str | float] = {}
 
 
 global_vimix_state: dict[str, Any] = {"current_source": None, "sources": {}}

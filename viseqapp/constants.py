@@ -81,15 +81,35 @@ SLOT_BUTTON_INDENT = (SLOT_WIDTH - SLOT_BUTTON_WIDTH) // 2
 SLOT_BUTTON_TOP_SPACER = (SLOT_HEIGHT - SLOT_BUTTON_HEIGHT) // 2 - SLOT_BUTTON_FRAME_INSET
 
 
-# Mediagrid tile: index badge box + compact layout (audit L-6)
-# e10s06: the tile title fits at most two wrapped lines, truncated with an ellipsis
-MEDIA_BADGE_W = 28  # px width of the media-index badge button
+# Mediagrid tile: index badge overlay + compact layout (audit L-6)
+# e10s06: the tile title fits at most two wrapped lines, truncated with an ellipsis.
+# The title font is ProggyTiny (monospace, pixel family of the default ProggyClean):
+# at 9 px its line height equals the font size and the advance is ~5.4 px.
+MEDIA_TITLE_FONT_SIZE = 10  # px font size of the media tile title
 
 
-MEDIA_BADGE_H = 20  # px height of the media-index badge button
+MEDIA_TITLE_CHARS_PER_LINE = 20  # ProggyTiny-10 wrap capacity at MEDIA_TITLE_WRAP (measured)
 
 
-MEDIA_TILE_H = 146  # px height of a media tile (title + photo + badge row)
+MEDIA_TITLE_RESERVE_PX = 7  # net layout step per wrapped title line (DPG 2.3.1 measured)
+
+
+MEDIA_TILE_PAD = 5  # px uniform WindowPadding of a media tile (equal gaps all around)
+
+
+MEDIA_TITLE_GAP = 2  # px base gap between the tile title and the thumbnail row
+
+
+MEDIA_BADGE_W = 28  # px width of the media-index badge overlay on the thumbnail
+
+
+MEDIA_BADGE_H = 20  # px height of the media-index badge overlay on the thumbnail
+
+
+MEDIA_TILE_H = 104  # px height of a media tile (two-line title + thumbnail + alpha slider)
+
+
+MEDIA_ALPHA_SLIDER_W = 10  # px width of the thin vertical alpha slider on a tile
 
 
 MEDIA_TITLE_WRAP = 125  # px wrap width of the media tile title

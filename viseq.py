@@ -9,6 +9,7 @@ import threading
 import time
 from collections.abc import Callable
 from functools import partial
+from pathlib import Path
 from typing import Any
 
 import dearpygui.dearpygui as dpg
@@ -56,12 +57,18 @@ from viseqapp.constants import (
     MAPPER_THUMB_W,
     MAPPER_WINDOW_HEIGHT,
     MAPPER_WINDOW_WIDTH,
+    MEDIA_ALPHA_SLIDER_W,
     MEDIA_BADGE_H,
     MEDIA_BADGE_W,
     MEDIA_TILE_H,
+    MEDIA_TILE_PAD,
     MEDIA_TITLE_CHAR_PX,
+    MEDIA_TITLE_CHARS_PER_LINE,
     MEDIA_TITLE_ELLIPSIS,
+    MEDIA_TITLE_FONT_SIZE,
+    MEDIA_TITLE_GAP,
     MEDIA_TITLE_MAX_LINES,
+    MEDIA_TITLE_RESERVE_PX,
     MEDIA_TITLE_WRAP,
     MIDI_ACTION_BEAT_SOURCE,
     MIDI_ACTION_MAPPER_MAPPING,
@@ -229,6 +236,16 @@ _HELP_MONO_FONT_PATHS: tuple[str, ...] = (
     "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
 )
 _help_mono_font: Any = None
+
+# Compact monospace font for the Mediagrid tile titles (ProggyTiny: the pixel-font
+# family of DPG's default ProggyClean, but smaller; its line height equals the font
+# size, so a two-line title stays tight). Bundled under viseqapp/assets so packaged
+# builds carry it; if missing the title falls back to the default 13 px font.
+_TILE_TITLE_FONT_PATHS: tuple[str, ...] = (
+    str(Path(__file__).resolve().parent / "viseqapp" / "assets" / "ProggyTiny.ttf"),
+    str(Path(__file__).resolve().parent / "assets" / "ProggyTiny.ttf"),
+)
+_tile_title_font: Any = None
 
 # --- e09: MIDI control engine (single mido stack; notes + CCs, user-configurable bindings) ---
 
@@ -1526,14 +1543,32 @@ def apply_thumbnail_texture(name: str, idx: str, img_data: Any, w: int, h: int) 
     if is_first and not dpg.does_item_exist(img_tag) and dpg.does_item_exist(container_tag):
         if dpg.does_item_exist(loading_tag):
             dpg.delete_item(loading_tag)
-        dpg.add_image(texture_tag=tex_tag, tag=img_tag, width=115, height=65, parent=container_tag)
-
-        # e16: the img joins the tile's combined click registry (left = select,
-        # right = action popup) — the old per-item popup registry here was
-        # replaced by the click registry on the next rebuild, killing right-click.
-        click_reg_tag = media_tile_click_registry_tag(target_id)
-        if dpg.does_item_exist(click_reg_tag):
-            dpg.bind_item_handler_registry(img_tag, click_reg_tag)
+        draw_tag = f"thumb_draw_{target_id}"
+        badge_tag = f"tile_badge_bg_{target_id}"
+        if dpg.does_item_exist(draw_tag):
+            # the image goes BEHIND the index-badge overlay (before= insertion);
+            # draw commands can't host handler registries, so the drawlist stays
+            # the thumbnail's clickable surface (bound at tile build, e16).
+            if dpg.does_item_exist(badge_tag):
+                dpg.draw_image(
+                    texture_tag=tex_tag,
+                    pmin=(0, 0),
+                    pmax=(115, 65),
+                    parent=draw_tag,
+                    before=badge_tag,
+                    tag=img_tag,
+                )
+            else:
+                dpg.draw_image(
+                    texture_tag=tex_tag,
+                    pmin=(0, 0),
+                    pmax=(115, 65),
+                    parent=draw_tag,
+                    tag=img_tag,
+                )
+            click_reg_tag = media_tile_click_registry_tag(target_id)
+            if dpg.does_item_exist(click_reg_tag):
+                dpg.bind_item_handler_registry(draw_tag, click_reg_tag)
 
     for r, track in enumerate(tracks_data):
         if track.get("target_id") == target_id:
@@ -1620,36 +1655,29 @@ def _show_failed_tile_label(target_id: str) -> None:
     """Flip the tile's pending label to the failed state in place.
 
     The request loop runs on the main thread; when the unanswered-request
-    counter crosses the threshold the existing "Loading..." label is replaced
-    by the failed label + retry popup without waiting for a grid rebuild
+    counter crosses the threshold the existing "Loading..." draw-text label is
+    re-worded and re-colored without waiting for a grid rebuild
     (BUG-2026-08-27T201742: the rebuild-only rendering kept the tile on
     "Loading..." forever).
     """
-    container_tag = f"thumb_container_{target_id}"
     loading_tag = f"loading_txt_{target_id}"
-    if not dpg.does_item_exist(container_tag) or dpg.does_item_exist(f"img_{target_id}"):
-        return
-    if dpg.does_item_exist(loading_tag):
-        dpg.delete_item(loading_tag)
-    dpg.add_text(
-        THUMB_FAIL_LABEL,
-        parent=container_tag,
+    if not dpg.does_item_exist(loading_tag):
+        return  # no pending label (thumbnail already shown, or grid not built)
+    dpg.configure_item(
+        loading_tag,
+        text=THUMB_FAIL_LABEL,
         color=palette_rgba(state.active_palette["warning"]),
-        tag=loading_tag,
     )
-    _text_color_bindings[loading_tag] = "text_dim"
-    click_reg_tag = media_tile_click_registry_tag(target_id)
-    if dpg.does_item_exist(click_reg_tag):
-        dpg.bind_item_handler_registry(loading_tag, click_reg_tag)
 
 
 def _char_width_px() -> int:
-    """Width of a single character in the live default font (e10s06).
+    """Width of a single character in the live default font (e10s06, e20s01).
 
     The default font is monospace (ProggyClean, 7 px); measuring 'M' (the
     widest glyph) keeps the budget conservative if a proportional font is ever
     loaded. Falls back to a constant until the font atlas is built
-    (get_text_size -> None).
+    (get_text_size -> None). Used by the mapper caption alignment; the tile
+    title uses its own fixed ProggyTiny budget (MEDIA_TITLE_CHARS_PER_LINE).
     """
     try:
         size = dpg.get_text_size("M")
@@ -1660,20 +1688,40 @@ def _char_width_px() -> int:
     return MEDIA_TITLE_CHAR_PX
 
 
+def _title_line_count(text: str) -> int:
+    """Number of wrapped lines a tile title occupies (1 or 2; truncation caps it at 2)."""
+    if not text:
+        return 1
+    return min(
+        MEDIA_TITLE_MAX_LINES,
+        max(1, -(-len(text) // MEDIA_TITLE_CHARS_PER_LINE)),
+    )
+
+
+def _title_reserve_padding(text: str) -> int:
+    """Spacer height that makes every tile title occupy exactly two lines.
+
+    1-line titles get one extra step so the thumbnail row sits at the same y in
+    every tile — uniform tiles regardless of the name length. MEDIA_TITLE_RESERVE_PX
+    is the NET layout step of a wrapped line (measured on DPG 2.3.1: a ProggyTiny-9
+    line adds 9 px of glyphs but the trailing item spacing shrinks by 3 px).
+    """
+    return (MEDIA_TITLE_MAX_LINES - _title_line_count(text)) * MEDIA_TITLE_RESERVE_PX
+
+
 def truncate_media_title(name: str) -> str:
     """Fit a media name into at most two Mediagrid title lines (e10s06).
 
-    The budget is PER WRAPPED LINE (MEDIA_TITLE_WRAP / char width), not a
-    total-width budget: a 245 px string at a 125 px wrap still needs three
-    lines (17 + 17 + 1 chars). The longest prefix that keeps
+    The budget is PER WRAPPED LINE (MEDIA_TITLE_CHARS_PER_LINE), not a
+    total-width budget: the wrap breaks every MEDIA_TITLE_WRAP px, so a
+    longer string still needs more lines. The longest prefix that keeps
     prefix+ellipsis within two lines is returned; the full name stays in the
     raw table and in target_id — only the display is truncated.
     """
     if not name:
         return name
     text = str(name)
-    chars_per_line = max(1, MEDIA_TITLE_WRAP // _char_width_px())
-    max_chars = chars_per_line * MEDIA_TITLE_MAX_LINES
+    max_chars = MEDIA_TITLE_CHARS_PER_LINE * MEDIA_TITLE_MAX_LINES
     if len(text) <= max_chars:
         return text
     keep = max(0, max_chars - len(MEDIA_TITLE_ELLIPSIS))
@@ -1716,6 +1764,20 @@ def on_media_tile_click(sender: Any = None, app_data: Any = None, user_data: Any
         return
     state.viseq_selected_source = target_id
     refresh_tile_selection_themes()
+
+
+def on_tile_alpha_slider(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Drag a tile's thin vertical alpha slider: set the source alpha (0..1).
+
+    The address /vimix/<target>/alpha is the same frozen-contract path the
+    sequencer (AlphaV/R/F) and the mapper use — no new OSC surface. The next
+    viOSC state push renders the new value back into the slider.
+    """
+    target_id = user_data
+    alpha = float(app_data)
+    addr = f"/vimix/{target_id}/alpha"
+    osc_client.send_message(addr, alpha)
+    append_log("OUT", f"{addr} [{alpha:.2f}]")
 
 
 def request_missing_thumbnails(now: float) -> None:
@@ -1922,62 +1984,110 @@ def update_vimix_sources_ui(json_string: str) -> None:
                         tag=title_tag,
                     )
                     _text_color_bindings[title_tag] = "text_bright"
+                    if _tile_title_font is not None:
+                        dpg.bind_item_font(title_tag, _tile_title_font)
 
-                    dpg.add_spacer(parent=cw, height=4)
+                    # Every tile reserves exactly two title lines: the computed display
+                    # name drives the extra spacer, so 1-line and 2-line titles leave the
+                    # thumbnail row at the same y (uniform tiles), then a small gap.
+                    display_name = str(name) if name else f"Idx: {idx}"
+                    dpg.add_spacer(
+                        parent=cw,
+                        height=MEDIA_TITLE_GAP
+                        + _title_reserve_padding(truncate_media_title(display_name)),
+                    )
                     container_tag = f"thumb_container_{target_id}"
                     if dpg.does_item_exist(container_tag):
                         dpg.delete_item(container_tag)
 
-                    g_id = dpg.add_group(parent=cw, tag=container_tag, indent=4)
-                    img_tag = f"img_{target_id}"
-                    loading_tag = None  # set only in the no-thumbs branch below
-                    if target_id in thumbnails_data:
-                        tex_tag = thumbnails_data[target_id][0]
-                        if dpg.does_item_exist(img_tag):
-                            dpg.delete_item(img_tag)
-                        dpg.add_image(
-                            texture_tag=tex_tag, parent=g_id, tag=img_tag, width=115, height=65
-                        )
-                    else:
-                        loading_tag = f"loading_txt_{target_id}"
-                        if dpg.does_item_exist(loading_tag):
-                            dpg.delete_item(loading_tag)
-                        is_failed = thumb_fail_count.get(target_id, 0) >= THUMB_FAIL_THRESHOLD
-                        dpg.add_text(
-                            THUMB_FAIL_LABEL if is_failed else " [ Loading... ]",
-                            parent=g_id,
-                            color=palette_rgba(
-                                state.active_palette["warning"]
-                                if is_failed
-                                else state.active_palette["text_dim"]
-                            ),
-                            tag=loading_tag,
-                        )
-                        _text_color_bindings[loading_tag] = "text_dim"
+                    # Compact media row: the thumbnail (with the index badge overlaid
+                    # on its top-left corner) plus a thin vertical alpha slider, same
+                    # height as the thumbnail — the badge+alpha line under the photo is
+                    # gone, so the tile is shorter and the grid denser. horizontal_spacing=0
+                    # keeps the slider flush against the image's right edge.
+                    with dpg.group(horizontal=True, parent=cw, horizontal_spacing=0):
+                        g_id = dpg.add_group(tag=container_tag)
+                        draw_tag = f"thumb_draw_{target_id}"
+                        img_tag = f"img_{target_id}"
+                        loading_tag = None  # set only in the no-thumbs branch below
+                        with dpg.drawlist(width=115, height=65, parent=g_id, tag=draw_tag):
+                            if target_id in thumbnails_data:
+                                tex_tag = thumbnails_data[target_id][0]
+                                if dpg.does_item_exist(img_tag):
+                                    dpg.delete_item(img_tag)
+                                dpg.draw_image(
+                                    texture_tag=tex_tag,
+                                    pmin=(0, 0),
+                                    pmax=(115, 65),
+                                    parent=draw_tag,
+                                    tag=img_tag,
+                                )
+                            # index badge overlay: top-left corner of the thumbnail (drawn
+                            # after the image so it always sits on top)
+                            index_tag = f"tile_index_{target_id}"
+                            themed_draw_rectangle(
+                                (2, 2),
+                                (2 + MEDIA_BADGE_W, 2 + MEDIA_BADGE_H),
+                                slot="badge_bg",
+                                color=(0, 0, 0, 0),
+                                rounding=2,
+                                tag=f"tile_badge_bg_{target_id}",
+                            )
+                            idx_val = data_dict[idx].get("index")
+                            idx_str = str(idx_val) if idx_val is not None else str(idx)
+                            dpg.draw_text(
+                                (2 + 10, 2 + 3),
+                                idx_str,
+                                color=palette_rgba(state.active_palette["text_bright"]),
+                                size=13,
+                                tag=index_tag,
+                            )
+                            _text_color_bindings[index_tag] = "text_bright"
+                            if target_id not in thumbnails_data:
+                                loading_tag = f"loading_txt_{target_id}"
+                                is_failed = (
+                                    thumb_fail_count.get(target_id, 0) >= THUMB_FAIL_THRESHOLD
+                                )
+                                dpg.draw_text(
+                                    (8, 26),
+                                    THUMB_FAIL_LABEL if is_failed else " [ Loading... ]",
+                                    color=palette_rgba(
+                                        state.active_palette["warning"]
+                                        if is_failed
+                                        else state.active_palette["text_dim"]
+                                    ),
+                                    size=13,
+                                    tag=loading_tag,
+                                )
+                                _text_color_bindings[loading_tag] = "text_dim"
 
-                    # Compact per-media readout: index badge + bare alpha value (e06)
-                    index_tag = f"tile_index_{target_id}"
-                    alpha_tag = f"tile_alpha_{target_id}"
-                    with dpg.group(horizontal=True, parent=cw):
-                        dpg.add_button(
-                            label="-",
-                            width=MEDIA_BADGE_W,
-                            height=MEDIA_BADGE_H,
-                            tag=index_tag,
+                        # thin vertical alpha slider, same height as the thumbnail
+                        alpha_tag = f"tile_alpha_{target_id}"
+                        dpg.add_slider_float(
+                            min_value=0.0,
+                            max_value=1.0,
+                            default_value=0.0,
+                            vertical=True,
+                            width=MEDIA_ALPHA_SLIDER_W,
+                            height=65,
+                            clamped=True,
+                            format="",  # no numeric readout: the slider position IS the value
+                            callback=on_tile_alpha_slider,
+                            user_data=target_id,
+                            tag=alpha_tag,
                         )
-                        dpg.bind_item_theme(index_tag, theme_media_badge)
-                        dpg.add_text("---", color=(200, 230, 200, 255), tag=alpha_tag)
+                        dpg.bind_item_theme(alpha_tag, theme_alpha_slider)
 
                     # e10s06: the tile's clickable children select the media on left
-                    # click (child windows can't host clicked handlers in DPG 2.x).
+                    # click (child windows can't host clicked handlers in DPG 2.x). Draw
+                    # commands can't host handler registries either, so the drawlist
+                    # carries the thumbnail clicks; the alpha slider stays out — dragging
+                    # it only sets alpha, it never steals the selection.
                     _bind_tile_click_targets(
                         click_reg_tag,
                         title_tag,
                         container_tag,
-                        img_tag,
-                        loading_tag,
-                        index_tag,
-                        alpha_tag,
+                        draw_tag,
                     )
 
                 for _ in range(num_cols - len(row_indices)):
@@ -1998,10 +2108,6 @@ def update_vimix_sources_ui(json_string: str) -> None:
                 if dpg.does_item_exist(tile_tag):
                     dpg.bind_item_theme(tile_tag, _tile_theme_for(idx, target_id))
                 _set_media_cell(f"tile_title_{target_id}", truncate_media_title(display_name))
-                if dpg.does_item_exist(f"tile_index_{target_id}"):
-                    idx_val = props.get("index")
-                    idx_str = str(idx_val) if idx_val is not None else str(idx)
-                    dpg.configure_item(f"tile_index_{target_id}", label=idx_str)
             state.last_ui_signature = current_signature
 
         # Value per-source updates: every cell write goes through the per-cell cache, so a
@@ -2012,8 +2118,11 @@ def update_vimix_sources_ui(json_string: str) -> None:
             name = props.get("name")
             target_id = str(name) if name else str(idx)
             alpha_val = props.get("alpha")
-            alpha_str = f"{alpha_val:.2f}" if isinstance(alpha_val, float) else "---"
-            _set_media_cell(f"tile_alpha_{target_id}", alpha_str)
+            if isinstance(alpha_val, (int, float)):
+                alpha_display = float(max(0.0, min(1.0, float(alpha_val))))
+            else:
+                alpha_display = 0.0
+            _set_media_cell(f"tile_alpha_{target_id}", alpha_display)
 
             for prop in ALL_PROPERTIES:
                 val = props.get(prop)
@@ -3759,6 +3868,14 @@ for _help_mono_font_path in _HELP_MONO_FONT_PATHS:
             _help_mono_font = dpg.add_font(_help_mono_font_path, size=13)
         break
 
+# Compact ProggyTiny font for the Mediagrid tile titles (same guarded pattern; a missing
+# asset leaves _tile_title_font None and the titles use the default 13 px font).
+for _tile_title_font_path in _TILE_TITLE_FONT_PATHS:
+    if os.path.exists(_tile_title_font_path):
+        with dpg.font_registry():
+            _tile_title_font = dpg.add_font(_tile_title_font_path, size=MEDIA_TITLE_FONT_SIZE)
+        break
+
 with dpg.handler_registry():
     # DPG 2.3.1 key handlers have no modifier support: the wrapper checks Ctrl itself
     dpg.add_key_press_handler(dpg.mvKey_C, callback=_on_copy_key)
@@ -3787,11 +3904,15 @@ with dpg.theme() as theme_selected_clip, dpg.theme_component(dpg.mvChildWindow):
     theme_color(dpg.mvThemeCol_Border, "border_active")
     theme_color(dpg.mvThemeCol_ChildBg, "accent_bg")
     dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 5)
+    dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, MEDIA_TILE_PAD, MEDIA_TILE_PAD)
+    dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 2, 2)
 
 with dpg.theme() as theme_normal_clip, dpg.theme_component(dpg.mvChildWindow):
     theme_color(dpg.mvThemeCol_Border, "border")
     theme_color(dpg.mvThemeCol_ChildBg, "panel_bg")
     dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 5)
+    dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, MEDIA_TILE_PAD, MEDIA_TILE_PAD)
+    dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 2, 2)
 
 with dpg.theme() as theme_vimix_current_clip, dpg.theme_component(dpg.mvChildWindow):
     # Vimix's current source in a lighter, non-green border (e10s06): clearly
@@ -3799,6 +3920,8 @@ with dpg.theme() as theme_vimix_current_clip, dpg.theme_component(dpg.mvChildWin
     theme_color(dpg.mvThemeCol_Border, "text_dim")
     theme_color(dpg.mvThemeCol_ChildBg, "panel_bg")
     dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 5)
+    dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, MEDIA_TILE_PAD, MEDIA_TILE_PAD)
+    dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 2, 2)
 
 with dpg.theme() as theme_compact_table, dpg.theme_component(dpg.mvTable):
     dpg.add_theme_style(dpg.mvStyleVar_CellPadding, 1, 1)
@@ -3827,13 +3950,17 @@ with dpg.theme() as theme_slot_clear, dpg.theme_component(dpg.mvChildWindow):
     # borderless clip slot: no frame, no background (border=False + transparent ChildBg)
     dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (0, 0, 0, 0))
 
-with dpg.theme() as theme_media_badge, dpg.theme_component(dpg.mvButton):
-    # Mediagrid index badge: a slate box with a bright digit (e06 palette)
-    theme_color(dpg.mvThemeCol_Button, "badge_bg")
-    theme_color(dpg.mvThemeCol_ButtonHovered, "badge_bg")
-    theme_color(dpg.mvThemeCol_ButtonActive, "badge_bg")
-    theme_color(dpg.mvThemeCol_Text, "text_bright")
+with dpg.theme() as theme_alpha_slider, dpg.theme_component(dpg.mvSliderFloat):
+    # Thin vertical alpha slider on a Mediagrid tile: subtle rail + accent grabber.
+    # The rail uses the border slot (palette-driven); the grabber matches the app
+    # accent so the value reads at a glance on the dark tile.
+    theme_color(dpg.mvThemeCol_FrameBg, "border")
+    theme_color(dpg.mvThemeCol_FrameBgHovered, "border")
+    theme_color(dpg.mvThemeCol_FrameBgActive, "border")
+    theme_color(dpg.mvThemeCol_SliderGrab, "accent")
+    theme_color(dpg.mvThemeCol_SliderGrabActive, "accent")
     dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 2)
+    dpg.add_theme_style(dpg.mvStyleVar_GrabRounding, 2)
 
 with dpg.theme() as theme_seq_row_compact, dpg.theme_component(dpg.mvAll):
     # Tighter item spacing for the sequencer transport/beat-source row (e10s08):
@@ -4311,8 +4438,8 @@ with dpg.viewport_menu_bar():
         dpg.add_menu_item(label="Open project", callback=show_open_project_dialog)
         with dpg.menu(label="Last project", tag="menu_last_project"):
             pass  # children rebuilt by rebuild_last_project_menu() (boot + after every save/open)
-        dpg.add_separator()
         dpg.add_menu_item(label="Save project", callback=show_save_project_dialog)
+        dpg.add_separator()
         dpg.add_menu_item(label="Exit", callback=exit_app)
     with dpg.menu(label="Windows", tag="menu_windows"):  # e12s01 + e17 (window list)
         dpg.add_menu_item(label="New Monitor Player", callback=new_monitor_player)
