@@ -22,15 +22,6 @@ chmod +x viseq-0.3.0-x86_64.AppImage
 ./viseq-0.3.0-x86_64.AppImage
 ```
 
-**FUSE note:** the AppImage bundles a statically linked runtime, so it mounts
-on modern distributions (Ubuntu 24.04+ included) without any FUSE package.
-Only on systems with no FUSE at all (e.g. containers, WSL1) run it in
-extract-and-run mode instead:
-
-```bash
-./viseq-0.3.0-x86_64.AppImage --appimage-extract-and-run
-```
-
 ### Where your data lives
 
 - Config: `~/.config/viseq/viseq_config.json` (honors `$XDG_CONFIG_HOME`).
