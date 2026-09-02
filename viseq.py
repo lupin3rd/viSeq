@@ -2910,18 +2910,20 @@ def _mapper_caption_spacer(label: str, spec: dict[str, Any]) -> int:
 def _mapper_row_thumb(target_id: str, parent: Any) -> None:
     """The source thumbnail slot at the start of a mapper row (e22s01).
 
-    A fixed slot at the sequencer thumbnail size holding the source's first
-    texture; when no texture exists yet the slot shows a "no thumb" placeholder,
-    so every row keeps the same footprint and the mini-cards align across rows.
+    A fixed-width slot as tall as the row (MAPPER_ROW_H) with the sequencer-size
+    thumbnail (110x70) vertically centered inside, so the image aligns with the
+    mini-card content next to it; when no texture exists yet the slot shows a
+    "no thumb" placeholder (same footprint, rows stay aligned).
     """
     with dpg.child_window(
         parent=parent,
         width=MAPPER_ROW_THUMB_W,
-        height=MAPPER_ROW_THUMB_H,
+        height=MAPPER_ROW_H,
         border=False,
         no_scrollbar=True,
         tag=f"mapper_row_thumb_{target_id}",
     ):
+        dpg.add_spacer(height=(MAPPER_ROW_H - MAPPER_ROW_THUMB_H) // 2)
         tex_tags = thumbnails_data.get(target_id)
         if tex_tags:
             tex_tag = tex_tags[0]
