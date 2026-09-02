@@ -10,7 +10,7 @@ sequencer pattern.
 
 from typing import Any
 
-from viseqapp import state
+from viseqapp import leap, state
 from viseqapp.osc import osc_client
 from viseqapp.queues import append_log
 
@@ -66,8 +66,9 @@ def add_mapping(target_id: str, prop: str, control: str) -> dict[str, Any]:
         "property": prop,
         "control": control,
         "value": _midpoint(spec["min"], spec["max"]),
-        "band": None,  # e18: audio-band source (2 or 3), exclusive with midi
+        "band": None,  # e18: audio-band source (2 or 3), exclusive with midi/leap
         "midi": None,  # e18: learned MIDI source {device, type, number}
+        "leap": None,  # e26s03: leap signal '<hand>.<field>' (e.g. 'left.pinch')
         # e23: value remap. output_from/to = the OSC range the control travel
         # sweeps (default = the vimix catalog range; editable to sub-ranges or
         # reversed). input_from/to = the raw source range a bound band/MIDI
@@ -211,9 +212,9 @@ def send_button_mapping(mapping_id: int) -> float:
 def set_mapping_band(mapping_id: int, band_id: int | None) -> None:
     """Set/clear the audio-band source of a mapping (e18).
 
-    Band and MIDI sources are mutually exclusive: setting a band clears any
-    MIDI source, and vice versa. e23s02: binding a band seeds the input range
-    to 0..1 (the raw band level scale).
+    Band, MIDI and leap sources are mutually exclusive (e26s03): setting a
+    band clears any MIDI or leap source. e23s02: binding a band seeds the
+    input range to 0..1 (the raw band level scale).
     """
     mapping = find_mapping(mapping_id)
     if mapping is None:
@@ -221,6 +222,7 @@ def set_mapping_band(mapping_id: int, band_id: int | None) -> None:
     mapping["band"] = band_id
     if band_id is not None:
         mapping["midi"] = None
+        mapping["leap"] = None
         mapping["input_from"] = 0.0
         mapping["input_to"] = 1.0
 
@@ -229,7 +231,8 @@ def set_mapping_midi(mapping_id: int, binding: dict[str, Any]) -> None:
     """Set the MIDI source of a mapping from a learned binding (e18).
 
     e23s02: binding a MIDI source seeds the input range to 0..127 (the raw
-    MIDI value scale).
+    MIDI value scale). e26s03: also clears mapping['leap'] (three-way
+    exclusivity).
     """
     mapping = find_mapping(mapping_id)
     if mapping is None:
@@ -240,8 +243,32 @@ def set_mapping_midi(mapping_id: int, binding: dict[str, Any]) -> None:
         "number": binding.get("number"),
     }
     mapping["band"] = None
+    mapping["leap"] = None
     mapping["input_from"] = 0.0
     mapping["input_to"] = 127.0
+
+
+def set_mapping_leap(mapping_id: int, signal_key: str) -> None:
+    """Set the Leap Motion source of a mapping from a signal key (e26s03).
+
+    ``'<hand>.<field>'`` from the leap catalog (e.g. 'left.pinch'), exclusive
+    with band/midi. Binding seeds the input range from the signal's catalog
+    default (palm mm, velocity mm/s, normal -1..1, pinch/grab/confidence
+    0..1), like the band 0..1 and MIDI 0..127 seeding.
+    """
+    mapping = find_mapping(mapping_id)
+    if mapping is None:
+        return
+    mapping["leap"] = signal_key
+    mapping["band"] = None
+    mapping["midi"] = None
+    parts = leap.binding_parts(signal_key)
+    if parts is not None:
+        frm, to = leap.signal_default_range(parts[1]) or (0.0, 1.0)
+    else:
+        frm, to = 0.0, 1.0
+    mapping["input_from"] = frm
+    mapping["input_to"] = to
 
 
 def set_mapping_input(mapping_id: int, in_from: float, in_to: float) -> None:
@@ -254,12 +281,13 @@ def set_mapping_input(mapping_id: int, in_from: float, in_to: float) -> None:
 
 
 def clear_mapping_source(mapping_id: int) -> None:
-    """Drop both external sources; the control returns to manual dragging (e18)."""
+    """Drop all three external sources; the control returns to manual (e18/e26s03)."""
     mapping = find_mapping(mapping_id)
     if mapping is None:
         return
     mapping["band"] = None
     mapping["midi"] = None
+    mapping["leap"] = None
 
 
 def apply_input_value(mapping_id: int, raw: float) -> float:

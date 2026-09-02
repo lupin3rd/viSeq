@@ -288,6 +288,11 @@ leap_lock = threading.Lock()
 leap_monitor_cache: dict[str, str] = {}
 
 
+# e26s03: per-mapping drive bookkeeping (mapping id -> {last_raw, last_push}).
+# Written by the leap worker listener thread when it pushes a mapped value.
+leap_drive_state: dict[int, dict[str, Any]] = {}
+
+
 # e16: Mapper state — OSC property mappings (see viseqapp/mapper.py).
 # Each entry: {id, target_id, property, control, value}; ids come from the
 # monotonic counter (like monitor_player_counter).

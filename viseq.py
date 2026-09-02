@@ -3141,7 +3141,11 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
         _bind_mapper_font(f"mapper_out_from_{mid}")
         _bind_mapper_font(f"mapper_out_to_{mid}")
         # e23s02: the raw input range of the bound source (band or MIDI)
-        if mapping.get("band") is not None or mapping.get("midi") is not None:
+        if (
+            mapping.get("band") is not None
+            or mapping.get("midi") is not None
+            or mapping.get("leap") is not None
+        ):
             in_from = mapping.get("input_from")
             in_to = mapping.get("input_to")
             with dpg.group(horizontal=True):
@@ -3213,6 +3217,13 @@ def _render_mapper_source_menu(mapping: dict[str, Any]) -> None:
             check=True,
             default_value=(mapping.get("midi") is not None),
             callback=map_mapping_midi_learn,
+            user_data=mid,
+        )
+        dpg.add_menu_item(
+            label="Leap Motion...",
+            check=True,
+            default_value=(mapping.get("leap") is not None),
+            callback=open_mapper_leap_picker,
             user_data=mid,
         )
         dpg.add_separator()
@@ -3292,6 +3303,53 @@ def drive_mapper_band(band_id: int, level: float) -> None:
             _set_mapper_control_value(m["id"], value)
 
 
+def drive_leap_mappings(snapshot: dict[str, float], now: float | None = None) -> None:
+    """Push a fresh leap snapshot into every leap-bound mapping (e26s03).
+
+    Called by the leap worker listener on tracking frames. Per-mapping rate
+    cap (~30 Hz) and the change epsilon (input span / 1000) come from the
+    pure drive_ready gate; an absent hand/key HOLDS the mapping's last value.
+    OSC sends happen inside mapper.apply_input_value (worker-safe, HIGH-1) and
+    the card widget moves on the main thread via ui_task.
+    """
+    if now is None:
+        now = time.monotonic()
+    snapshot = snapshot or {}
+    for m in list(state.mapper_mappings):
+        key = m.get("leap")
+        if not key:
+            continue
+        raw = snapshot.get(key)
+        if raw is None:
+            continue  # absent hand: hold the mapping's last value
+        in_from, in_to = m.get("input_from"), m.get("input_to")
+        if in_from is None or in_to is None:
+            parts = leap.binding_parts(key)
+            if parts is not None:
+                in_from, in_to = leap.signal_default_range(parts[1]) or (0.0, 1.0)
+            else:
+                in_from, in_to = 0.0, 1.0
+        book = state.leap_drive_state.setdefault(m["id"], {"last_raw": None, "last_push": 0.0})
+        if not leap.drive_ready(
+            now,
+            float(book["last_push"]),
+            leap.LEAP_DRIVE_INTERVAL,
+            book["last_raw"],
+            float(raw),
+            float(in_from),
+            float(in_to),
+        ):
+            continue
+        book["last_raw"] = float(raw)
+        book["last_push"] = now
+        value = mapper.apply_input_value(m["id"], float(raw))
+
+        def _move_widget(mid: int = m["id"], v: float = value) -> None:
+            _set_mapper_control_value(mid, v)
+
+        ui_task(_move_widget)
+
+
 def _close_mapper_learn_window() -> None:
     """Delete the mapper MIDI-Learn modal (bound, cancelled or timed out)."""
     if dpg.does_item_exist("mapper_learn_window"):
@@ -3336,6 +3394,85 @@ def map_mapping_midi_learn(sender: Any = None, app_data: Any = None, user_data: 
         dpg.add_separator()
         dpg.add_button(label="Cancel", callback=_cancel_mapper_learn, width=120)
     dpg.show_item("mapper_learn_window")
+
+
+def open_mapper_leap_picker(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Mapper card menu > Leap Motion...: hand/signal picker modal (e26s03).
+
+    Unlike MIDI there is nothing to LEARN — the signal IS the address, so the
+    user picks a hand (Left/Right) and a curated signal from the catalog. The
+    modal mirrors map_mapping_midi_learn's shape.
+    """
+    mapping_id = int(user_data)
+    if dpg.does_item_exist("mapper_leap_window"):
+        dpg.delete_item("mapper_leap_window")
+    mapping = mapper.find_mapping(mapping_id)
+    signal_items = [leap.leap_field(f)["label"] for f in leap.bindable_signals()]
+    hand_default = "Left"
+    signal_default = signal_items[0]
+    if mapping is not None:
+        parts = leap.binding_parts(mapping.get("leap") or "")
+        if parts is not None:
+            hand_default = "Left" if parts[0] == "left" else "Right"
+            label = leap.leap_field(parts[1])["label"]
+            if label in signal_items:
+                signal_default = label
+    with dpg.window(
+        label="Leap Motion",
+        tag="mapper_leap_window",
+        modal=True,
+        width=340,
+        height=200,
+        no_resize=True,
+    ):
+        themed_text("Bind this control to a hand signal:", slot="text")
+        dpg.add_spacer(height=6)
+        with dpg.group(horizontal=True):
+            themed_text("Hand", slot="text_dim")
+            dpg.add_combo(
+                items=["Left", "Right"],
+                default_value=hand_default,
+                width=110,
+                tag="mapper_leap_hand_cb",
+            )
+        dpg.add_spacer(height=4)
+        with dpg.group(horizontal=True):
+            themed_text("Signal", slot="text_dim")
+            dpg.add_combo(
+                items=signal_items,
+                default_value=signal_default,
+                width=210,
+                tag="mapper_leap_signal_cb",
+            )
+        dpg.add_spacer(height=10)
+        with dpg.group(horizontal=True):
+            dpg.add_button(
+                label="Bind", callback=mapper_leap_confirm, user_data=mapping_id, width=90
+            )
+            dpg.add_button(label="Cancel", callback=mapper_leap_cancel, width=90)
+    dpg.show_item("mapper_leap_window")
+
+
+def mapper_leap_confirm(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Bind the picked hand/signal to the mapping, close the modal, refresh (e26s03)."""
+    mapping_id = int(user_data)
+    hand = str(dpg.get_value("mapper_leap_hand_cb")).lower()
+    label = str(dpg.get_value("mapper_leap_signal_cb"))
+    field = next((f for f in leap.bindable_signals() if leap.leap_field(f)["label"] == label), None)
+    if field is None or hand not in leap.LEAP_HANDS:
+        return
+    mapper.set_mapping_leap(mapping_id, leap.binding_key(hand, field))
+    if dpg.does_item_exist("mapper_leap_window"):
+        dpg.delete_item("mapper_leap_window")
+    refresh_mapper_ui()
+
+
+def mapper_leap_cancel(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Close the leap picker modal without binding (e26s03)."""
+    if dpg.does_item_exist("mapper_leap_window"):
+        dpg.delete_item("mapper_leap_window")
 
 
 def midi_mapping_value(mapping_id: int, midi_value: int) -> None:
@@ -3680,6 +3817,7 @@ def _leap_listener(lib: Any) -> Any:
                 state.leap_values.clear()
                 state.leap_values.update(snapshot)
             state.leap_status = "tracking"
+            drive_leap_mappings(snapshot)  # e26s03: push leap-bound mappings
 
         def on_connection_lost_event(self, event):  # type: ignore[no-untyped-def]
             state.leap_status = "disconnected"

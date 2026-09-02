@@ -216,6 +216,38 @@ def leap_status_label(enabled: bool, status: str) -> str:
     return labels.get(status, status)
 
 
+# e26s03: per-mapping drive caps. LEAP_DRIVE_INTERVAL = ~30 pushes/second per
+# mapping; a raw change smaller than the mapping's input span / 1000 is noise
+# (a still hand sends nothing).
+LEAP_DRIVE_INTERVAL: float = 1.0 / 30.0
+LEAP_DRIVE_EPSILON_DIVISOR: float = 1000.0
+
+
+def drive_ready(
+    now: float,
+    last_push: float,
+    interval: float,
+    last_raw: float | None,
+    raw: float,
+    input_from: float,
+    input_to: float,
+) -> bool:
+    """Should this mapping push now? (e26s03, pure gate)
+
+    Rate cap: a push inside ``interval`` of the last one is skipped. Change
+    epsilon: a raw delta below input_span/1000 is skipped. The first drive
+    after a hand appears (no last_raw) always pushes; a degenerate input
+    range (span 0) is interval-gated only.
+    """
+    if now - last_push < interval:
+        return False
+    if last_raw is None:
+        return True
+    span = abs(input_to - input_from)
+    below_epsilon = span > 0.0 and abs(raw - last_raw) < span / LEAP_DRIVE_EPSILON_DIVISOR
+    return not below_epsilon
+
+
 def leap_field(field: str) -> dict[str, Any]:
     """The metadata entry for a snapshot field (KeyError = catalog bug)."""
     return LEAP_FIELDS[field]
