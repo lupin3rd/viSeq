@@ -3295,63 +3295,36 @@ def tick_midi_learn_timeout() -> None:
         _close_mapper_learn_window()
 
 
-# e23: the mapper scroll child shows its horizontal scrollbar ONLY when a
-# source row overflows the window — DPG's horizontal_scrollbar flag forces
-# BOTH scrollbar tracks to render always, so it must be toggled by rebuilding
-# the scroll child when the need changes (measured on DPG 2.3.1).
-_mapper_scroll_has_hbar = False
+def _mapper_cards_per_line() -> int:
+    """How many mapping mini-cards fit one source line at the live window width.
 
-
-def _mapper_rows_need_hscroll() -> bool:
-    """True when any source row would overflow the Mapper window width (e23)."""
-    rows: dict[str, list[dict[str, Any]]] = {}
-    for mapping in state.mapper_mappings:
-        rows.setdefault(mapping["target_id"], []).append(mapping)
-    content = MAPPER_WINDOW_WIDTH - 28  # window + child paddings and margins
-    for mappings in rows.values():
-        width = MAPPER_ROW_THUMB_W + len(mappings) * (MAPPER_MINI_W + 4)
-        if width > content:
-            return True
-    return False
-
-
-def _sync_mapper_scroll() -> None:
-    """Rebuild the mapper scroll child when the horizontal-scrollbar need changed.
-
-    The flag is creation-only in effect (configure_item does not remove the
-    forced scrollbar tracks), so a changed need deletes and recreates the
-    borderless scroll child + its mappings group (same tags).
+    e24s02: the Mapper wraps instead of overflowing — the capacity derives from
+    the current mapper window width minus the 110 px thumbnail block, over the
+    card pitch (MAPPER_MINI_W + the 4 px horizontal item spacing).
     """
-    global _mapper_scroll_has_hbar
-    need = _mapper_rows_need_hscroll()
-    if need == _mapper_scroll_has_hbar:
-        return
-    _mapper_scroll_has_hbar = need
-    if dpg.does_item_exist("mapper_scroll"):
-        dpg.delete_item("mapper_scroll")
-    with dpg.child_window(
-        parent="mapper_window",
-        height=MAPPER_WINDOW_HEIGHT - 8,
-        border=False,
-        horizontal_scrollbar=need,
-        tag="mapper_scroll",
-    ):
-        dpg.add_group(tag="mapper_mappings_group")
+    width = dpg.get_item_width("mapper_window")
+    if not width:
+        width = MAPPER_WINDOW_WIDTH
+    available = width - 8  # window content padding
+    pitch = MAPPER_MINI_W + 4
+    return max(1, int((available - (MAPPER_ROW_THUMB_W + 4)) // pitch))
 
 
 def refresh_mapper_ui() -> None:
     """Rebuild the Mapper window body from state.mapper_mappings (main thread).
 
-    e22s01: the body is a vertical stack of SOURCE ROWS. Rows derive from the
-    flat mapping list at every rebuild — one horizontal row per distinct
+    e22s01/e24s02: the body is a vertical stack of SOURCE BLOCKS. Rows derive
+    from the flat mapping list at every rebuild — one block per distinct
     target_id in first-appearance order, mappings inside in list (creation)
-    order, each row leading with its source thumbnail slot. A source whose
-    last mapping was deleted produces no row, so its whole line (thumbnail
-    included) disappears on the redraw.
+    order. Each block wraps its mappings onto as many aligned LINES as the
+    live window width fits: the source thumbnail slot leads the FIRST line
+    only, later lines start with an empty spacer the width of the thumbnail
+    slot so the cards align under the first line's cards. A source whose last
+    mapping was deleted produces no block, so it disappears on the redraw;
+    a window resize re-runs this rebuild (see the mapper_resize registry).
     """
     if not dpg.does_item_exist("mapper_mappings_group"):
         return
-    _sync_mapper_scroll()
     dpg.delete_item("mapper_mappings_group", children_only=True)
     if not state.mapper_mappings:
         # explicit parent: at runtime (menu callback) DPG cannot deduce the
@@ -3367,12 +3340,20 @@ def refresh_mapper_ui() -> None:
     rows: dict[str, list[dict[str, Any]]] = {}
     for mapping in state.mapper_mappings:
         rows.setdefault(mapping["target_id"], []).append(mapping)
+    per_line = _mapper_cards_per_line()
     for target_id, mappings in rows.items():
-        row = dpg.add_group(horizontal=True, parent="mapper_mappings_group")
+        block = dpg.add_group(parent="mapper_mappings_group")
         row_height = _mapper_row_height(mappings)
-        _mapper_row_thumb(target_id, parent=row, height=row_height)
-        for mapping in mappings:
-            _render_mapper_card(mapping, parent=row, height=row_height)
+        for line_index in range(0, len(mappings), per_line):
+            line = dpg.add_group(horizontal=True, parent=block)
+            if line_index == 0:
+                _mapper_row_thumb(target_id, parent=line, height=row_height)
+            else:
+                # alignment slot: continuation lines start where the cards of
+                # the first line start (the thumbnail is rendered once)
+                dpg.add_spacer(width=MAPPER_ROW_THUMB_W, parent=line)
+            for mapping in mappings[line_index : line_index + per_line]:
+                _render_mapper_card(mapping, parent=line, height=row_height)
 
 
 def show_mapper_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -4694,15 +4675,17 @@ with dpg.window(label="MIDI", width=520, height=520, pos=(560, 320), tag="midi_w
     dpg.add_spacer(height=4)
     dpg.add_button(label="Save", callback=save_midi_controllers, width=80)
 
-# e16/e22/e23: Mapper window — the body is rebuilt by refresh_mapper_ui() (menu
-# open, create, delete, prune) as a stack of per-source rows. Hidden at boot and
-# never part of the saved layout (transient workspace, like Logs).
-# e20s02: only the mapping rows — no header line, and the scroll container is
-# borderless so no outer frame wraps the rows.
-# e23: compact theme (theme_mapper_compact) + the horizontal scrollbar is
-# created WITHOUT the always-on flag; refresh_mapper_ui rebuilds the scroll
-# child with horizontal_scrollbar only when a row overflows (DPG forces both
-# scrollbar tracks visible whenever the flag is on).
+# e16/e22/e23/e24: Mapper window — the body is rebuilt by refresh_mapper_ui()
+# (menu open, create, delete, prune, resize) as a stack of wrapping source
+# blocks. Hidden at boot and never part of the saved layout (transient
+# workspace, like Logs).
+# e20s02: only the mapping blocks — no header line, and the scroll container is
+# borderless so no outer frame wraps the content.
+# e23: compact theme (theme_mapper_compact).
+# e24s02: sources WRAP onto multiple lines (no overflow), so the scroll child
+# keeps NO horizontal_scrollbar (DPG would force both scrollbar tracks) and its
+# vertical scrollbar appears only when the wrapped content is taller than the
+# window. A resize item handler reflows the body live.
 with (
     dpg.window(
         label="Mapper",
@@ -4721,6 +4704,10 @@ with (
 ):
     pass
 dpg.bind_item_theme("mapper_window", theme_mapper_compact)
+with dpg.item_handler_registry(tag="mapper_resize_reg"):
+    # e24s02: reflow the wrapping body whenever the user resizes the window
+    dpg.add_item_resize_handler(callback=lambda s, a: refresh_mapper_ui())
+dpg.bind_item_handler_registry("mapper_window", "mapper_resize_reg")
 
 # NEW THREAD FOR HIGH-FREQUENCY FADES
 threading.Thread(target=fade_tick_loop, daemon=True).start()
