@@ -133,6 +133,7 @@ from viseqapp.leap import (
     leap_init_from_config,
     normalize_tracking_event,
     set_leap_enabled,
+    set_leap_visualizer,
 )
 from viseqapp.midi import (
     _clock_port_name,
@@ -978,6 +979,13 @@ def apply_boot_config() -> None:
     if dpg.does_item_exist("leap_enable_cb"):
         # e26: same boot-sync for the Leap Motion Enable checkbox (built before config).
         dpg.set_value("leap_enable_cb", state.leap_enabled)
+    if dpg.does_item_exist("leap_viz_cb"):
+        # e26s04: boot-sync the visualizer toggle (built before config) and fold
+        # the panel when the persisted flag asks for it (engine must be on).
+        dpg.set_value("leap_viz_cb", state.leap_visualizer)
+        dpg.configure_item("leap_viz_cb", enabled=state.leap_enabled)
+        if state.leap_enabled and state.leap_visualizer:
+            _apply_leap_viz_layout(True)
     _apply_theme_config(cfg["theme"])
     if dpg.does_item_exist("cb_restore_project_boot"):
         dpg.set_value("cb_restore_project_boot", cfg["projects"]["restore_last_on_boot"])
@@ -2917,8 +2925,43 @@ def show_leap_window(sender: Any = None, app_data: Any = None, user_data: Any = 
 
 def on_leap_enable(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     """Leap window Enable checkbox: persist and apply the engine toggle (e26s01).
-    The worker loop reacts to state.leap_enabled on its own cadence."""
-    set_leap_enabled(bool(app_data))
+
+    The worker loop reacts to state.leap_enabled on its own cadence. Disabling
+    also folds the visualizer (no engine -> no frames); re-enabling restores it
+    when the visualizer flag is still on (e26s04).
+    """
+    enabled = bool(app_data)
+    set_leap_enabled(enabled)
+    if dpg.does_item_exist("leap_viz_cb"):
+        dpg.configure_item("leap_viz_cb", enabled=enabled)
+    if not enabled:
+        _apply_leap_viz_layout(False)
+    elif state.leap_visualizer:
+        _apply_leap_viz_layout(True)
+
+
+def on_leap_visualizer(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Visualizer toggle (e26s04): persist + fold/unfold the panel in place.
+
+    The worker watches state.leap_visualizer and sets/clears the LeapC Images
+    policy on its own cadence; no connection work happens here.
+    """
+    set_leap_visualizer(bool(app_data))
+    _apply_leap_viz_layout(bool(app_data))
+
+
+def _apply_leap_viz_layout(shown: bool) -> None:
+    """Fold/unfold the visualizer panel inside the COMPACT window (e26s04).
+
+    The Leap Motion window never widens (user decision): showing the panel
+    shrinks the monitor child so the fixed 560x680 size never overflows.
+    """
+    if shown:
+        dpg.show_item("leap_viz_panel")
+        dpg.configure_item("leap_monitor_scroll", height=LEAP_MONITOR_VIZ_H)
+    else:
+        dpg.hide_item("leap_viz_panel")
+        dpg.configure_item("leap_monitor_scroll", height=LEAP_MONITOR_H)
 
 
 def _leap_monitor_set_text(tag: str, text: str) -> None:
@@ -2927,6 +2970,54 @@ def _leap_monitor_set_text(tag: str, text: str) -> None:
         state.leap_monitor_cache[tag] = text
         if dpg.does_item_exist(tag):
             dpg.set_value(tag, text)
+
+
+def tick_leap_visualizer() -> None:
+    """Upload the latest visualizer frame on the main loop (e26s04).
+
+    No-op while the window is missing/hidden or the engine/visualizer is off.
+    The poll thread publishes frames (state.leap_viz_frame + seq) only while
+    enabled; this tick lazily creates ONE raw texture on the first frame and
+    set_value only when a NEW frame arrived — a still feed costs nothing.
+    """
+    if not dpg.does_item_exist("leap_window"):
+        return
+    if not dpg.is_item_shown("leap_window"):
+        return
+    if not (state.leap_enabled and state.leap_visualizer):
+        return
+    with state.leap_lock:
+        seq = state.leap_viz_seq
+        frame = state.leap_viz_frame
+    if frame is None or seq == state.leap_viz_uploaded_seq:
+        return
+    _leap_viz_ensure_texture(frame)
+    dpg.set_value("leap_viz_tex", frame.reshape(-1))
+    state.leap_viz_uploaded_seq = seq
+    if dpg.does_item_exist("leap_viz_wait_text"):
+        dpg.hide_item("leap_viz_wait_text")
+
+
+def _leap_viz_ensure_texture(frame: Any) -> None:
+    """Create the raw texture + image ONCE, on the first published frame (e26s04).
+
+    Texture format follows the thumbnail pipeline (RGBA float32 0..1); unlike
+    thumbnails this texture is created once and updated via set_value (raw
+    texture), never deleted/recreated per frame. The one-shot guard is a state
+    flag (does_item_exist reads true in the headless stub), main-thread only.
+    """
+    if state.leap_viz_tex_created:
+        return
+    h, w = int(frame.shape[0]), int(frame.shape[1])
+    dpg.add_raw_texture(
+        width=w,
+        height=h,
+        default_value=frame.reshape(-1),
+        tag="leap_viz_tex",
+        parent="texture_registry",
+    )
+    dpg.add_image("leap_viz_tex", tag="leap_viz_img", parent="leap_viz_panel")
+    state.leap_viz_tex_created = True
 
 
 def tick_leap_monitor() -> None:
@@ -3802,6 +3893,88 @@ def _leap_lib() -> Any:
         return None
 
 
+def _leap_viz_capture_geometry(event: Any) -> list[dict[str, Any]]:
+    """Hand-geometry dicts for one tracking event (e26s04, poll thread).
+
+    Called synchronously while the hand data is valid; an empty list means no
+    hand is in view (the skeleton panel shows its waiting label).
+    """
+    return [leap.viz_hand_geometry(h) for h in event.hands or []]
+
+
+def _leap_viz_copy_ir(img: Any) -> Any:
+    """Synchronous grayscale copy of one IR image (e26s04, poll thread).
+
+    The C buffer behind the Image wrapper is only valid until the next poll, so
+    the copy happens inside the event callback (reference example's UAF note).
+    leapc_cffi is imported lazily here: rig-only, the suite never runs this.
+    """
+    props = img.c_data.properties
+    w, h, bpp = int(props.width), int(props.height), int(props.bpp)
+    if w == 0 or h == 0 or bpp != 1:
+        raise ValueError(f"unsupported IR image {w}x{h} bpp={bpp}")
+    import leapc_cffi  # type: ignore[import-not-found]
+
+    ptr = leapc_cffi.ffi.cast("uint8_t*", img.c_data.data) + img.c_data.offset
+    buf = leapc_cffi.ffi.buffer(ptr, w * h * bpp)
+    return np.frombuffer(buf, dtype=np.uint8).reshape((h, w)).copy()
+
+
+def _leap_viz_publish_if_due(now: float) -> None:
+    """Compose + publish one visualizer frame at the rate cap (e26s04, poll thread).
+
+    Reads the latest IR copy + hand geometry by reference swap (both are only
+    ever replaced, never mutated), composes OUTSIDE the lock, then publishes
+    under state.leap_lock (frame swap + seq bump + render timestamp). A compose
+    failure degrades to a log line and a cleared frame — never a crash.
+    """
+    if not (state.leap_enabled and state.leap_visualizer):
+        return
+    with state.leap_lock:
+        last = state.leap_viz_last_render
+    if not leap.viz_render_due(now, last):
+        return
+    with state.leap_lock:
+        ir = state.leap_viz_ir
+        hands = state.leap_viz_hands
+    try:
+        frame = leap.compose_viz_frame(ir, hands)
+    except Exception as e:
+        log_error("Leap", f"viz compose: {e}")
+        with state.leap_lock:
+            state.leap_viz_frame = None
+            state.leap_viz_ir = None
+            state.leap_viz_hands = None
+        return
+    with state.leap_lock:
+        state.leap_viz_frame = frame
+        state.leap_viz_seq += 1
+        state.leap_viz_last_render = now
+
+
+def _leap_set_images_policy(connection: Any, lib: Any, on: bool) -> None:
+    """Set/clear the LeapC Images policy on the LIVE connection (e26s04).
+
+    Off = the device does not stream IR, so the disabled visualizer costs
+    nothing. set_policy_flags is a blocking call-and-wait whose Policy event is
+    delivered by the library's auto-poll thread; a failure degrades to a log
+    line, never a crash (BLE001 posture).
+    """
+    try:
+        # The binding exposes PolicyFlag under leap.enums (not the package root
+        # — live-verified 2026-09-03: lib.PolicyFlag raises AttributeError and
+        # the IR stream silently never starts).
+        images = lib.enums.PolicyFlag.Images
+        if on:
+            connection.set_policy_flags(flags_to_set=[images])
+            append_log("Leap", "visualizer on (IR stream requested)")
+        else:
+            connection.set_policy_flags(flags_to_clear=[images])
+            append_log("Leap", "visualizer off (IR stream stopped)")
+    except Exception as e:
+        log_error("Leap", f"images policy: {e}")
+
+
 def _leap_listener(lib: Any) -> Any:
     """A Listener whose callbacks run on the library's auto-poll thread.
 
@@ -3818,6 +3991,30 @@ def _leap_listener(lib: Any) -> Any:
                 state.leap_values.update(snapshot)
             state.leap_status = "tracking"
             drive_leap_mappings(snapshot)  # e26s03: push leap-bound mappings
+            # e26s04: while the visualizer is on, capture the hand geometry and
+            # publish one rate-capped composite (the poll thread is the only
+            # writer of the visualizer snapshot; the main tick only uploads the
+            # finished texture).
+            if state.leap_visualizer:
+                hands = _leap_viz_capture_geometry(event)
+                with state.leap_lock:
+                    state.leap_viz_hands = hands
+                _leap_viz_publish_if_due(time.time())
+
+        def on_image_event(self, event):  # type: ignore[no-untyped-def]
+            # IR frames arrive ONLY while the Images policy is set, i.e. while
+            # the visualizer is on — the copy must happen synchronously (the C
+            # buffer is valid only until the next poll, same UAF as tracking).
+            if not state.leap_visualizer:
+                return
+            try:
+                ir = _leap_viz_copy_ir(event.image[0])
+            except Exception as e:
+                log_error("Leap", f"viz image: {e}")
+                return
+            with state.leap_lock:
+                state.leap_viz_ir = ir
+            _leap_viz_publish_if_due(time.time())
 
         def on_connection_lost_event(self, event):  # type: ignore[no-untyped-def]
             state.leap_status = "disconnected"
@@ -3868,6 +4065,10 @@ def leap_control_loop() -> None:
             connection.set_tracking_mode(lib.TrackingMode.Desktop)
             state.leap_status = "connected"
             append_log("Leap", "connected")
+            # e26s04: a persisted visualizer toggle asks for IR as soon as the
+            # (re)connection is up; afterwards the keep-alive below follows it.
+            if state.leap_visualizer:
+                _leap_set_images_policy(connection, lib, True)
         except Exception as e:
             log_error("Leap", f"connect: {e}")
             with contextlib.suppress(Exception):
@@ -3877,7 +4078,14 @@ def leap_control_loop() -> None:
             continue
         # Keep the connection open while enabled; a lost service/device flips the
         # status to disconnected (listener) so this loop exits and reconnects.
+        # The keep-alive also watches the visualizer toggle and sets/clears the
+        # LeapC Images policy on the live connection (no reconnect needed).
+        viz_policy = bool(state.leap_visualizer)
         while state.leap_enabled and state.leap_status != "disconnected":
+            viz_now = bool(state.leap_visualizer)
+            if viz_now != viz_policy:
+                viz_policy = viz_now
+                _leap_set_images_policy(connection, lib, viz_now)
             time.sleep(0.5)
         with contextlib.suppress(Exception):
             connection.disconnect()
@@ -4983,8 +5191,18 @@ with dpg.window(label="MIDI", width=520, height=520, pos=(560, 320), tag="midi_w
 # window hosts EVERYTHING (user request, e26s02): the Enable switch, the
 # device/service status line and the LIVE two-hand value monitor — static rows
 # built ONCE at construction (one row per snapshot field, both hands), refreshed
-# by tick_leap_monitor on the main thread. Never touches the external leap
-# package at import time.
+# by tick_leap_monitor on the main thread. e26s04 adds the embedded visualizer
+# toggle + hidden panel between the status line and the monitor; the window
+# stays COMPACT (560x680, never widens — user decision), the monitor child
+# shrinks when the panel is shown. Never touches the external leap package at
+# import time.
+
+# e26s04: compact visualizer layout. The always-present toggle row costs the
+# monitor ~25 px; showing the 150-tall panel costs a further ~165 px and the
+# monitor scrolls (it is already a child_window).
+LEAP_MONITOR_H: int = 535
+LEAP_MONITOR_VIZ_H: int = 370
+LEAP_VIZ_PANEL_H: int = 158
 with dpg.window(
     label="Leap Motion", width=560, height=680, pos=(560, 300), tag="leap_window", show=False
 ):
@@ -4998,7 +5216,19 @@ with dpg.window(
     dpg.add_spacer(height=4)
     dpg.add_text("", tag="leap_status_text")
     dpg.add_spacer(height=4)
-    with dpg.child_window(height=560, tag="leap_monitor_scroll"), dpg.group(horizontal=True):
+    dpg.add_separator()
+    dpg.add_checkbox(
+        label="Show device view + hands",
+        tag="leap_viz_cb",
+        default_value=state.leap_visualizer,
+        callback=on_leap_visualizer,
+    )
+    with dpg.child_window(height=LEAP_VIZ_PANEL_H, show=False, tag="leap_viz_panel"):
+        dpg.add_text("Waiting for the Leap device...", tag="leap_viz_wait_text")
+    with (
+        dpg.child_window(height=LEAP_MONITOR_H, tag="leap_monitor_scroll"),
+        dpg.group(horizontal=True),
+    ):
         for hand in leap.LEAP_HANDS:
             with dpg.group(tag=f"leap_mon_{hand}_col"):
                 themed_text(f"{hand.capitalize()} hand", slot="text_bright")
@@ -5142,6 +5372,8 @@ try:
         tick_midi_learn_timeout()  # e18: expire stale MIDI Learn sessions (incl. mapper)
 
         tick_leap_monitor()  # e26s02: live two-hand values in the Leap Motion window
+
+        tick_leap_visualizer()  # e26s04: embed the IR + skeleton frame (when shown)
 
         request_missing_thumbnails(time.time())
 

@@ -19,7 +19,11 @@ a hand held still for 20 s while position/velocity read real values), so the
 driving + remap ranges keep mappings usable).
 """
 
+from itertools import pairwise
 from typing import Any
+
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 
 from viseqapp import state
 from viseqapp.config import load_config, save_config
@@ -337,9 +341,10 @@ def normalize_tracking_event(event: Any) -> dict[str, float]:
 
 
 def leap_init_from_config(cfg: dict[str, Any]) -> None:
-    """Load the Leap engine mirror from the config (boot, e26s01)."""
+    """Load the Leap engine mirrors from the config (boot, e26s01/e26s04)."""
     leap_cfg = cfg.get("leap") or {}
     state.leap_enabled = bool(leap_cfg.get("enabled", False))
+    state.leap_visualizer = bool(leap_cfg.get("visualizer", False))
 
 
 def set_leap_enabled(enabled: bool) -> None:
@@ -353,3 +358,160 @@ def set_leap_enabled(enabled: bool) -> None:
     cfg = load_config()
     cfg["leap"]["enabled"] = bool(enabled)
     save_config(cfg)
+
+
+def set_leap_visualizer(enabled: bool) -> None:
+    """Enable/disable the embedded visualizer and persist the flag (main thread).
+
+    The worker loop watches state.leap_visualizer and sets/clears the LeapC
+    Images policy on its own cadence, so no direct connection work happens
+    here (mirrors set_leap_enabled). Off = the device never streams IR.
+    """
+    state.leap_visualizer = bool(enabled)
+    cfg = load_config()
+    cfg["leap"]["visualizer"] = bool(enabled)
+    save_config(cfg)
+
+
+# ---------- e26s04: embedded visualizer (pure, dpg-free) ----------
+# One RGBA frame = IR camera panel | skeleton panel, composed with numpy+Pillow
+# (both already runtime deps — no opencv; user decision 2026-09-03). The worker
+# in the composition root feeds grayscale IR copies + plain geometry dicts, so
+# this module never imports the external leap package. Output is the DPG
+# texture format proven by the thumbnail pipeline (RGBA float32 0..1).
+
+# Panel geometry fits the COMPACT 560-wide Leap Motion window (the window never
+# widens, user decision): IR panel 400x150 (native 640x240 downscaled 0.625),
+# skeleton panel 120x150 isotropic (0.3 px/mm over the example mm ranges).
+LEAP_VIZ_IR_W: int = 400
+LEAP_VIZ_IR_H: int = 150
+LEAP_VIZ_SKEL_W: int = 120
+LEAP_VIZ_SKEL_H: int = 150
+LEAP_VIZ_GUTTER: int = 8
+LEAP_VIZ_W: int = LEAP_VIZ_IR_W + LEAP_VIZ_GUTTER + LEAP_VIZ_SKEL_W
+LEAP_VIZ_H: int = LEAP_VIZ_IR_H
+LEAP_VIZ_FPS: float = 30.0
+# Skeleton projection box in hand mm (the reference example's ranges).
+LEAP_VIZ_X_RANGE: tuple[float, float] = (-200.0, 200.0)
+LEAP_VIZ_Y_RANGE: tuple[float, float] = (0.0, 500.0)
+# Per-side skeleton color (left orange / right cyan, as in the example).
+LEAP_VIZ_HAND_COLORS: dict[str, tuple[int, int, int]] = {
+    "left": (255, 120, 0),
+    "right": (0, 200, 255),
+}
+LEAP_VIZ_WAIT_COLOR: tuple[int, int, int] = (255, 0, 0)
+
+_VIZ_FONT: Any = ImageFont.load_default()
+
+
+def viz_hand_geometry(hand: Any) -> dict[str, Any]:
+    """Compact per-hand geometry for the visualizer (e26s04).
+
+    Duck-typed on a LeapC hand: palm (x, y) mm, pinch/grab strengths and, per
+    digit, the five bone-endpoint joints (x, y) mm. Called synchronously on
+    the poll thread while the hand data is still valid (same UAF discipline as
+    the tracking snapshot).
+    """
+    palm = hand.palm.position
+    digits = []
+    for digit in hand.digits:
+        pts = [digit.bones[0].prev_joint]
+        pts += [bone.next_joint for bone in digit.bones]
+        digits.append([(float(p.x), float(p.y)) for p in pts])
+    return {
+        "side": _hand_side(hand),
+        "palm": (float(palm.x), float(palm.y)),
+        "pinch": float(hand.pinch_strength),
+        "grab": float(hand.grab_strength),
+        "digits": digits,
+    }
+
+
+def viz_render_due(now: float, last_render: float | None) -> bool:
+    """Rate gate for the visualizer composite: at most LEAP_VIZ_FPS frames."""
+    if last_render is None:
+        return True
+    return now - last_render >= 1.0 / LEAP_VIZ_FPS
+
+
+def compose_viz_frame(ir: Any, hands: list[dict[str, Any]] | None) -> np.ndarray:
+    """One RGBA float32 (LEAP_VIZ_H, LEAP_VIZ_W, 4) texture frame (e26s04).
+
+    Left half: the IR camera panel (grayscale uint8 array -> RGB, downscaled);
+    right half: the hand skeleton (geometry dicts from viz_hand_geometry).
+    Missing halves draw a dark placeholder with an ASCII waiting label. All
+    drawing happens here on the worker side; the main thread only uploads the
+    finished frame (HIGH-1).
+    """
+    canvas = Image.new("RGBA", (LEAP_VIZ_W, LEAP_VIZ_H), (0, 0, 0, 255))
+    _viz_draw_ir_panel(canvas, ir)
+    _viz_draw_skeleton_panel(canvas, hands)
+    return np.asarray(canvas, dtype=np.float32) / 255.0
+
+
+def _viz_draw_ir_panel(canvas: Any, ir: Any) -> None:
+    """Paste the downscaled IR frame into the left panel; label when absent."""
+    box = (0, 0, LEAP_VIZ_IR_W, LEAP_VIZ_IR_H)
+    if ir is None:
+        _viz_placeholder(canvas, box, "Waiting for camera...")
+        return
+    arr = np.ascontiguousarray(ir, dtype=np.uint8)
+    mode = "L" if arr.ndim == 2 else "RGB"
+    img = Image.fromarray(arr, mode=mode).convert("RGB")
+    img = img.resize((LEAP_VIZ_IR_W, LEAP_VIZ_IR_H), Image.Resampling.BILINEAR)
+    canvas.paste(img, box)
+
+
+def _viz_draw_skeleton_panel(canvas: Any, hands: list[dict[str, Any]] | None) -> None:
+    """Draw each hand's skeleton on its own panel, pasted right of the IR."""
+    panel = Image.new("RGBA", (LEAP_VIZ_SKEL_W, LEAP_VIZ_SKEL_H), (0, 0, 0, 255))
+    if not hands:
+        _viz_placeholder(
+            panel,
+            (0, 0, LEAP_VIZ_SKEL_W, LEAP_VIZ_SKEL_H),
+            "Waiting for device...",
+        )
+    else:
+        draw = ImageDraw.Draw(panel)
+        for geom in hands:
+            _viz_draw_hand(draw, geom)
+    canvas.paste(panel, (LEAP_VIZ_IR_W + LEAP_VIZ_GUTTER, 0))
+
+
+def _viz_draw_hand(draw: Any, geom: dict[str, Any]) -> None:
+    """One hand on the skeleton panel: palm dot, bone lines, joint dots, label."""
+    color = LEAP_VIZ_HAND_COLORS.get(geom["side"], (255, 255, 255))
+    px, py = _viz_mm_to_px(geom["palm"][0], geom["palm"][1])
+    draw.ellipse((px - 6, py - 6, px + 6, py + 6), fill=color)
+    for digit in geom["digits"]:
+        pts = [_viz_mm_to_px(x, y) for x, y in digit]
+        for p1, p2 in pairwise(pts):
+            draw.line((p1, p2), fill=color, width=2)
+        for p in pts:
+            draw.ellipse((p[0] - 2, p[1] - 2, p[0] + 2, p[1] + 2), fill=(255, 255, 255))
+    label = f"{geom['side'][0].upper()} {geom['pinch']:.2f} {geom['grab']:.2f}"
+    draw.text((2, max(0, py - 24)), label, fill=color, font=_VIZ_FONT)
+
+
+def _viz_mm_to_px(x: float, y: float) -> tuple[int, int]:
+    """Skeleton-box pixel for a hand mm point (y up, X/Y_RANGE projection)."""
+    x0, x1 = LEAP_VIZ_X_RANGE
+    y0, y1 = LEAP_VIZ_Y_RANGE
+    px = int((x - x0) / (x1 - x0) * LEAP_VIZ_SKEL_W)
+    py = int(LEAP_VIZ_SKEL_H - (y - y0) / (y1 - y0) * LEAP_VIZ_SKEL_H)
+    return px, py
+
+
+def _viz_placeholder(img: Any, box: tuple[int, int, int, int], label: str) -> None:
+    """Centered dark-region waiting label (ASCII, default PIL font)."""
+    draw = ImageDraw.Draw(img)
+    x0, y0, x1, y1 = box
+    text = draw.textbbox((0, 0), label, font=_VIZ_FONT)
+    tw = text[2] - text[0]
+    th = text[3] - text[1]
+    draw.text(
+        (x0 + (x1 - x0 - tw) // 2, y0 + (y1 - y0 - th) // 2),
+        label,
+        fill=LEAP_VIZ_WAIT_COLOR,
+        font=_VIZ_FONT,
+    )

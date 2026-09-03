@@ -371,8 +371,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "theme": {"preset": "scuro", "colors": copy.deepcopy(DEFAULT_PALETTE)},
     # e14s02: multi-controller schema — controllers[] replaces the single input_port.
     "midi": {"enabled": False, "controllers": [], "clock_source": None},
-    # e26: Leap Motion engine — the only persisted setting is the enabled flag.
-    "leap": {"enabled": False},
+    # e26: Leap Motion engine — persisted settings: enabled flag + the e26s04
+    # embedded visualizer toggle (both off by default).
+    "leap": {"enabled": False, "visualizer": False},
     "projects": {"recent": [], "restore_last_on_boot": True},
 }
 

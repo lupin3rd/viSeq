@@ -283,6 +283,20 @@ leap_values: dict[str, float] = {}
 leap_lock = threading.Lock()
 
 
+# e26s04: visualizer toggle mirror (main-thread flag; the worker watches it to
+# manage the LeapC Images policy) + the poll-thread visualizer snapshot. The
+# snapshot is written only on the library poll thread under leap_lock; the main
+# thread swaps a reference (microseconds), never a deep copy of the arrays.
+leap_visualizer: bool = False
+leap_viz_ir: np.ndarray | None = None  # latest grayscale IR copy (240, 640)
+leap_viz_hands: list[dict[str, Any]] | None = None  # latest hand-geometry dicts
+leap_viz_frame: np.ndarray | None = None  # latest RGBA float32 composite (h, w, 4)
+leap_viz_seq: int = 0  # incremented on every composite publish
+leap_viz_last_render: float = 0.0  # poll-thread rate-gate timestamp
+leap_viz_uploaded_seq: int = 0  # main-thread only: last seq uploaded to the texture
+leap_viz_tex_created: bool = False  # main-thread only: raw texture built once
+
+
 # e26s02: leap window tag -> last rendered text (main-thread only, avoids
 # re-writing unchanged monitor cells / the status line on every main tick).
 leap_monitor_cache: dict[str, str] = {}
