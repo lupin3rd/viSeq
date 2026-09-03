@@ -1638,6 +1638,17 @@ def apply_thumbnail_texture(name: str, idx: str, img_data: Any, w: int, h: int) 
         thumbs.append(tex_tag)
     thumb_fail_count.pop(name, None)  # a reply clears the failure state (e10s04)
 
+    # BUG-2026-09-03T212905: a Mapper row rendered before its source thumb
+    # existed shows 'no thumb'; once the FIRST frame lands, rebuild the body
+    # (like the sequencer slot below) so the image appears. Later frames only
+    # append — the frame cycle animates them in place.
+    if (
+        is_first
+        and dpg.does_item_exist(f"mapper_row_thumb_{target_id}")
+        and not dpg.does_item_exist(f"mapper_row_img_{target_id}")
+    ):
+        refresh_mapper_ui()
+
     if is_first and not dpg.does_item_exist(img_tag) and dpg.does_item_exist(container_tag):
         if dpg.does_item_exist(loading_tag):
             dpg.delete_item(loading_tag)
