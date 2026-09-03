@@ -202,6 +202,12 @@ MAPPER_X_W = 16  # px width of the X delete button on a mini-card caption row
 MAPPER_X_H = 16  # px height of the X delete button
 
 
+MAPPER_RESET_W = 16  # px width of the reset button on a mini-card caption row (e27s01)
+
+
+MAPPER_RESET_H = 16  # px height of the reset button
+
+
 MAPPER_CB_W = 16  # px width of the enable checkbox on a caption row (measured, compact theme)
 
 

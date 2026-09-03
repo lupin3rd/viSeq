@@ -55,6 +55,8 @@ from viseqapp.constants import (
     MAPPER_DRAG_W,
     MAPPER_KNOB_H,
     MAPPER_MINI_W,
+    MAPPER_RESET_H,
+    MAPPER_RESET_W,
     MAPPER_ROW_GAP,
     MAPPER_ROW_PAD_V,
     MAPPER_ROW_THUMB_H,
@@ -1503,9 +1505,16 @@ def _create_tile_popup(target_id: str) -> None:
 
 
 def on_tile_context_click(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Right-click on a Mediagrid tile: show the tile's action popup (e16)."""
+    """Right-click on a Mediagrid tile: show the tile's action popup (e16).
+
+    e27s02 (BUG-2026-09-03T175000): the popup must be positioned at the
+    cursor first — an unpositioned DPG popup window opens at the top-left of
+    the viewport instead of under the tile. The client-space mouse
+    (get_mouse_pos(local=False)) is the coordinate space set_item_pos uses.
+    """
     popup_tag = _tile_popup_tag(user_data)
     if dpg.does_item_exist(popup_tag):
+        dpg.set_item_pos(popup_tag, dpg.get_mouse_pos(local=False))
         dpg.show_item(popup_tag)
 
 
@@ -3078,7 +3087,12 @@ def _mapper_caption_spacer(label: str, spec: dict[str, Any]) -> int:
     """
     return max(
         2,
-        MAPPER_MINI_W - 24 - MAPPER_SMALL_CHAR_PX * len(label) - MAPPER_CB_W - MAPPER_X_W,
+        MAPPER_MINI_W
+        - 24
+        - MAPPER_SMALL_CHAR_PX * len(label)
+        - MAPPER_RESET_W
+        - MAPPER_CB_W
+        - MAPPER_X_W,
     )
 
 
@@ -3161,6 +3175,16 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
         with dpg.group(horizontal=True):
             themed_text(spec["label"], slot="text_dim", tag=f"mapper_prop_{mid}")
             dpg.add_spacer(width=_mapper_caption_spacer(spec["label"], spec))
+            # e27s01: the reset button sits LEFT of the enable checkbox — it
+            # returns the control to its neutral default (mapper.reset_mapping_value)
+            dpg.add_button(
+                label="R",
+                width=MAPPER_RESET_W,
+                height=MAPPER_RESET_H,
+                callback=reset_mapping,
+                user_data=mid,
+                tag=f"mapper_reset_{mid}",
+            )
             dpg.add_checkbox(
                 default_value=mapping.get("enabled", False),
                 callback=on_mapper_enable,
@@ -3323,6 +3347,7 @@ def _render_mapper_source_menu(mapping: dict[str, Any]) -> None:
         dpg.add_item_clicked_handler(1, callback=lambda *_, m=mid: _show_mapper_menu(m))
     for tag in (
         f"mapper_prop_{mid}",
+        f"mapper_reset_{mid}",
         f"mapper_enable_{mid}",
         f"mapper_del_{mid}",
         f"mapper_{control_kind}_{mid}",
@@ -3340,19 +3365,19 @@ def _render_mapper_source_menu(mapping: dict[str, Any]) -> None:
 def _show_mapper_menu(mid: int) -> None:
     """Open the right-click source menu of a mini-card at the cursor (e18).
 
-    get_mouse_pos() is SCREEN-absolute while window positions are viewport-
-    relative, so the popup must be placed at mouse minus the viewport origin —
-    otherwise it opens offset by the window position.
+    e27s02 (BUG-2026-09-03T175000): the popup must be placed at
+    get_mouse_pos(local=False) — DPG's stable per-frame ImGui CLIENT mouse
+    position, the same coordinate space window positions (set_item_pos) live
+    in. The default get_mouse_pos() is not usable here: DPG overwrites it
+    while drawing with coordinates LOCAL TO the focused window/child under the
+    cursor (over a card that is card-local, e.g. (37, 14)), so subtracting the
+    viewport position from it opened the menu at the top of the viewport
+    instead of at the cursor.
     """
     menu_tag = f"mapper_menu_{mid}"
     if not dpg.does_item_exist(menu_tag):
         return
-    try:
-        mouse_x, mouse_y = dpg.get_mouse_pos()
-        vp_x, vp_y = dpg.get_viewport_pos()
-        dpg.set_item_pos(menu_tag, (mouse_x - vp_x, mouse_y - vp_y))
-    except Exception:
-        dpg.set_item_pos(menu_tag, dpg.get_mouse_pos())
+    dpg.set_item_pos(menu_tag, dpg.get_mouse_pos(local=False))
     dpg.show_item(menu_tag)
 
 
@@ -3687,7 +3712,11 @@ def _sync_mapper_control(mid: int) -> None:
     if mapping is None:
         return
     kind = mapping["control"]
-    tag = f"mapper_{kind}_{mid}"
+    # the button control's tag is mapper_btn_N, NOT mapper_button_N — the same
+    # naming quirk the source-menu registry documents (e23s01; e27s01 reset
+    # re-labels button cards through this path, as does an output-range edit)
+    control_kind = "btn" if kind == "button" else kind
+    tag = f"mapper_{control_kind}_{mid}"
     if not dpg.does_item_exist(tag):
         return
     out_from = mapping["output_from"]
@@ -3726,6 +3755,19 @@ def on_mapper_input(sender: Any, app_data: Any, user_data: Any) -> None:
     from_tag = f"mapper_in_from_{mid}"
     to_tag = f"mapper_in_to_{mid}"
     mapper.set_mapping_input(mid, float(dpg.get_value(from_tag)), float(dpg.get_value(to_tag)))
+
+
+def reset_mapping(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """R on a mapping card: reset the control to its neutral default (e27s01).
+
+    The core stores the neutral (catalog midpoint for slider/knob, the OFF
+    end for buttons), clamps it into the mapping's output interval and sends
+    it through the e24 gate; the widget moves in place via _sync_mapper_control
+    — no body rebuild, so a live band/MIDI drive is never interrupted.
+    """
+    mid = int(user_data)
+    mapper.reset_mapping_value(mid)
+    _sync_mapper_control(mid)
 
 
 def delete_mapping(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:

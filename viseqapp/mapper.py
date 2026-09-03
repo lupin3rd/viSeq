@@ -175,6 +175,32 @@ def set_mapping_enabled(mapping_id: int, enabled: bool) -> None:
     mapping["enabled"] = bool(enabled)
 
 
+def reset_mapping_value(mapping_id: int) -> float:
+    """Reset a mapping to its neutral default and send it (e27s01).
+
+    The neutral default is the value the mapping was CREATED at: the catalog
+    midpoint of the property (brightness/alpha 0.0, hue 0.5, transparency
+    1.0, gamma 0.0, ...). A button mapping returns to the OFF end
+    (output_from) instead — the un-pressed state, consistent with
+    toggle_mapping_value. A remapped output range (e23) clamps the neutral
+    into the mapping's own interval, exactly like set_mapping_output
+    re-clamps. Returns the effective stored value (0.0 for an unknown id);
+    the e24 gate applies: a disabled mapping stores + moves but sends no OSC.
+    """
+    mapping = find_mapping(mapping_id)
+    if mapping is None:
+        return 0.0
+    if mapping["control"] == "button":
+        neutral = mapping["output_from"]
+    else:
+        spec = _spec_of(mapping["property"])
+        neutral = _midpoint(spec["min"], spec["max"])
+    lo, hi = _output_bounds(mapping)
+    mapping["value"] = _clamp(neutral, lo, hi)
+    _send(mapping)
+    return mapping["value"]
+
+
 def _send(mapping: dict[str, Any]) -> None:
     """Send the mapping's current value to vimix and log it (worker-safe).
 
