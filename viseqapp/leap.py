@@ -515,3 +515,40 @@ def _viz_placeholder(img: Any, box: tuple[int, int, int, int], label: str) -> No
         fill=LEAP_VIZ_WAIT_COLOR,
         font=_VIZ_FONT,
     )
+
+
+# ---------- e26s05: stall watchdog policy (pure, dpg-free) ----------
+# Live-observed (2026-09-03): the LMC/Gemini service can wedge SILENTLY — the
+# tracking evaluator freezes while the process + USB stay alive and the app's
+# connection stays open, so no tracking events arrive and nothing flips the
+# status. The service streams EMPTY tracking frames at ~115 Hz even with no
+# hand in view, so a silence longer than LEAP_STALL_TIMEOUT is a genuine wedge,
+# not an idle hand.
+LEAP_STALL_TIMEOUT: float = 3.0  # s of tracking silence that means a stall
+LEAP_STALL_RETRY: float = 2.0  # fast reconnect for the first attempts
+LEAP_STALL_ESCALATED_RETRY: float = 30.0  # slow cadence once escalated
+LEAP_STALL_ESCALATION_COUNT: int = 3  # attempts before escalation
+
+
+def stall_detected(now: float, last_frame: float, timeout: float = LEAP_STALL_TIMEOUT) -> bool:
+    """Has the tracking stream been silent for more than the timeout? (e26s05)
+
+    The keep-alive refreshes last_frame on every tracking event; a wedge stops
+    the stream, so the elapsed silence grows past the timeout.
+    """
+    return now - last_frame > timeout
+
+
+def stall_escalated(count: int) -> bool:
+    """Watchdog reconnects reached the escalation count (e26s05)."""
+    return count >= LEAP_STALL_ESCALATION_COUNT
+
+
+def stall_retry_wait(count: int) -> float:
+    """Backoff after a stall-forced reconnect: fast, then slow (e26s05).
+
+    A wedged service cannot be revived by hot-looping it — after the escalation
+    count the app waits LEAP_STALL_ESCALATED_RETRY between attempts and logs
+    the actionable remedy (restart the service / replug the device).
+    """
+    return LEAP_STALL_ESCALATED_RETRY if stall_escalated(count) else LEAP_STALL_RETRY

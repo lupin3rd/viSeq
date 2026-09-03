@@ -3990,6 +3990,10 @@ def _leap_listener(lib: Any) -> Any:
                 state.leap_values.clear()
                 state.leap_values.update(snapshot)
             state.leap_status = "tracking"
+            state.leap_last_frame = time.time()  # e26s05: watchdog heartbeat
+            if state.leap_stall_count:
+                # e26s05: a frame after an escalation = the stream is back.
+                state.leap_stall_count = 0
             drive_leap_mappings(snapshot)  # e26s03: push leap-bound mappings
             # e26s04: while the visualizer is on, capture the hand geometry and
             # publish one rate-capped composite (the poll thread is the only
@@ -4031,6 +4035,17 @@ def _leap_listener(lib: Any) -> Any:
     return _LeapTrackingListener()
 
 
+def _leap_backoff_sleep(seconds: float) -> None:
+    """Interruptible backoff after a stall-forced reconnect (e26s05).
+
+    Sleeps in short steps so an engine-off during the backoff reacts within a
+    second instead of after the full escalated wait.
+    """
+    deadline = time.time() + seconds
+    while state.leap_enabled and time.time() < deadline:
+        time.sleep(min(1.0, deadline - time.time()))
+
+
 def leap_control_loop() -> None:
     """Leap Motion worker (e26s01): keep one auto-polling connection while enabled.
 
@@ -4064,6 +4079,7 @@ def leap_control_loop() -> None:
             connection.connect(auto_poll=True, timeout=3)
             connection.set_tracking_mode(lib.TrackingMode.Desktop)
             state.leap_status = "connected"
+            state.leap_last_frame = time.time()  # e26s05: silence window starts fresh
             append_log("Leap", "connected")
             # e26s04: a persisted visualizer toggle asks for IR as soon as the
             # (re)connection is up; afterwards the keep-alive below follows it.
@@ -4079,9 +4095,31 @@ def leap_control_loop() -> None:
         # Keep the connection open while enabled; a lost service/device flips the
         # status to disconnected (listener) so this loop exits and reconnects.
         # The keep-alive also watches the visualizer toggle and sets/clears the
-        # LeapC Images policy on the live connection (no reconnect needed).
+        # LeapC Images policy on the live connection (no reconnect needed) and
+        # the e26s05 watchdog: the service can wedge silently (evaluator frozen
+        # while the process + USB stay alive) with NO events arriving, so after
+        # LEAP_STALL_TIMEOUT of tracking silence this loop forces a reconnect.
         viz_policy = bool(state.leap_visualizer)
+        stall_exit = False
         while state.leap_enabled and state.leap_status != "disconnected":
+            if leap.stall_detected(time.time(), state.leap_last_frame):
+                stall_exit = True
+                state.leap_stall_count += 1
+                state.leap_status = "disconnected"
+                if state.leap_stall_count == leap.LEAP_STALL_ESCALATION_COUNT:
+                    append_log(
+                        "Leap",
+                        "tracking keeps stalling - restart the hand-tracking "
+                        "service or replug the device",
+                    )
+                elif state.leap_stall_count < leap.LEAP_STALL_ESCALATION_COUNT:
+                    append_log(
+                        "Leap",
+                        "tracking stalled (no frames for "
+                        f"{leap.LEAP_STALL_TIMEOUT:.0f}s) - reconnecting "
+                        f"(attempt {state.leap_stall_count})",
+                    )
+                break
             viz_now = bool(state.leap_visualizer)
             if viz_now != viz_policy:
                 viz_policy = viz_now
@@ -4089,6 +4127,10 @@ def leap_control_loop() -> None:
             time.sleep(0.5)
         with contextlib.suppress(Exception):
             connection.disconnect()
+        if stall_exit:
+            # a wedged service is not hot-looped: back off (fast, then slow),
+            # interruptibly so an engine-off during the backoff reacts quickly.
+            _leap_backoff_sleep(leap.stall_retry_wait(state.leap_stall_count))
 
 
 def show_settings_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:

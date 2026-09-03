@@ -297,6 +297,13 @@ leap_viz_uploaded_seq: int = 0  # main-thread only: last seq uploaded to the tex
 leap_viz_tex_created: bool = False  # main-thread only: raw texture built once
 
 
+# e26s05: stall watchdog state (worker-owned, no new lock — same practice as
+# leap_status). leap_last_frame is the epoch of the last tracking event (0 =
+# never); leap_stall_count counts consecutive watchdog-forced reconnects.
+leap_last_frame: float = 0.0
+leap_stall_count: int = 0
+
+
 # e26s02: leap window tag -> last rendered text (main-thread only, avoids
 # re-writing unchanged monitor cells / the status line on every main tick).
 leap_monitor_cache: dict[str, str] = {}
