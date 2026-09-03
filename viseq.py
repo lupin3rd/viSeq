@@ -435,6 +435,8 @@ def _capture_audio_state() -> dict[str, Any]:
         "device": str(dpg.get_value("combo_devices")),
         "lowpass": bool(dpg.get_value("cb_lowpass")),
         "bands": bands,
+        "spectrum": state.is_audio_analyzing,  # e28s03: analysis checkboxes
+        "bpm": state.is_beat_tracking,
     }
 
 
@@ -523,6 +525,10 @@ def _apply_audio_state(audio: dict[str, Any]) -> None:
                 dpg.set_value(tag, float(band[key]))
         if bands_enabled[band_id]:
             refresh_band_value(state.spectrum_bars_cache, band_id)
+    # e28s03: analysis checkboxes restore last — the device combo above is set
+    # first because opening the input stream reads the selected device.
+    if "spectrum" in audio or "bpm" in audio:
+        set_audio_analysis_flags(bool(audio.get("spectrum", False)), bool(audio.get("bpm", False)))
 
 
 def _apply_sequencer_state(seq: dict[str, Any]) -> None:
@@ -727,11 +733,18 @@ def _sanitize_audio_state(audio: Any) -> dict[str, Any]:
             "min": _to_float(band.get("min"), 0.0),
             "max": _to_float(band.get("max"), 1.0),
         }
-    return {
+    clean = {
         "device": str(audio.get("device", "")),
         "lowpass": bool(audio.get("lowpass", True)),
         "bands": bands,
     }
+    # e28s03: analysis flags are only healed onto the document when the source
+    # file carried them — a pre-e28 audio section leaves the live analysis alone.
+    if "spectrum" in audio:
+        clean["spectrum"] = bool(audio.get("spectrum"))
+    if "bpm" in audio:
+        clean["bpm"] = bool(audio.get("bpm"))
+    return clean
 
 
 def _sanitize_project_state(raw: dict[str, Any]) -> dict[str, Any]:
@@ -4709,19 +4722,29 @@ def on_lowpass_toggle(sender: Any, app_data: Any, user_data: Any) -> None:
     state.lowpass_enabled = bool(app_data)
 
 
-def toggle_audio_stream(sender: Any, app_data: Any, user_data: Any) -> None:
-    global audio_stream
-    if user_data == "vu_meter":
-        state.is_audio_analyzing = app_data
-    elif user_data == "beat_tracking":
-        state.is_beat_tracking = app_data
-    needs_stream = state.is_audio_analyzing or state.is_beat_tracking
+def _sync_analysis_widgets() -> None:
+    """Mirror the analysis flags onto their checkboxes (e28s03)."""
+    for tag, flag in (
+        ("cb_spectrum_analysis", state.is_audio_analyzing),
+        ("cb_bpm_analysis", state.is_beat_tracking),
+    ):
+        if dpg.does_item_exist(tag):
+            dpg.set_value(tag, bool(flag))
 
+
+def _sync_audio_stream() -> bool:
+    """Open/close the shared input stream to match the analysis flags (e28s03).
+
+    Returns False when the requested stream could not be opened (no input
+    device or a device failure); the callers flip the flags back off and sync
+    the widgets — the same bounce a failed manual click produces.
+    """
+    global audio_stream
+    needs_stream = state.is_audio_analyzing or state.is_beat_tracking
     if needs_stream and audio_stream is None:
-        device_string = dpg.get_value("combo_devices")
+        device_string = str(dpg.get_value("combo_devices"))
         if "No input device" in device_string:
-            dpg.set_value(sender, False)
-            return
+            return False
         device_id = int(device_string.split(":")[0])
         try:
             audio_stream = sd.InputStream(
@@ -4733,12 +4756,53 @@ def toggle_audio_stream(sender: Any, app_data: Any, user_data: Any) -> None:
             )
             audio_stream.start()
         except Exception:
-            dpg.set_value(sender, False)
+            audio_stream = None
+            return False
     elif not needs_stream and audio_stream is not None:
         audio_stream.stop()
         audio_stream.close()
         audio_stream = None
         dpg.set_value("testo_bpm", "BPM: ---")
+    return True
+
+
+def set_audio_analysis_flags(spectrum: bool, bpm: bool) -> None:
+    """Restore the analysis checkboxes from a project (e28s03, main thread).
+
+    Sets both flags + widgets, then opens the input stream when any flag is on
+    (the device combo is restored before this call). On a failed open the flags
+    bounce back off with a log, exactly like a failed manual click — a rig
+    without capture never hangs with a phantom analysis flag.
+    """
+    state.is_audio_analyzing = bool(spectrum)
+    state.is_beat_tracking = bool(bpm)
+    _sync_analysis_widgets()
+    if not _sync_audio_stream():
+        state.is_audio_analyzing = False
+        state.is_beat_tracking = False
+        _sync_analysis_widgets()
+        log_error("Audio", "analysis disabled: no usable input device")
+
+
+def toggle_audio_stream(sender: Any, app_data: Any, user_data: Any) -> None:
+    """Checkbox clicks: flip one analysis flag, sync the widgets and the stream.
+
+    e28s03: the failure bounce (set_value(sender, False)) is now the flag +
+    widget sync — a failed open flips the clicked flag back off.
+    """
+    if user_data == "vu_meter":
+        state.is_audio_analyzing = bool(app_data)
+    elif user_data == "beat_tracking":
+        state.is_beat_tracking = bool(app_data)
+    else:
+        return
+    _sync_analysis_widgets()
+    if not _sync_audio_stream():
+        if user_data == "vu_meter":
+            state.is_audio_analyzing = False
+        else:
+            state.is_beat_tracking = False
+        _sync_analysis_widgets()
 
 
 def toggle_play(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -5069,6 +5133,7 @@ with dpg.window(
     )
     dpg.add_checkbox(
         label="Enable Level Analysis (Spectrum)",
+        tag="cb_spectrum_analysis",  # e28s03: stable tag for project restore
         callback=toggle_audio_stream,
         user_data="vu_meter",
     )
@@ -5149,6 +5214,7 @@ with dpg.window(
     with dpg.group(horizontal=True):
         dpg.add_checkbox(
             label="Enable BPM Analysis (Essentia)",
+            tag="cb_bpm_analysis",  # e28s03: stable tag for project restore
             callback=toggle_audio_stream,
             user_data="beat_tracking",
         )
