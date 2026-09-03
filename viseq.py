@@ -54,6 +54,7 @@ from viseqapp.constants import (
     MAPPER_CTRL_H,
     MAPPER_DRAG_W,
     MAPPER_KNOB_H,
+    MAPPER_MAX_MAPPINGS,
     MAPPER_MINI_W,
     MAPPER_RESET_H,
     MAPPER_RESET_W,
@@ -437,8 +438,27 @@ def _capture_audio_state() -> dict[str, Any]:
     }
 
 
+def _capture_mapper_state() -> dict[str, Any]:
+    """Project the live mapper into its persisted section (e28s01)."""
+    return {
+        "mappings": [mapper.capture_mapping(m) for m in state.mapper_mappings],
+    }
+
+
+def _sanitize_mapper_mappings(mappings: Any) -> list[dict[str, Any]]:
+    """Heal the mapper mappings list: bounded, invalid rows dropped (e28s01)."""
+    if not isinstance(mappings, list):
+        return []
+    clean: list[dict[str, Any]] = []
+    for raw in mappings[:MAPPER_MAX_MAPPINGS]:
+        healed = mapper.sanitize_mapping(raw)
+        if healed is not None:
+            clean.append(healed)
+    return clean
+
+
 def capture_project_state() -> dict[str, Any]:
-    """Snapshot layout + theme + sequencer state into a project dict (e11s01)."""
+    """Snapshot layout + theme + sequencer + mapper into a project dict (e11s01/e28s01)."""
     preset_label = str(dpg.get_value("theme_preset"))
     return {
         "layout": {"windows": snapshot_window_layout()},
@@ -459,6 +479,7 @@ def capture_project_state() -> dict[str, Any]:
             ],
             "audio": _capture_audio_state(),
         },
+        "mapper": _capture_mapper_state(),
     }
 
 
@@ -522,7 +543,15 @@ def _apply_sequencer_state(seq: dict[str, Any]) -> None:
 
 
 def apply_project_state(state: dict[str, Any]) -> None:
-    """Re-apply a project dict onto the live app (layout, theme, sequencer) (e11s01)."""
+    """Re-apply a project dict onto the live app (mapper, layout, theme, sequencer) (e11s01/e28s01).
+
+    e28s01: the mapper state is restored BEFORE the window layout applies, so
+    the Mapper body exists by the time a saved layout may show the window.
+    """
+    mapper_section = state.get("mapper")
+    if isinstance(mapper_section, dict):
+        mapper.restore_mappings(mapper_section.get("mappings"))
+        refresh_mapper_ui()
     apply_window_layout(state.get("layout", {}).get("windows", []))
     theme = state.get("theme")
     if isinstance(theme, dict):
@@ -571,6 +600,7 @@ def pristine_project_state() -> dict[str, Any]:
                 },
             },
         },
+        "mapper": {"mappings": []},
     }
 
 
@@ -579,11 +609,14 @@ def apply_new_project() -> None:
 
     Tracks are replaced wholesale (clearing pending fades and the runtime
     last_rand_* keys), then the project-apply path rebuilds every cell, slot,
-    beat-source checkbox and audio widget.
+    beat-source checkbox and audio widget. e28s01: the Mapper is project
+    content, so New project clears its mappings too and refreshes the body.
     """
     for row in range(NUM_TRACKS):
         tracks_data[row] = _pristine_track()
     _apply_sequencer_state(pristine_project_state()["sequencer"])
+    mapper.restore_mappings([])
+    refresh_mapper_ui()
 
 
 def _project_document(state: dict[str, Any]) -> dict[str, Any]:
@@ -702,7 +735,7 @@ def _sanitize_audio_state(audio: Any) -> dict[str, Any]:
 
 
 def _sanitize_project_state(raw: dict[str, Any]) -> dict[str, Any]:
-    """Coerce a loaded project document into the capture shape (e11s01)."""
+    """Coerce a loaded project document into the capture shape (e11s01/e28s01)."""
     theme = raw.get("theme")
     if not isinstance(theme, dict):
         theme = {"preset": "scuro", "colors": copy.deepcopy(DEFAULT_PALETTE)}
@@ -721,7 +754,7 @@ def _sanitize_project_state(raw: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(seq, dict):
         seq = {}
     beat = seq.get("beat_source")
-    return {
+    clean = {
         "layout": {"windows": layout["windows"]},
         "theme": theme,
         "sequencer": {
@@ -731,6 +764,12 @@ def _sanitize_project_state(raw: dict[str, Any]) -> dict[str, Any]:
             "audio": _sanitize_audio_state(seq.get("audio")),
         },
     }
+    # e28s01: the mapper section is only present in the healed document when the
+    # source file carried one — a pre-e28 project leaves the live mapper alone.
+    raw_mapper = raw.get("mapper")
+    if isinstance(raw_mapper, dict):
+        clean["mapper"] = {"mappings": _sanitize_mapper_mappings(raw_mapper.get("mappings"))}
+    return clean
 
 
 def remember_recent_project(cfg: dict[str, Any], path: str) -> list[str]:

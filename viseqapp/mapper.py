@@ -8,9 +8,11 @@ sends go through the shared viOSC client plus the log queue, mirroring the
 sequencer pattern.
 """
 
+import copy
 from typing import Any
 
 from viseqapp import leap, state
+from viseqapp.constants import MAPPER_MAX_MAPPINGS, MAPPER_PERSISTED_KEYS
 from viseqapp.osc import osc_client
 from viseqapp.queues import append_log
 
@@ -56,12 +58,18 @@ def _midpoint(prop_min: float, prop_max: float) -> float:
     return (prop_min + prop_max) / 2.0
 
 
-def add_mapping(target_id: str, prop: str, control: str) -> dict[str, Any]:
-    """Create a mapping entry and append it to the mapper state (e16s01)."""
+def _build_mapping(
+    mapping_id: int, target_id: str | None, prop: str, control: str
+) -> dict[str, Any]:
+    """A fresh mapping dict with the catalog defaults, no side effects (e28s01).
+
+    Shared by add_mapping (which assigns the id + appends) and sanitize_mapping
+    (which heals a stored row onto the exact runtime shape) so the persistence
+    schema can never drift from the live model.
+    """
     spec = _spec_of(prop)
-    state.mapper_counter += 1
-    mapping = {
-        "id": state.mapper_counter,
+    return {
+        "id": mapping_id,
         "target_id": target_id,
         "property": prop,
         "control": control,
@@ -81,8 +89,106 @@ def add_mapping(target_id: str, prop: str, control: str) -> dict[str, Any]:
         "input_to": None,
         "enabled": False,
     }
+
+
+def add_mapping(target_id: str, prop: str, control: str) -> dict[str, Any]:
+    """Create a mapping entry and append it to the mapper state (e16s01)."""
+    state.mapper_counter += 1
+    mapping = _build_mapping(state.mapper_counter, target_id, prop, control)
     state.mapper_mappings.append(mapping)
     return mapping
+
+
+def capture_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
+    """The persisted projection of one mapping (e28s01): the model keys only.
+
+    The schema boundary between the runtime model and a project file — every
+    key a mapping can carry lives in MAPPER_PERSISTED_KEYS, so the projection
+    is a deep copy of exactly those keys.
+    """
+    return {key: copy.deepcopy(mapping[key]) for key in MAPPER_PERSISTED_KEYS if key in mapping}
+
+
+def _to_float_or(value: Any, default: float) -> float:
+    """Coerce a stored value to float, falling back on garbage (e28s01)."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def sanitize_mapping(raw: Any) -> dict[str, Any] | None:
+    """Heal one stored mapping row onto the live runtime shape (e28s01).
+
+    A row that cannot become a valid mapping (unknown property or control,
+    non-dict input) returns None so the loader drops it. Valid rows heal every
+    missing field to the model default, restore the FIRST present source
+    (band > midi > leap — the model is exclusive), seed the input range like
+    the bind functions when a source exists without one, clamp the value into
+    the (possibly reversed) output interval and drop unknown keys.
+    """
+    if not isinstance(raw, dict):
+        return None
+    prop = str(raw.get("property") or "")
+    control = str(raw.get("control") or "")
+    if prop not in MAPPER_PROPERTIES or control not in MAPPER_CONTROLS:
+        return None
+    spec = MAPPER_PROPERTIES[prop]
+    target_id = str(raw.get("target_id") or "") or None
+    mapping = _build_mapping(int(raw.get("id") or 0), target_id, prop, control)
+    if raw.get("band") in (2, 3):
+        mapping["band"] = int(raw["band"])
+    elif isinstance(raw.get("midi"), dict):
+        midi = raw["midi"]
+        mapping["midi"] = {
+            "device": str(midi.get("device") or "") or None,
+            "type": str(midi.get("type") or ""),
+            "number": int(midi.get("number") or 0),
+        }
+    elif raw.get("leap"):
+        mapping["leap"] = str(raw["leap"])
+    if mapping["band"] is not None or mapping["midi"] is not None or mapping["leap"] is not None:
+        if mapping["band"] is not None:
+            seed_from, seed_to = 0.0, 1.0
+        elif mapping["midi"] is not None:
+            seed_from, seed_to = 0.0, 127.0
+        else:
+            parts = leap.binding_parts(mapping["leap"] or "")
+            seed_from, seed_to = 0.0, 1.0
+            if parts is not None:
+                seed_from, seed_to = leap.signal_default_range(parts[1]) or (0.0, 1.0)
+        mapping["input_from"] = _to_float_or(raw.get("input_from"), seed_from)
+        mapping["input_to"] = _to_float_or(raw.get("input_to"), seed_to)
+    mapping["output_from"] = _to_float_or(raw.get("output_from"), spec["min"])
+    mapping["output_to"] = _to_float_or(raw.get("output_to"), spec["max"])
+    lo, hi = _output_bounds(mapping)
+    neutral = _midpoint(spec["min"], spec["max"])
+    mapping["value"] = _clamp(_to_float_or(raw.get("value"), neutral), lo, hi)
+    mapping["enabled"] = bool(raw.get("enabled", False))
+    return mapping
+
+
+def restore_mappings(rows: Any) -> list[dict[str, Any]]:
+    """Replace the live mapper with sanitized project rows (e28s01).
+
+    Order is preserved (render order), invalid rows drop, the list is capped at
+    MAPPER_MAX_MAPPINGS, and the id counter resumes above the max restored id
+    so add_mapping never collides. Worker-safe: no dpg. A non-list (or None)
+    empties the mapper and keeps the current counter.
+    """
+    restored: list[dict[str, Any]] = []
+    max_id = state.mapper_counter
+    if isinstance(rows, list):
+        for raw in rows[:MAPPER_MAX_MAPPINGS]:
+            mapping = sanitize_mapping(raw)
+            if mapping is None:
+                continue
+            restored.append(mapping)
+            if mapping["id"] > max_id:
+                max_id = mapping["id"]
+    state.mapper_mappings[:] = restored
+    state.mapper_counter = max_id
+    return restored
 
 
 def remove_mapping(mapping_id: int) -> None:

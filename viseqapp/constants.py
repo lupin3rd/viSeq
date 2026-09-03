@@ -404,6 +404,30 @@ RECENT_PROJECTS_MAX = 5  # cap for the Last-project submenu / config list (e11s0
 STEP_PERSISTED_KEYS: tuple[str, ...] = ("active", "type", "v1", "v2", "frames", "msgs", "color")
 
 
+# e28s01: the mapping-model keys that survive in a project file (capture whitelist /
+# sanitize schema). The runtime model never gains a key that is not persisted here.
+MAPPER_PERSISTED_KEYS: tuple[str, ...] = (
+    "id",
+    "target_id",
+    "property",
+    "control",
+    "value",
+    "band",
+    "midi",
+    "leap",
+    "output_from",
+    "output_to",
+    "input_from",
+    "input_to",
+    "enabled",
+)
+
+
+# e28s01: restore cap for the mapper section of a project file — a corrupted or
+# hand-edited document cannot balloon the live mapper beyond this many mappings.
+MAPPER_MAX_MAPPINGS = 256
+
+
 NUM_STEPS = 8
 
 
