@@ -1043,6 +1043,17 @@ def apply_boot_config() -> None:
     _apply_theme_config(cfg["theme"])
     if dpg.does_item_exist("cb_restore_project_boot"):
         dpg.set_value("cb_restore_project_boot", cfg["projects"]["restore_last_on_boot"])
+    # e28s04: the Settings OSC fields prefill from the config (the Settings window
+    # is built before the config loads, so the persisted endpoints land here).
+    endpoints = _osc_endpoints_from_config(cfg)
+    for tag, value in (
+        ("viosc_ip", endpoints["client_ip"]),
+        ("viosc_port", endpoints["client_port"]),
+        ("listen_ip", endpoints["listen_ip"]),
+        ("listen_port", endpoints["listen_port"]),
+    ):
+        if dpg.does_item_exist(tag):
+            dpg.set_value(tag, value)
     if should_restore_last_project_on_boot(cfg):
         recent = recent_project_paths(cfg)
         if recent:
@@ -2597,6 +2608,38 @@ def start_osc_server(ip: str, port: int) -> bool:
         return False
 
 
+def _osc_endpoints_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    """The effective OSC endpoints: cfg['osc'] merged over the constants (e28s04)."""
+    raw = cfg.get("osc")
+    osc_cfg = raw if isinstance(raw, dict) else {}
+    return {
+        "client_ip": str(osc_cfg.get("client_ip") or VIOSC_IP),
+        "client_port": int(osc_cfg.get("client_port") or VIOSC_PORT),
+        "listen_ip": str(osc_cfg.get("listen_ip") or VIOSC_IP),
+        "listen_port": int(osc_cfg.get("listen_port") or VIOSC_LISTEN_PORT),
+    }
+
+
+def persist_osc_endpoints(
+    client_ip: str | None = None,
+    client_port: int | None = None,
+    listen_ip: str | None = None,
+    listen_port: int | None = None,
+) -> None:
+    """Persist OSC endpoint fields into cfg['osc'] (e28s04); None leaves a field."""
+    cfg = load_config()
+    osc = cfg["osc"]
+    if client_ip is not None:
+        osc["client_ip"] = client_ip
+    if client_port is not None:
+        osc["client_port"] = client_port
+    if listen_ip is not None:
+        osc["listen_ip"] = listen_ip
+    if listen_port is not None:
+        osc["listen_port"] = listen_port
+    save_config(cfg)
+
+
 def toggle_local_server() -> None:
     if state.is_server_running:
         if state.local_osc_server and state.local_server_thread is not None:
@@ -2607,7 +2650,10 @@ def toggle_local_server() -> None:
         dpg.set_item_label("btn_server_toggle", "Start Server")
         dpg.set_value("server_status", "Server Status: Stopped")
     else:
-        start_osc_server(str(dpg.get_value("listen_ip")), int(dpg.get_value("listen_port")))
+        ip = str(dpg.get_value("listen_ip"))
+        port = int(dpg.get_value("listen_port"))
+        if start_osc_server(ip, port):
+            persist_osc_endpoints(listen_ip=ip, listen_port=port)  # e28s04
 
 
 def connect_osc_client(ip: str, port: int) -> bool:
@@ -2623,13 +2669,18 @@ def connect_osc_client(ip: str, port: int) -> bool:
 
 def connect_to_viosc() -> None:
     """Connect the OSC client from the viOSC panel inputs (button callback)."""
-    connect_osc_client(str(dpg.get_value("viosc_ip")), int(dpg.get_value("viosc_port")))
+    ip = str(dpg.get_value("viosc_ip"))
+    port = int(dpg.get_value("viosc_port"))
+    if connect_osc_client(ip, port):
+        persist_osc_endpoints(client_ip=ip, client_port=port)  # e28s04
 
 
 def autostart_osc() -> None:
-    """Boot wiring: auto-connect the viOSC client and start the listening server."""
-    connect_osc_client(VIOSC_IP, VIOSC_PORT)
-    start_osc_server(VIOSC_IP, VIOSC_LISTEN_PORT)
+    """Boot wiring: auto-connect the viOSC client and start the listening server
+    on the persisted endpoints (e28s04); constants when the config has none."""
+    endpoints = _osc_endpoints_from_config(load_config())
+    connect_osc_client(endpoints["client_ip"], endpoints["client_port"])
+    start_osc_server(endpoints["listen_ip"], endpoints["listen_port"])
 
 
 def midi_action_beat_source(mode: str) -> None:

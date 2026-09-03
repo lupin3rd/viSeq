@@ -382,6 +382,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # embedded visualizer toggle (both off by default).
     "leap": {"enabled": False, "visualizer": False},
     "projects": {"recent": [], "restore_last_on_boot": True},
+    # e28s04: OSC endpoints are rig settings (not project content) — the viOSC
+    # client + listening-server IP:port persist app-level like theme/MIDI/Leap.
+    "osc": {
+        "client_ip": VIOSC_IP,
+        "client_port": VIOSC_PORT,
+        "listen_ip": VIOSC_IP,
+        "listen_port": VIOSC_LISTEN_PORT,
+    },
 }
 
 
