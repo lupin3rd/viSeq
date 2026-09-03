@@ -310,6 +310,7 @@ LAYOUT_WINDOW_TAGS: list[str] = [
     "settings_window",
     "vimix_media_window",
     "logs_window",
+    "mapper_window",  # e28s02: the Mapper is a workspace window — pos/size/open persist
 ]
 
 
