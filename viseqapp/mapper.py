@@ -218,6 +218,29 @@ def prune_mappings(live_ids: set[str]) -> list[dict[str, Any]]:
     return removed
 
 
+def retarget_source(old_target_id: str, new_target_id: str) -> int:
+    """Re-point every mapping of a source row onto another source (e29s01).
+
+    The Mapper row-thumb click (like the sequencer clip-slot click) applies
+    the media-grid selection to a whole row: every mapping whose target_id
+    equals old_target_id gets new_target_id, preserving list order, and the
+    count of moved mappings is returned. OSC addresses derive from target_id
+    at send time (mapper._send), so no stored address migrates; per-mapping
+    property/control/value, band/MIDI/leap source, output/input ranges and the
+    e24 enabled flag are untouched. Equal or empty ids and an unknown old
+    target are no-ops (0) — the no-selection guard of the click lives in the
+    composition root.
+    """
+    if not old_target_id or not new_target_id or old_target_id == new_target_id:
+        return 0
+    moved = 0
+    for mapping in state.mapper_mappings:
+        if mapping["target_id"] == old_target_id:
+            mapping["target_id"] = new_target_id
+            moved += 1
+    return moved
+
+
 def set_mapping_value(mapping_id: int, value: float) -> None:
     """Store a clamped value on the mapping (no OSC; e16s01).
 

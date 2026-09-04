@@ -3236,7 +3236,10 @@ def _mapper_row_thumb(target_id: str, parent: Any, height: int) -> None:
     A fixed-width slot as tall as the row with the sequencer-size thumbnail
     (110x70) vertically centered inside, so the image aligns with the mini-card
     content next to it; when no texture exists yet the slot shows a "no thumb"
-    placeholder (same footprint, rows stay aligned).
+    placeholder (same footprint, rows stay aligned). e29s01: the slot is a
+    sequencer-style apply box — a left click on its inner items (child windows
+    cannot host clicked handlers on DPG 2.3.1) re-targets the row onto the
+    media selected in the grid; the "no thumb" placeholder is clickable too.
     """
     with dpg.child_window(
         parent=parent,
@@ -3247,6 +3250,14 @@ def _mapper_row_thumb(target_id: str, parent: Any, height: int) -> None:
         tag=f"mapper_row_thumb_{target_id}",
     ):
         dpg.add_spacer(height=max(0, (height - MAPPER_ROW_THUMB_H) // 2))
+        click_reg_tag = f"mapper_row_click_reg_{target_id}"
+        if dpg.does_item_exist(click_reg_tag):
+            dpg.delete_item(click_reg_tag)  # a rebuild must not leak registries
+        with dpg.item_handler_registry(tag=click_reg_tag):
+            dpg.add_item_clicked_handler(
+                0,  # left click applies the selected source (e29s01)
+                callback=lambda *_, t=target_id: on_mapper_row_thumb_click(None, None, t),
+            )
         tex_tags = thumbnails_data.get(target_id)
         if tex_tags:
             tex_tag = tex_tags[0]
@@ -3257,8 +3268,33 @@ def _mapper_row_thumb(target_id: str, parent: Any, height: int) -> None:
                     height=MAPPER_ROW_THUMB_H,
                     tag=f"mapper_row_img_{target_id}",  # e25: stable tag for the frame cycle
                 )
+                dpg.bind_item_handler_registry(f"mapper_row_img_{target_id}", click_reg_tag)
                 return
-        themed_text("no thumb", slot="text_dim")
+        no_tag = f"mapper_row_nothumb_{target_id}"  # e29s01: stable tag, clickable placeholder
+        themed_text("no thumb", slot="text_dim", tag=no_tag)
+        dpg.bind_item_handler_registry(no_tag, click_reg_tag)
+
+
+def on_mapper_row_thumb_click(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Row-thumb click: apply the selected media to the whole row (e29s01).
+
+    Mirrors the sequencer clip-slot click: the media selected in the Vimix
+    sources grid (state.viseq_selected_source) becomes the row's source —
+    every mapping of the row re-targets onto it and the Mapper body rebuilds
+    (rows regroup by first appearance; an existing row of the new source
+    merges). A click with NO grid selection, or on a row already targeting
+    the selection, is a no-op: deliberately NOT the sequencer's
+    get_current_target_id() vimix-current fallback (user-confirmed) — the
+    source of a mapper row is a deliberate choice.
+    """
+    target_id = user_data
+    selected = state.viseq_selected_source
+    if selected is None or selected == target_id:
+        return
+    if mapper.retarget_source(target_id, selected):
+        refresh_mapper_ui()
 
 
 def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> None:
