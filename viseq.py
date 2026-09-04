@@ -54,8 +54,8 @@ from viseqapp.constants import (
     MAPPER_CTRL_H,
     MAPPER_DRAG_W,
     MAPPER_KNOB_H,
+    MAPPER_LINE_NO_DIGIT_PX,
     MAPPER_LINE_NO_FONT_SIZE,
-    MAPPER_LINE_NO_INDENT,
     MAPPER_LINE_NO_TEXT_H,
     MAPPER_LINE_NO_W,
     MAPPER_MAX_MAPPINGS,
@@ -3309,11 +3309,15 @@ def _mapper_line_number(row_no: int, target_id: str, parent: Any, height: int) -
 
     A narrow borderless slot as tall as the row whose ProggyTiny digit is
     vertically centered — the same spacer technique the thumbnail slot uses —
-    so every row reads '1  [thumb] cards' and the number matches the tile
-    menu's "Add to Mapper > line N" (both number mapper.row_targets() order).
-    The digit is one ProggyTiny step larger than the 10 px mapper texts and
-    sits a few px right of the slot edge (e32s02 tuning).
+    and horizontally centered in the narrow column, so every row reads
+    ' 1  [thumb] cards' with the digit balanced between the row edge and the
+    thumbnail (the number matches the tile menu's "Add to Mapper > line N";
+    both number mapper.row_targets() order).
     """
+    digits = len(str(row_no))
+    # monospace ProggyTiny digits: center the digit(s) in the fixed column;
+    # two digits fill it flush (e32s02 tuning)
+    indent = max(0, (MAPPER_LINE_NO_W - digits * MAPPER_LINE_NO_DIGIT_PX) // 2)
     with dpg.child_window(
         parent=parent,
         width=MAPPER_LINE_NO_W,
@@ -3326,7 +3330,7 @@ def _mapper_line_number(row_no: int, target_id: str, parent: Any, height: int) -
         themed_text(
             str(row_no),
             slot="text_dim",
-            indent=MAPPER_LINE_NO_INDENT,
+            indent=indent,
             tag=f"mapper_line_no_txt_{target_id}",
         )
     font = _mapper_line_no_font or _mapper_font()
