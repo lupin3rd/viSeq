@@ -175,6 +175,18 @@ MAPPER_ROW_THUMB_W = SLOT_BUTTON_WIDTH  # px width of the row thumbnail (= the s
 MAPPER_ROW_THUMB_H = SLOT_BUTTON_HEIGHT  # px height of the row thumbnail
 
 
+MAPPER_LINE_NO_W = 16  # px width of the row line-number column (e32s02; fits 2 digits flush)
+
+
+MAPPER_LINE_NO_DIGIT_PX = 8  # px advance of a ProggyTiny-13 digit (5.4 px @9 px -> ~7.8 px)
+
+
+MAPPER_LINE_NO_FONT_SIZE = 13  # px size of the row line numbers (ProggyTiny, > the 10 px font)
+
+
+MAPPER_LINE_NO_TEXT_H = 13  # px text height used to center the line number in the row
+
+
 MAPPER_TEXT_H = 17  # px height of one compact text/drag row (measured: drag box 17 px)
 
 
@@ -200,6 +212,12 @@ MAPPER_X_W = 16  # px width of the X delete button on a mini-card caption row
 
 
 MAPPER_X_H = 16  # px height of the X delete button
+
+
+MAPPER_RESET_W = 16  # px width of the reset button on a mini-card caption row (e27s01)
+
+
+MAPPER_RESET_H = 16  # px height of the reset button
 
 
 MAPPER_CB_W = 16  # px width of the enable checkbox on a caption row (measured, compact theme)
@@ -304,6 +322,7 @@ LAYOUT_WINDOW_TAGS: list[str] = [
     "settings_window",
     "vimix_media_window",
     "logs_window",
+    "mapper_window",  # e28s02: the Mapper is a workspace window — pos/size/open persist
 ]
 
 
@@ -371,7 +390,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "theme": {"preset": "scuro", "colors": copy.deepcopy(DEFAULT_PALETTE)},
     # e14s02: multi-controller schema — controllers[] replaces the single input_port.
     "midi": {"enabled": False, "controllers": [], "clock_source": None},
+    # e26: Leap Motion engine — persisted settings: enabled flag + the e26s04
+    # embedded visualizer toggle (both off by default).
+    "leap": {"enabled": False, "visualizer": False},
     "projects": {"recent": [], "restore_last_on_boot": True},
+    # e28s04: OSC endpoints are rig settings (not project content) — the viOSC
+    # client + listening-server IP:port persist app-level like theme/MIDI/Leap.
+    "osc": {
+        "client_ip": VIOSC_IP,
+        "client_port": VIOSC_PORT,
+        "listen_ip": VIOSC_IP,
+        "listen_port": VIOSC_LISTEN_PORT,
+    },
 }
 
 
@@ -393,6 +423,30 @@ RECENT_PROJECTS_MAX = 5  # cap for the Last-project submenu / config list (e11s0
 
 
 STEP_PERSISTED_KEYS: tuple[str, ...] = ("active", "type", "v1", "v2", "frames", "msgs", "color")
+
+
+# e28s01: the mapping-model keys that survive in a project file (capture whitelist /
+# sanitize schema). The runtime model never gains a key that is not persisted here.
+MAPPER_PERSISTED_KEYS: tuple[str, ...] = (
+    "id",
+    "target_id",
+    "property",
+    "control",
+    "value",
+    "band",
+    "midi",
+    "leap",
+    "output_from",
+    "output_to",
+    "input_from",
+    "input_to",
+    "enabled",
+)
+
+
+# e28s01: restore cap for the mapper section of a project file — a corrupted or
+# hand-edited document cannot balloon the live mapper beyond this many mappings.
+MAPPER_MAX_MAPPINGS = 256
 
 
 NUM_STEPS = 8

@@ -20,7 +20,7 @@ from PIL import Image
 from pythonosc import dispatcher, udp_client
 
 import viseqapp  # noqa: F401  scaffold hook (REFACTOR_LATEST.md commit 1): proves the package import path works at boot
-from viseqapp import mapper, state
+from viseqapp import leap, mapper, state
 from viseqapp.audio import (
     _set_band_variable,
     apply_spectrum_agc,
@@ -54,7 +54,14 @@ from viseqapp.constants import (
     MAPPER_CTRL_H,
     MAPPER_DRAG_W,
     MAPPER_KNOB_H,
+    MAPPER_LINE_NO_DIGIT_PX,
+    MAPPER_LINE_NO_FONT_SIZE,
+    MAPPER_LINE_NO_TEXT_H,
+    MAPPER_LINE_NO_W,
+    MAPPER_MAX_MAPPINGS,
     MAPPER_MINI_W,
+    MAPPER_RESET_H,
+    MAPPER_RESET_W,
     MAPPER_ROW_GAP,
     MAPPER_ROW_PAD_V,
     MAPPER_ROW_THUMB_H,
@@ -128,6 +135,12 @@ from viseqapp.constants import (
     VIOSC_IP,
     VIOSC_LISTEN_PORT,
     VIOSC_PORT,
+)
+from viseqapp.leap import (
+    leap_init_from_config,
+    normalize_tracking_event,
+    set_leap_enabled,
+    set_leap_visualizer,
 )
 from viseqapp.midi import (
     _clock_port_name,
@@ -231,8 +244,10 @@ DEFAULT_MONITOR_PROPS = ["alpha", "seek", "speed"]  # requested when a monitor s
 # viseq application version — single source of truth (matches specs/release-plan.yaml, e08s02).
 # e13s01: this is the first real release of viSeq (user decision).
 # e20s03: 0.2.0 — viseqapp refactor + controller profiles + new project + Mapper family.
+# 0.4.0 — Leap Motion mapper source, per-mapping reset, project save + OSC config persist,
+# Mapper tile/row workflows (thumb assign, Add-to-Mapper submenu, line numbers).
 # 0.3.0 — Mapper family (rows/remap/enable/cycle), compact Vimix-sources grid, windows, XDG.
-APP_VERSION: str = "0.3.0"
+APP_VERSION: str = "0.4.0"
 
 # Author's GitHub profile, shown as a link in the About window (e08s01, user request).
 GITHUB_URL: str = "https://github.com/lupin3rd"
@@ -255,6 +270,10 @@ _TILE_TITLE_FONT_PATHS: tuple[str, ...] = (
     str(Path(__file__).resolve().parent / "assets" / "ProggyTiny.ttf"),
 )
 _tile_title_font: Any = None
+
+# e32s02: a larger ProggyTiny for the Mapper row line numbers (same guarded pattern;
+# missing asset -> None -> the numbers fall back to the 10 px mapper font).
+_mapper_line_no_font: Any = None
 
 # --- e09: MIDI control engine (single mido stack; notes + CCs, user-configurable bindings) ---
 
@@ -426,11 +445,32 @@ def _capture_audio_state() -> dict[str, Any]:
         "device": str(dpg.get_value("combo_devices")),
         "lowpass": bool(dpg.get_value("cb_lowpass")),
         "bands": bands,
+        "spectrum": state.is_audio_analyzing,  # e28s03: analysis checkboxes
+        "bpm": state.is_beat_tracking,
     }
 
 
+def _capture_mapper_state() -> dict[str, Any]:
+    """Project the live mapper into its persisted section (e28s01)."""
+    return {
+        "mappings": [mapper.capture_mapping(m) for m in state.mapper_mappings],
+    }
+
+
+def _sanitize_mapper_mappings(mappings: Any) -> list[dict[str, Any]]:
+    """Heal the mapper mappings list: bounded, invalid rows dropped (e28s01)."""
+    if not isinstance(mappings, list):
+        return []
+    clean: list[dict[str, Any]] = []
+    for raw in mappings[:MAPPER_MAX_MAPPINGS]:
+        healed = mapper.sanitize_mapping(raw)
+        if healed is not None:
+            clean.append(healed)
+    return clean
+
+
 def capture_project_state() -> dict[str, Any]:
-    """Snapshot layout + theme + sequencer state into a project dict (e11s01)."""
+    """Snapshot layout + theme + sequencer + mapper into a project dict (e11s01/e28s01)."""
     preset_label = str(dpg.get_value("theme_preset"))
     return {
         "layout": {"windows": snapshot_window_layout()},
@@ -451,6 +491,7 @@ def capture_project_state() -> dict[str, Any]:
             ],
             "audio": _capture_audio_state(),
         },
+        "mapper": _capture_mapper_state(),
     }
 
 
@@ -494,6 +535,10 @@ def _apply_audio_state(audio: dict[str, Any]) -> None:
                 dpg.set_value(tag, float(band[key]))
         if bands_enabled[band_id]:
             refresh_band_value(state.spectrum_bars_cache, band_id)
+    # e28s03: analysis checkboxes restore last — the device combo above is set
+    # first because opening the input stream reads the selected device.
+    if "spectrum" in audio or "bpm" in audio:
+        set_audio_analysis_flags(bool(audio.get("spectrum", False)), bool(audio.get("bpm", False)))
 
 
 def _apply_sequencer_state(seq: dict[str, Any]) -> None:
@@ -514,7 +559,15 @@ def _apply_sequencer_state(seq: dict[str, Any]) -> None:
 
 
 def apply_project_state(state: dict[str, Any]) -> None:
-    """Re-apply a project dict onto the live app (layout, theme, sequencer) (e11s01)."""
+    """Re-apply a project dict onto the live app (mapper, layout, theme, sequencer) (e11s01/e28s01).
+
+    e28s01: the mapper state is restored BEFORE the window layout applies, so
+    the Mapper body exists by the time a saved layout may show the window.
+    """
+    mapper_section = state.get("mapper")
+    if isinstance(mapper_section, dict):
+        mapper.restore_mappings(mapper_section.get("mappings"))
+        refresh_mapper_ui()
     apply_window_layout(state.get("layout", {}).get("windows", []))
     theme = state.get("theme")
     if isinstance(theme, dict):
@@ -563,6 +616,7 @@ def pristine_project_state() -> dict[str, Any]:
                 },
             },
         },
+        "mapper": {"mappings": []},
     }
 
 
@@ -571,11 +625,14 @@ def apply_new_project() -> None:
 
     Tracks are replaced wholesale (clearing pending fades and the runtime
     last_rand_* keys), then the project-apply path rebuilds every cell, slot,
-    beat-source checkbox and audio widget.
+    beat-source checkbox and audio widget. e28s01: the Mapper is project
+    content, so New project clears its mappings too and refreshes the body.
     """
     for row in range(NUM_TRACKS):
         tracks_data[row] = _pristine_track()
     _apply_sequencer_state(pristine_project_state()["sequencer"])
+    mapper.restore_mappings([])
+    refresh_mapper_ui()
 
 
 def _project_document(state: dict[str, Any]) -> dict[str, Any]:
@@ -686,15 +743,22 @@ def _sanitize_audio_state(audio: Any) -> dict[str, Any]:
             "min": _to_float(band.get("min"), 0.0),
             "max": _to_float(band.get("max"), 1.0),
         }
-    return {
+    clean = {
         "device": str(audio.get("device", "")),
         "lowpass": bool(audio.get("lowpass", True)),
         "bands": bands,
     }
+    # e28s03: analysis flags are only healed onto the document when the source
+    # file carried them — a pre-e28 audio section leaves the live analysis alone.
+    if "spectrum" in audio:
+        clean["spectrum"] = bool(audio.get("spectrum"))
+    if "bpm" in audio:
+        clean["bpm"] = bool(audio.get("bpm"))
+    return clean
 
 
 def _sanitize_project_state(raw: dict[str, Any]) -> dict[str, Any]:
-    """Coerce a loaded project document into the capture shape (e11s01)."""
+    """Coerce a loaded project document into the capture shape (e11s01/e28s01)."""
     theme = raw.get("theme")
     if not isinstance(theme, dict):
         theme = {"preset": "scuro", "colors": copy.deepcopy(DEFAULT_PALETTE)}
@@ -713,7 +777,7 @@ def _sanitize_project_state(raw: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(seq, dict):
         seq = {}
     beat = seq.get("beat_source")
-    return {
+    clean = {
         "layout": {"windows": layout["windows"]},
         "theme": theme,
         "sequencer": {
@@ -723,6 +787,12 @@ def _sanitize_project_state(raw: dict[str, Any]) -> dict[str, Any]:
             "audio": _sanitize_audio_state(seq.get("audio")),
         },
     }
+    # e28s01: the mapper section is only present in the healed document when the
+    # source file carried one — a pre-e28 project leaves the live mapper alone.
+    raw_mapper = raw.get("mapper")
+    if isinstance(raw_mapper, dict):
+        clean["mapper"] = {"mappings": _sanitize_mapper_mappings(raw_mapper.get("mappings"))}
+    return clean
 
 
 def remember_recent_project(cfg: dict[str, Any], path: str) -> list[str]:
@@ -965,13 +1035,35 @@ def apply_boot_config() -> None:
     """Boot: apply the fallback theme, then restore the last project when flagged (e11s04)."""
     cfg = load_config()
     midi_init_from_config(cfg)  # e09: MIDI control mirrors (enabled, port, bindings)
+    leap_init_from_config(cfg)  # e26: Leap Motion engine mirror (enabled flag)
     if dpg.does_item_exist("midi_enable_cb"):
         # The MIDI window is built before the config loads, so the Enable checkbox
         # starts unchecked even when the engine is on — sync it (BUG-2026-08-29T102156).
         dpg.set_value("midi_enable_cb", state.midi_enabled)
+    if dpg.does_item_exist("leap_enable_cb"):
+        # e26: same boot-sync for the Leap Motion Enable checkbox (built before config).
+        dpg.set_value("leap_enable_cb", state.leap_enabled)
+    if dpg.does_item_exist("leap_viz_cb"):
+        # e26s04: boot-sync the visualizer toggle (built before config) and fold
+        # the panel when the persisted flag asks for it (engine must be on).
+        dpg.set_value("leap_viz_cb", state.leap_visualizer)
+        dpg.configure_item("leap_viz_cb", enabled=state.leap_enabled)
+        if state.leap_enabled and state.leap_visualizer:
+            _apply_leap_viz_layout(True)
     _apply_theme_config(cfg["theme"])
     if dpg.does_item_exist("cb_restore_project_boot"):
         dpg.set_value("cb_restore_project_boot", cfg["projects"]["restore_last_on_boot"])
+    # e28s04: the Settings OSC fields prefill from the config (the Settings window
+    # is built before the config loads, so the persisted endpoints land here).
+    endpoints = _osc_endpoints_from_config(cfg)
+    for tag, value in (
+        ("viosc_ip", endpoints["client_ip"]),
+        ("viosc_port", endpoints["client_port"]),
+        ("listen_ip", endpoints["listen_ip"]),
+        ("listen_port", endpoints["listen_port"]),
+    ):
+        if dpg.does_item_exist(tag):
+            dpg.set_value(tag, value)
     if should_restore_last_project_on_boot(cfg):
         recent = recent_project_paths(cfg)
         if recent:
@@ -1079,14 +1171,25 @@ def frame_sleep() -> float:
 # ==============================================================================
 
 
-def midi_action_track_assign(row: int) -> None:
-    """Assign the currently selected media to track row (e10s06: viseq selection first)."""
-    target_id = get_current_target_id()
+def assign_target_to_track(row: int, target_id: str | None) -> None:
+    """Point a sequencer row at a source; None is a no-op (e30s01).
+
+    The one assign choke point shared by the row clip-slot click / MIDI learn
+    (via midi_action_track_assign, e10s06 selection-first) and the tile
+    context-menu "Add to Step Sequencer" line items (the right-clicked
+    source, e30s01): it writes the row's target id + OSC base address and
+    swaps the clip-slot thumbnail.
+    """
     if target_id is None:
         return
     tracks_data[row]["target_id"] = target_id
     tracks_data[row]["base_address"] = f"/vimix/{target_id}"
     update_track_slot_ui(row)
+
+
+def midi_action_track_assign(row: int) -> None:
+    """Assign the currently selected media to track row (e10s06: viseq selection first)."""
+    assign_target_to_track(row, get_current_target_id())
 
 
 def assign_clip_to_track(sender: Any, app_data: Any, user_data: Any) -> None:
@@ -1445,23 +1548,73 @@ def update_step_ui(row: int, col: int) -> None:
     update_step_theme(row, col, is_head=(state.is_playing and state.current_step == col))
 
 
-def _add_tile_context_items(target_id: str) -> None:
-    """Both right-click actions of a Mediagrid tile: regen thumb + new mapping (e16).
+def on_tile_add_to_sequencer(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Tile context menu > Add to Step Sequencer > line N (e30s01).
 
-    Must run inside a ``with dpg.window(popup=True, ...)`` block so the items are
-    parented to that popup window. Every tile calls this — the two actions must
-    never drift apart.
+    Assigns the RIGHT-CLICKED tile source to the chosen row through the shared
+    assign core — unlike the clip-slot click, no grid selection is needed: the
+    menu carries the source explicitly (user_data = (target_id, row)).
+    """
+    target_id, row = user_data
+    assign_target_to_track(int(row), target_id)
+
+
+def on_tile_add_to_mapper_line(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Add to Mapper > line N: re-point that mapper row onto the clicked source (e31s01).
+
+    The row's CURRENT source is resolved at click time (mapper.row_targets(),
+    first-appearance window order) — the popup can outlive mapper changes — and
+    re-pointed onto the right-clicked source with the e29 retarget core; a stale
+    index or a row already carrying the clicked source is a no-op (no refresh).
+    """
+    target_id, line_index = user_data
+    rows = mapper.row_targets()
+    if line_index >= len(rows):
+        return
+    if mapper.retarget_source(rows[line_index], target_id):
+        refresh_mapper_ui()
+
+
+def _add_tile_context_items(target_id: str) -> None:
+    """The three right-click actions of a Mediagrid tile (e16, e30s01, e31s01).
+
+    Must run inside a ``with dpg.window(popup=True, ...)`` block so the items
+    are parented to that popup window. Every tile calls this — the actions
+    must never drift apart. Menu: Regenerate Thumbnails, a separator, Add to
+    Step Sequencer (a hover submenu with one 'line N' item per sequencer
+    row), and Add to Mapper — a submenu whose FIRST item is 'new' (the
+    classic mapping dialog) followed by one 'line N' item per mapper row that
+    exists right now (window order; re-points the row onto this source).
     """
     dpg.add_menu_item(
-        label="Regenerate Thumbnail (Random)",
+        label="Regenerate Thumbnails",
         callback=regen_thumb_callback,
         user_data=target_id,
     )
-    dpg.add_menu_item(
-        label="New Mapping...",
-        callback=open_new_mapping_dialog,
-        user_data=target_id,
-    )
+    dpg.add_separator()
+    with dpg.menu(label="Add to Step Sequencer"):
+        for row in range(NUM_TRACKS):
+            dpg.add_menu_item(
+                label=f"line {row + 1}",  # 1-based human row label (e30s01)
+                callback=on_tile_add_to_sequencer,
+                user_data=(target_id, row),
+            )
+    with dpg.menu(label="Add to Mapper"):
+        dpg.add_menu_item(
+            label="new",
+            callback=open_new_mapping_dialog,
+            user_data=target_id,
+        )
+        for line_index in range(len(mapper.row_targets())):
+            dpg.add_menu_item(
+                label=f"line {line_index + 1}",  # 1-based window row label (e31s01)
+                callback=on_tile_add_to_mapper_line,
+                user_data=(target_id, line_index),
+            )
 
 
 def _tile_popup_tag(target_id: str) -> str:
@@ -1486,10 +1639,22 @@ def _create_tile_popup(target_id: str) -> None:
 
 
 def on_tile_context_click(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Right-click on a Mediagrid tile: show the tile's action popup (e16)."""
-    popup_tag = _tile_popup_tag(user_data)
-    if dpg.does_item_exist(popup_tag):
-        dpg.show_item(popup_tag)
+    """Right-click on a Mediagrid tile: show the tile's action popup (e16).
+
+    e32s01 (BUG-2026-09-04T180936): the popup is REBUILT at open time — its
+    Add to Mapper submenu must list the mapper rows that exist right now, and
+    mapper changes (add/delete/retarget) never rebuild the grid that used to
+    own the popup. e27s02 (BUG-2026-09-03T175000): the rebuilt popup must be
+    positioned at the cursor first — an unpositioned DPG popup window opens
+    at the top-left of the viewport instead of under the tile. The
+    client-space mouse (get_mouse_pos(local=False)) is the coordinate space
+    set_item_pos uses.
+    """
+    target_id = user_data
+    _create_tile_popup(target_id)  # fresh items: current mapper rows (e32s01)
+    popup_tag = _tile_popup_tag(target_id)
+    dpg.set_item_pos(popup_tag, dpg.get_mouse_pos(local=False))
+    dpg.show_item(popup_tag)
 
 
 def regen_thumb_callback(sender: Any, app_data: Any, user_data: Any) -> None:
@@ -1548,6 +1713,17 @@ def apply_thumbnail_texture(name: str, idx: str, img_data: Any, w: int, h: int) 
     if tex_tag not in thumbs:
         thumbs.append(tex_tag)
     thumb_fail_count.pop(name, None)  # a reply clears the failure state (e10s04)
+
+    # BUG-2026-09-03T212905: a Mapper row rendered before its source thumb
+    # existed shows 'no thumb'; once the FIRST frame lands, rebuild the body
+    # (like the sequencer slot below) so the image appears. Later frames only
+    # append — the frame cycle animates them in place.
+    if (
+        is_first
+        and dpg.does_item_exist(f"mapper_row_thumb_{target_id}")
+        and not dpg.does_item_exist(f"mapper_row_img_{target_id}")
+    ):
+        refresh_mapper_ui()
 
     if is_first and not dpg.does_item_exist(img_tag) and dpg.does_item_exist(container_tag):
         if dpg.does_item_exist(loading_tag):
@@ -2519,6 +2695,38 @@ def start_osc_server(ip: str, port: int) -> bool:
         return False
 
 
+def _osc_endpoints_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    """The effective OSC endpoints: cfg['osc'] merged over the constants (e28s04)."""
+    raw = cfg.get("osc")
+    osc_cfg = raw if isinstance(raw, dict) else {}
+    return {
+        "client_ip": str(osc_cfg.get("client_ip") or VIOSC_IP),
+        "client_port": int(osc_cfg.get("client_port") or VIOSC_PORT),
+        "listen_ip": str(osc_cfg.get("listen_ip") or VIOSC_IP),
+        "listen_port": int(osc_cfg.get("listen_port") or VIOSC_LISTEN_PORT),
+    }
+
+
+def persist_osc_endpoints(
+    client_ip: str | None = None,
+    client_port: int | None = None,
+    listen_ip: str | None = None,
+    listen_port: int | None = None,
+) -> None:
+    """Persist OSC endpoint fields into cfg['osc'] (e28s04); None leaves a field."""
+    cfg = load_config()
+    osc = cfg["osc"]
+    if client_ip is not None:
+        osc["client_ip"] = client_ip
+    if client_port is not None:
+        osc["client_port"] = client_port
+    if listen_ip is not None:
+        osc["listen_ip"] = listen_ip
+    if listen_port is not None:
+        osc["listen_port"] = listen_port
+    save_config(cfg)
+
+
 def toggle_local_server() -> None:
     if state.is_server_running:
         if state.local_osc_server and state.local_server_thread is not None:
@@ -2529,7 +2737,10 @@ def toggle_local_server() -> None:
         dpg.set_item_label("btn_server_toggle", "Start Server")
         dpg.set_value("server_status", "Server Status: Stopped")
     else:
-        start_osc_server(str(dpg.get_value("listen_ip")), int(dpg.get_value("listen_port")))
+        ip = str(dpg.get_value("listen_ip"))
+        port = int(dpg.get_value("listen_port"))
+        if start_osc_server(ip, port):
+            persist_osc_endpoints(listen_ip=ip, listen_port=port)  # e28s04
 
 
 def connect_osc_client(ip: str, port: int) -> bool:
@@ -2545,13 +2756,18 @@ def connect_osc_client(ip: str, port: int) -> bool:
 
 def connect_to_viosc() -> None:
     """Connect the OSC client from the viOSC panel inputs (button callback)."""
-    connect_osc_client(str(dpg.get_value("viosc_ip")), int(dpg.get_value("viosc_port")))
+    ip = str(dpg.get_value("viosc_ip"))
+    port = int(dpg.get_value("viosc_port"))
+    if connect_osc_client(ip, port):
+        persist_osc_endpoints(client_ip=ip, client_port=port)  # e28s04
 
 
 def autostart_osc() -> None:
-    """Boot wiring: auto-connect the viOSC client and start the listening server."""
-    connect_osc_client(VIOSC_IP, VIOSC_PORT)
-    start_osc_server(VIOSC_IP, VIOSC_LISTEN_PORT)
+    """Boot wiring: auto-connect the viOSC client and start the listening server
+    on the persisted endpoints (e28s04); constants when the config has none."""
+    endpoints = _osc_endpoints_from_config(load_config())
+    connect_osc_client(endpoints["client_ip"], endpoints["client_port"])
+    start_osc_server(endpoints["listen_ip"], endpoints["listen_port"])
 
 
 def midi_action_beat_source(mode: str) -> None:
@@ -2900,6 +3116,136 @@ def show_midi_window(sender: Any = None, app_data: Any = None, user_data: Any = 
     dpg.focus_item("midi_window")  # e17: a shown window must come to the front
 
 
+def show_leap_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Open the Leap Motion window from Settings > Leap Motion (e26s01)."""
+    dpg.show_item("leap_window")
+    dpg.focus_item("leap_window")  # e17: a shown window must come to the front
+
+
+def on_leap_enable(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Leap window Enable checkbox: persist and apply the engine toggle (e26s01).
+
+    The worker loop reacts to state.leap_enabled on its own cadence. Disabling
+    also folds the visualizer (no engine -> no frames); re-enabling restores it
+    when the visualizer flag is still on (e26s04).
+    """
+    enabled = bool(app_data)
+    set_leap_enabled(enabled)
+    if dpg.does_item_exist("leap_viz_cb"):
+        dpg.configure_item("leap_viz_cb", enabled=enabled)
+    if not enabled:
+        _apply_leap_viz_layout(False)
+    elif state.leap_visualizer:
+        _apply_leap_viz_layout(True)
+
+
+def on_leap_visualizer(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Visualizer toggle (e26s04): persist + fold/unfold the panel in place.
+
+    The worker watches state.leap_visualizer and sets/clears the LeapC Images
+    policy on its own cadence; no connection work happens here.
+    """
+    set_leap_visualizer(bool(app_data))
+    _apply_leap_viz_layout(bool(app_data))
+
+
+def _apply_leap_viz_layout(shown: bool) -> None:
+    """Fold/unfold the visualizer panel inside the COMPACT window (e26s04).
+
+    The Leap Motion window never widens (user decision): showing the panel
+    shrinks the monitor child so the fixed 560x680 size never overflows.
+    """
+    if shown:
+        dpg.show_item("leap_viz_panel")
+        dpg.configure_item("leap_monitor_scroll", height=LEAP_MONITOR_VIZ_H)
+    else:
+        dpg.hide_item("leap_viz_panel")
+        dpg.configure_item("leap_monitor_scroll", height=LEAP_MONITOR_H)
+
+
+def _leap_monitor_set_text(tag: str, text: str) -> None:
+    """Update one leap-window text tag only when its rendered text changed (e26s02)."""
+    if state.leap_monitor_cache.get(tag) != text:
+        state.leap_monitor_cache[tag] = text
+        if dpg.does_item_exist(tag):
+            dpg.set_value(tag, text)
+
+
+def tick_leap_visualizer() -> None:
+    """Upload the latest visualizer frame on the main loop (e26s04).
+
+    No-op while the window is missing/hidden or the engine/visualizer is off.
+    The poll thread publishes frames (state.leap_viz_frame + seq) only while
+    enabled; this tick lazily creates ONE raw texture on the first frame and
+    set_value only when a NEW frame arrived — a still feed costs nothing.
+    """
+    if not dpg.does_item_exist("leap_window"):
+        return
+    if not dpg.is_item_shown("leap_window"):
+        return
+    if not (state.leap_enabled and state.leap_visualizer):
+        return
+    with state.leap_lock:
+        seq = state.leap_viz_seq
+        frame = state.leap_viz_frame
+    if frame is None or seq == state.leap_viz_uploaded_seq:
+        return
+    _leap_viz_ensure_texture(frame)
+    dpg.set_value("leap_viz_tex", frame.reshape(-1))
+    state.leap_viz_uploaded_seq = seq
+    if dpg.does_item_exist("leap_viz_wait_text"):
+        dpg.hide_item("leap_viz_wait_text")
+
+
+def _leap_viz_ensure_texture(frame: Any) -> None:
+    """Create the raw texture + image ONCE, on the first published frame (e26s04).
+
+    Texture format follows the thumbnail pipeline (RGBA float32 0..1); unlike
+    thumbnails this texture is created once and updated via set_value (raw
+    texture), never deleted/recreated per frame. The one-shot guard is a state
+    flag (does_item_exist reads true in the headless stub), main-thread only.
+    """
+    if state.leap_viz_tex_created:
+        return
+    h, w = int(frame.shape[0]), int(frame.shape[1])
+    dpg.add_raw_texture(
+        width=w,
+        height=h,
+        default_value=frame.reshape(-1),
+        tag="leap_viz_tex",
+        parent="texture_registry",
+    )
+    dpg.add_image("leap_viz_tex", tag="leap_viz_img", parent="leap_viz_panel")
+    state.leap_viz_tex_created = True
+
+
+def tick_leap_monitor() -> None:
+    """Refresh the Leap Motion window on the main loop (e26s02): status line +
+    live two-hand values from the worker snapshot, writing only on change.
+
+    No-op while the window does not exist or is hidden. Values are read under
+    state.leap_lock (shallow copy) and rendered via leap.format_value; an
+    absent hand or a disabled engine shows the placeholder (cache-gated, so a
+    still hand or an idle window costs nothing).
+    """
+    if not dpg.does_item_exist("leap_window"):
+        return
+    if not dpg.is_item_shown("leap_window"):
+        return
+    enabled = state.leap_enabled
+    _leap_monitor_set_text("leap_status_text", leap.leap_status_label(enabled, state.leap_status))
+    if enabled:
+        with state.leap_lock:
+            snapshot = dict(state.leap_values)
+    else:
+        snapshot = {}
+    for hand in leap.LEAP_HANDS:
+        for field in leap.LEAP_FIELDS:
+            raw = snapshot.get(f"{hand}.{field}") if enabled else None
+            text = leap.LEAP_MONITOR_PLACEHOLDER if raw is None else leap.format_value(field, raw)
+            _leap_monitor_set_text(f"leap_mon_{hand}_{field}", text)
+
+
 # ---------- e16/e22: Mapper (OSC property mappings -> per-source rows) ----------
 # e22s01: the body is one horizontal row per SOURCE — the source thumbnail at
 # the sequencer slot size, then that source's mapping mini-cards to the right.
@@ -2931,7 +3277,12 @@ def _mapper_caption_spacer(label: str, spec: dict[str, Any]) -> int:
     """
     return max(
         2,
-        MAPPER_MINI_W - 24 - MAPPER_SMALL_CHAR_PX * len(label) - MAPPER_CB_W - MAPPER_X_W,
+        MAPPER_MINI_W
+        - 24
+        - MAPPER_SMALL_CHAR_PX * len(label)
+        - MAPPER_RESET_W
+        - MAPPER_CB_W
+        - MAPPER_X_W,
     )
 
 
@@ -2955,13 +3306,50 @@ def _mapper_row_height(mappings: list[dict[str, Any]]) -> int:
     return max(MAPPER_ROW_THUMB_H + 2, height)
 
 
+def _mapper_line_number(row_no: int, target_id: str, parent: Any, height: int) -> None:
+    """Small 1-based row number left of the row thumbnail (e32s02).
+
+    A narrow borderless slot as tall as the row whose ProggyTiny digit is
+    vertically centered — the same spacer technique the thumbnail slot uses —
+    and horizontally centered in the narrow column, so every row reads
+    ' 1  [thumb] cards' with the digit balanced between the row edge and the
+    thumbnail (the number matches the tile menu's "Add to Mapper > line N";
+    both number mapper.row_targets() order).
+    """
+    digits = len(str(row_no))
+    # monospace ProggyTiny digits: center the digit(s) in the fixed column;
+    # two digits fill it flush (e32s02 tuning)
+    indent = max(0, (MAPPER_LINE_NO_W - digits * MAPPER_LINE_NO_DIGIT_PX) // 2)
+    with dpg.child_window(
+        parent=parent,
+        width=MAPPER_LINE_NO_W,
+        height=height,
+        border=False,
+        no_scrollbar=True,
+        tag=f"mapper_line_no_{target_id}",
+    ):
+        dpg.add_spacer(height=max(0, (height - MAPPER_LINE_NO_TEXT_H) // 2))
+        themed_text(
+            str(row_no),
+            slot="text_dim",
+            indent=indent,
+            tag=f"mapper_line_no_txt_{target_id}",
+        )
+    font = _mapper_line_no_font or _mapper_font()
+    if font is not None and dpg.does_item_exist(f"mapper_line_no_txt_{target_id}"):
+        dpg.bind_item_font(f"mapper_line_no_txt_{target_id}", font)
+
+
 def _mapper_row_thumb(target_id: str, parent: Any, height: int) -> None:
     """The source thumbnail slot at the start of a mapper row (e22s01).
 
     A fixed-width slot as tall as the row with the sequencer-size thumbnail
     (110x70) vertically centered inside, so the image aligns with the mini-card
     content next to it; when no texture exists yet the slot shows a "no thumb"
-    placeholder (same footprint, rows stay aligned).
+    placeholder (same footprint, rows stay aligned). e29s01: the slot is a
+    sequencer-style apply box — a left click on its inner items (child windows
+    cannot host clicked handlers on DPG 2.3.1) re-targets the row onto the
+    media selected in the grid; the "no thumb" placeholder is clickable too.
     """
     with dpg.child_window(
         parent=parent,
@@ -2972,6 +3360,14 @@ def _mapper_row_thumb(target_id: str, parent: Any, height: int) -> None:
         tag=f"mapper_row_thumb_{target_id}",
     ):
         dpg.add_spacer(height=max(0, (height - MAPPER_ROW_THUMB_H) // 2))
+        click_reg_tag = f"mapper_row_click_reg_{target_id}"
+        if dpg.does_item_exist(click_reg_tag):
+            dpg.delete_item(click_reg_tag)  # a rebuild must not leak registries
+        with dpg.item_handler_registry(tag=click_reg_tag):
+            dpg.add_item_clicked_handler(
+                0,  # left click applies the selected source (e29s01)
+                callback=lambda *_, t=target_id: on_mapper_row_thumb_click(None, None, t),
+            )
         tex_tags = thumbnails_data.get(target_id)
         if tex_tags:
             tex_tag = tex_tags[0]
@@ -2982,8 +3378,33 @@ def _mapper_row_thumb(target_id: str, parent: Any, height: int) -> None:
                     height=MAPPER_ROW_THUMB_H,
                     tag=f"mapper_row_img_{target_id}",  # e25: stable tag for the frame cycle
                 )
+                dpg.bind_item_handler_registry(f"mapper_row_img_{target_id}", click_reg_tag)
                 return
-        themed_text("no thumb", slot="text_dim")
+        no_tag = f"mapper_row_nothumb_{target_id}"  # e29s01: stable tag, clickable placeholder
+        themed_text("no thumb", slot="text_dim", tag=no_tag)
+        dpg.bind_item_handler_registry(no_tag, click_reg_tag)
+
+
+def on_mapper_row_thumb_click(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Row-thumb click: apply the selected media to the whole row (e29s01).
+
+    Mirrors the sequencer clip-slot click: the media selected in the Vimix
+    sources grid (state.viseq_selected_source) becomes the row's source —
+    every mapping of the row re-targets onto it and the Mapper body rebuilds
+    (rows regroup by first appearance; an existing row of the new source
+    merges). A click with NO grid selection, or on a row already targeting
+    the selection, is a no-op: deliberately NOT the sequencer's
+    get_current_target_id() vimix-current fallback (user-confirmed) — the
+    source of a mapper row is a deliberate choice.
+    """
+    target_id = user_data
+    selected = state.viseq_selected_source
+    if selected is None or selected == target_id:
+        return
+    if mapper.retarget_source(target_id, selected):
+        refresh_mapper_ui()
 
 
 def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> None:
@@ -3014,6 +3435,16 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
         with dpg.group(horizontal=True):
             themed_text(spec["label"], slot="text_dim", tag=f"mapper_prop_{mid}")
             dpg.add_spacer(width=_mapper_caption_spacer(spec["label"], spec))
+            # e27s01: the reset button sits LEFT of the enable checkbox — it
+            # returns the control to its neutral default (mapper.reset_mapping_value)
+            dpg.add_button(
+                label="R",
+                width=MAPPER_RESET_W,
+                height=MAPPER_RESET_H,
+                callback=reset_mapping,
+                user_data=mid,
+                tag=f"mapper_reset_{mid}",
+            )
             dpg.add_checkbox(
                 default_value=mapping.get("enabled", False),
                 callback=on_mapper_enable,
@@ -3085,7 +3516,11 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
         _bind_mapper_font(f"mapper_out_from_{mid}")
         _bind_mapper_font(f"mapper_out_to_{mid}")
         # e23s02: the raw input range of the bound source (band or MIDI)
-        if mapping.get("band") is not None or mapping.get("midi") is not None:
+        if (
+            mapping.get("band") is not None
+            or mapping.get("midi") is not None
+            or mapping.get("leap") is not None
+        ):
             in_from = mapping.get("input_from")
             in_to = mapping.get("input_to")
             with dpg.group(horizontal=True):
@@ -3159,12 +3594,20 @@ def _render_mapper_source_menu(mapping: dict[str, Any]) -> None:
             callback=map_mapping_midi_learn,
             user_data=mid,
         )
+        dpg.add_menu_item(
+            label="Leap Motion...",
+            check=True,
+            default_value=(mapping.get("leap") is not None),
+            callback=open_mapper_leap_picker,
+            user_data=mid,
+        )
         dpg.add_separator()
         dpg.add_menu_item(label="Clear source", callback=clear_mapping_source, user_data=mid)
     with dpg.item_handler_registry(tag=reg_tag):
         dpg.add_item_clicked_handler(1, callback=lambda *_, m=mid: _show_mapper_menu(m))
     for tag in (
         f"mapper_prop_{mid}",
+        f"mapper_reset_{mid}",
         f"mapper_enable_{mid}",
         f"mapper_del_{mid}",
         f"mapper_{control_kind}_{mid}",
@@ -3182,19 +3625,19 @@ def _render_mapper_source_menu(mapping: dict[str, Any]) -> None:
 def _show_mapper_menu(mid: int) -> None:
     """Open the right-click source menu of a mini-card at the cursor (e18).
 
-    get_mouse_pos() is SCREEN-absolute while window positions are viewport-
-    relative, so the popup must be placed at mouse minus the viewport origin —
-    otherwise it opens offset by the window position.
+    e27s02 (BUG-2026-09-03T175000): the popup must be placed at
+    get_mouse_pos(local=False) — DPG's stable per-frame ImGui CLIENT mouse
+    position, the same coordinate space window positions (set_item_pos) live
+    in. The default get_mouse_pos() is not usable here: DPG overwrites it
+    while drawing with coordinates LOCAL TO the focused window/child under the
+    cursor (over a card that is card-local, e.g. (37, 14)), so subtracting the
+    viewport position from it opened the menu at the top of the viewport
+    instead of at the cursor.
     """
     menu_tag = f"mapper_menu_{mid}"
     if not dpg.does_item_exist(menu_tag):
         return
-    try:
-        mouse_x, mouse_y = dpg.get_mouse_pos()
-        vp_x, vp_y = dpg.get_viewport_pos()
-        dpg.set_item_pos(menu_tag, (mouse_x - vp_x, mouse_y - vp_y))
-    except Exception:
-        dpg.set_item_pos(menu_tag, dpg.get_mouse_pos())
+    dpg.set_item_pos(menu_tag, dpg.get_mouse_pos(local=False))
     dpg.show_item(menu_tag)
 
 
@@ -3234,6 +3677,53 @@ def drive_mapper_band(band_id: int, level: float) -> None:
         if m.get("band") == band_id:
             value = mapper.apply_input_value(m["id"], level)
             _set_mapper_control_value(m["id"], value)
+
+
+def drive_leap_mappings(snapshot: dict[str, float], now: float | None = None) -> None:
+    """Push a fresh leap snapshot into every leap-bound mapping (e26s03).
+
+    Called by the leap worker listener on tracking frames. Per-mapping rate
+    cap (~30 Hz) and the change epsilon (input span / 1000) come from the
+    pure drive_ready gate; an absent hand/key HOLDS the mapping's last value.
+    OSC sends happen inside mapper.apply_input_value (worker-safe, HIGH-1) and
+    the card widget moves on the main thread via ui_task.
+    """
+    if now is None:
+        now = time.monotonic()
+    snapshot = snapshot or {}
+    for m in list(state.mapper_mappings):
+        key = m.get("leap")
+        if not key:
+            continue
+        raw = snapshot.get(key)
+        if raw is None:
+            continue  # absent hand: hold the mapping's last value
+        in_from, in_to = m.get("input_from"), m.get("input_to")
+        if in_from is None or in_to is None:
+            parts = leap.binding_parts(key)
+            if parts is not None:
+                in_from, in_to = leap.signal_default_range(parts[1]) or (0.0, 1.0)
+            else:
+                in_from, in_to = 0.0, 1.0
+        book = state.leap_drive_state.setdefault(m["id"], {"last_raw": None, "last_push": 0.0})
+        if not leap.drive_ready(
+            now,
+            float(book["last_push"]),
+            leap.LEAP_DRIVE_INTERVAL,
+            book["last_raw"],
+            float(raw),
+            float(in_from),
+            float(in_to),
+        ):
+            continue
+        book["last_raw"] = float(raw)
+        book["last_push"] = now
+        value = mapper.apply_input_value(m["id"], float(raw))
+
+        def _move_widget(mid: int = m["id"], v: float = value) -> None:
+            _set_mapper_control_value(mid, v)
+
+        ui_task(_move_widget)
 
 
 def _close_mapper_learn_window() -> None:
@@ -3282,6 +3772,85 @@ def map_mapping_midi_learn(sender: Any = None, app_data: Any = None, user_data: 
     dpg.show_item("mapper_learn_window")
 
 
+def open_mapper_leap_picker(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Mapper card menu > Leap Motion...: hand/signal picker modal (e26s03).
+
+    Unlike MIDI there is nothing to LEARN — the signal IS the address, so the
+    user picks a hand (Left/Right) and a curated signal from the catalog. The
+    modal mirrors map_mapping_midi_learn's shape.
+    """
+    mapping_id = int(user_data)
+    if dpg.does_item_exist("mapper_leap_window"):
+        dpg.delete_item("mapper_leap_window")
+    mapping = mapper.find_mapping(mapping_id)
+    signal_items = [leap.leap_field(f)["label"] for f in leap.bindable_signals()]
+    hand_default = "Left"
+    signal_default = signal_items[0]
+    if mapping is not None:
+        parts = leap.binding_parts(mapping.get("leap") or "")
+        if parts is not None:
+            hand_default = "Left" if parts[0] == "left" else "Right"
+            label = leap.leap_field(parts[1])["label"]
+            if label in signal_items:
+                signal_default = label
+    with dpg.window(
+        label="Leap Motion",
+        tag="mapper_leap_window",
+        modal=True,
+        width=340,
+        height=200,
+        no_resize=True,
+    ):
+        themed_text("Bind this control to a hand signal:", slot="text")
+        dpg.add_spacer(height=6)
+        with dpg.group(horizontal=True):
+            themed_text("Hand", slot="text_dim")
+            dpg.add_combo(
+                items=["Left", "Right"],
+                default_value=hand_default,
+                width=110,
+                tag="mapper_leap_hand_cb",
+            )
+        dpg.add_spacer(height=4)
+        with dpg.group(horizontal=True):
+            themed_text("Signal", slot="text_dim")
+            dpg.add_combo(
+                items=signal_items,
+                default_value=signal_default,
+                width=210,
+                tag="mapper_leap_signal_cb",
+            )
+        dpg.add_spacer(height=10)
+        with dpg.group(horizontal=True):
+            dpg.add_button(
+                label="Bind", callback=mapper_leap_confirm, user_data=mapping_id, width=90
+            )
+            dpg.add_button(label="Cancel", callback=mapper_leap_cancel, width=90)
+    dpg.show_item("mapper_leap_window")
+
+
+def mapper_leap_confirm(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Bind the picked hand/signal to the mapping, close the modal, refresh (e26s03)."""
+    mapping_id = int(user_data)
+    hand = str(dpg.get_value("mapper_leap_hand_cb")).lower()
+    label = str(dpg.get_value("mapper_leap_signal_cb"))
+    field = next((f for f in leap.bindable_signals() if leap.leap_field(f)["label"] == label), None)
+    if field is None or hand not in leap.LEAP_HANDS:
+        return
+    mapper.set_mapping_leap(mapping_id, leap.binding_key(hand, field))
+    if dpg.does_item_exist("mapper_leap_window"):
+        dpg.delete_item("mapper_leap_window")
+    refresh_mapper_ui()
+
+
+def mapper_leap_cancel(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Close the leap picker modal without binding (e26s03)."""
+    if dpg.does_item_exist("mapper_leap_window"):
+        dpg.delete_item("mapper_leap_window")
+
+
 def midi_mapping_value(mapping_id: int, midi_value: int) -> None:
     """Drive a mapper control from a learned MIDI value (e23s02).
 
@@ -3306,15 +3875,17 @@ def _mapper_cards_per_line() -> int:
     """How many mapping mini-cards fit one source line at the live window width.
 
     e24s02: the Mapper wraps instead of overflowing — the capacity derives from
-    the current mapper window width minus the 110 px thumbnail block, over the
-    card pitch (MAPPER_MINI_W + the 4 px horizontal item spacing).
+    the current mapper window width minus the row lead (the e32s02 line-number
+    column + the 110 px thumbnail block + their item spacings), over the card
+    pitch (MAPPER_MINI_W + the 4 px horizontal item spacing).
     """
     width = dpg.get_item_width("mapper_window")
     if not width:
         width = MAPPER_WINDOW_WIDTH
     available = width - 8  # window content padding
     pitch = MAPPER_MINI_W + 4
-    return max(1, int((available - (MAPPER_ROW_THUMB_W + 4)) // pitch))
+    lead = MAPPER_LINE_NO_W + 4 + MAPPER_ROW_THUMB_W + 4  # number + thumb, each + spacing
+    return max(1, int((available - lead) // pitch))
 
 
 def refresh_mapper_ui() -> None:
@@ -3343,23 +3914,33 @@ def refresh_mapper_ui() -> None:
             parent="mapper_mappings_group",
         )
         return
-    # group the flat list by source; dict order = first appearance of the source
-    rows: dict[str, list[dict[str, Any]]] = {}
+    # group the flat list by source; row order = mapper.row_targets() (the one
+    # source of row order, e31s01 — the tile menu "line N" items use it too)
+    rows: dict[str, list[dict[str, Any]]] = {target: [] for target in mapper.row_targets()}
     for mapping in state.mapper_mappings:
-        rows.setdefault(mapping["target_id"], []).append(mapping)
+        target = mapping["target_id"]
+        if target in rows:
+            rows[target].append(mapping)
     per_line = _mapper_cards_per_line()
-    for target_id, mappings in rows.items():
+    for row_no, (target_id, mappings) in enumerate(rows.items(), start=1):
         block = dpg.add_group(parent="mapper_mappings_group")
         row_height = _mapper_row_height(mappings)
-        for line_index in range(0, len(mappings), per_line):
+        for wrap_index in range(0, len(mappings), per_line):
             line = dpg.add_group(horizontal=True, parent=block)
-            if line_index == 0:
+            if wrap_index == 0:
+                # e32s02: the row number leads the line (1-based window order,
+                # matches the tile menu "Add to Mapper > line N")
+                _mapper_line_number(row_no, target_id, parent=line, height=row_height)
                 _mapper_row_thumb(target_id, parent=line, height=row_height)
             else:
                 # alignment slot: continuation lines start where the cards of
-                # the first line start (the thumbnail is rendered once)
-                dpg.add_spacer(width=MAPPER_ROW_THUMB_W, parent=line)
-            for mapping in mappings[line_index : line_index + per_line]:
+                # the first line start (number column + thumbnail slot + the
+                # 4 px group spacing, e32s02)
+                dpg.add_spacer(
+                    width=MAPPER_LINE_NO_W + 4 + MAPPER_ROW_THUMB_W,
+                    parent=line,
+                )
+            for mapping in mappings[wrap_index : wrap_index + per_line]:
                 _render_mapper_card(mapping, parent=line, height=row_height)
 
 
@@ -3403,7 +3984,11 @@ def _sync_mapper_control(mid: int) -> None:
     if mapping is None:
         return
     kind = mapping["control"]
-    tag = f"mapper_{kind}_{mid}"
+    # the button control's tag is mapper_btn_N, NOT mapper_button_N — the same
+    # naming quirk the source-menu registry documents (e23s01; e27s01 reset
+    # re-labels button cards through this path, as does an output-range edit)
+    control_kind = "btn" if kind == "button" else kind
+    tag = f"mapper_{control_kind}_{mid}"
     if not dpg.does_item_exist(tag):
         return
     out_from = mapping["output_from"]
@@ -3444,6 +4029,19 @@ def on_mapper_input(sender: Any, app_data: Any, user_data: Any) -> None:
     mapper.set_mapping_input(mid, float(dpg.get_value(from_tag)), float(dpg.get_value(to_tag)))
 
 
+def reset_mapping(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """R on a mapping card: reset the control to its neutral default (e27s01).
+
+    The core stores the neutral (catalog midpoint for slider/knob, the OFF
+    end for buttons), clamps it into the mapping's output interval and sends
+    it through the e24 gate; the widget moves in place via _sync_mapper_control
+    — no body rebuild, so a live band/MIDI drive is never interrupted.
+    """
+    mid = int(user_data)
+    mapper.reset_mapping_value(mid)
+    _sync_mapper_control(mid)
+
+
 def delete_mapping(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     """X on a mapping card: remove the mapping and refresh the Mapper body."""
     mapper.remove_mapping(int(user_data))
@@ -3453,7 +4051,7 @@ def delete_mapping(sender: Any = None, app_data: Any = None, user_data: Any = No
 def open_new_mapping_dialog(
     sender: Any = None, app_data: Any = None, user_data: Any = None
 ) -> None:
-    """Mediagrid tile right-click > New Mapping...: modal asking property + control."""
+    """Mediagrid tile right-click > Add to Mapper: modal asking property + control."""
     state.mapper_pending_target = str(user_data)
     if dpg.does_item_exist("mapper_new_dialog"):
         dpg.delete_item("mapper_new_dialog")
@@ -3587,6 +4185,268 @@ def midi_clock_loop() -> None:
             time.sleep(10)
 
 
+# ---------- e26: Leap Motion worker ----------
+# The library's OWN auto-poll thread (auto_poll=True + a Listener) owns the LeapC
+# handshake and event loop — the official example pattern. This daemon thread
+# only manages the lifecycle: lazy-import the external 'leap' package (absolute
+# import — the suite/CI may not have it), open/keep/reconnect the connection
+# while state.leap_enabled, close when disabled. Missing library or service
+# degrades to status 'missing'/'disconnected' with slow retries and never
+# crashes the app (CONVENTIONS § Defensive Code). Tracking frames normalize
+# into state.leap_values under state.leap_lock; UI/status updates go through
+# the queues (HIGH-1: no dpg from any thread here).
+
+
+def _leap_lib() -> Any:
+    """The external leap package, imported lazily; None when unavailable (e26s01)."""
+    try:
+        import leap  # type: ignore[import-not-found]
+
+        return leap
+    except Exception:
+        return None
+
+
+def _leap_viz_capture_geometry(event: Any) -> list[dict[str, Any]]:
+    """Hand-geometry dicts for one tracking event (e26s04, poll thread).
+
+    Called synchronously while the hand data is valid; an empty list means no
+    hand is in view (the skeleton panel shows its waiting label).
+    """
+    return [leap.viz_hand_geometry(h) for h in event.hands or []]
+
+
+def _leap_viz_copy_ir(img: Any) -> Any:
+    """Synchronous grayscale copy of one IR image (e26s04, poll thread).
+
+    The C buffer behind the Image wrapper is only valid until the next poll, so
+    the copy happens inside the event callback (reference example's UAF note).
+    leapc_cffi is imported lazily here: rig-only, the suite never runs this.
+    """
+    props = img.c_data.properties
+    w, h, bpp = int(props.width), int(props.height), int(props.bpp)
+    if w == 0 or h == 0 or bpp != 1:
+        raise ValueError(f"unsupported IR image {w}x{h} bpp={bpp}")
+    import leapc_cffi  # type: ignore[import-not-found]
+
+    ptr = leapc_cffi.ffi.cast("uint8_t*", img.c_data.data) + img.c_data.offset
+    buf = leapc_cffi.ffi.buffer(ptr, w * h * bpp)
+    return np.frombuffer(buf, dtype=np.uint8).reshape((h, w)).copy()
+
+
+def _leap_viz_publish_if_due(now: float) -> None:
+    """Compose + publish one visualizer frame at the rate cap (e26s04, poll thread).
+
+    Reads the latest IR copy + hand geometry by reference swap (both are only
+    ever replaced, never mutated), composes OUTSIDE the lock, then publishes
+    under state.leap_lock (frame swap + seq bump + render timestamp). A compose
+    failure degrades to a log line and a cleared frame — never a crash.
+    """
+    if not (state.leap_enabled and state.leap_visualizer):
+        return
+    with state.leap_lock:
+        last = state.leap_viz_last_render
+    if not leap.viz_render_due(now, last):
+        return
+    with state.leap_lock:
+        ir = state.leap_viz_ir
+        hands = state.leap_viz_hands
+    try:
+        frame = leap.compose_viz_frame(ir, hands)
+    except Exception as e:
+        log_error("Leap", f"viz compose: {e}")
+        with state.leap_lock:
+            state.leap_viz_frame = None
+            state.leap_viz_ir = None
+            state.leap_viz_hands = None
+        return
+    with state.leap_lock:
+        state.leap_viz_frame = frame
+        state.leap_viz_seq += 1
+        state.leap_viz_last_render = now
+
+
+def _leap_set_images_policy(connection: Any, lib: Any, on: bool) -> None:
+    """Set/clear the LeapC Images policy on the LIVE connection (e26s04).
+
+    Off = the device does not stream IR, so the disabled visualizer costs
+    nothing. set_policy_flags is a blocking call-and-wait whose Policy event is
+    delivered by the library's auto-poll thread; a failure degrades to a log
+    line, never a crash (BLE001 posture).
+    """
+    try:
+        # The binding exposes PolicyFlag under leap.enums (not the package root
+        # — live-verified 2026-09-03: lib.PolicyFlag raises AttributeError and
+        # the IR stream silently never starts).
+        images = lib.enums.PolicyFlag.Images
+        if on:
+            connection.set_policy_flags(flags_to_set=[images])
+            append_log("Leap", "visualizer on (IR stream requested)")
+        else:
+            connection.set_policy_flags(flags_to_clear=[images])
+            append_log("Leap", "visualizer off (IR stream stopped)")
+    except Exception as e:
+        log_error("Leap", f"images policy: {e}")
+
+
+def _leap_listener(lib: Any) -> Any:
+    """A Listener whose callbacks run on the library's auto-poll thread.
+
+    The callbacks only touch state (under leap_lock) and the log queues — no
+    dpg (HIGH-1). Poll errors arrive via on_error (the library reports timeouts
+    and handshake noise the same way); only real failures flip the status.
+    """
+
+    class _LeapTrackingListener(lib.Listener):
+        def on_tracking_event(self, event):  # type: ignore[no-untyped-def]
+            snapshot = normalize_tracking_event(event)
+            with state.leap_lock:
+                state.leap_values.clear()
+                state.leap_values.update(snapshot)
+            state.leap_status = "tracking"
+            state.leap_last_frame = time.time()  # e26s05: watchdog heartbeat
+            if state.leap_stall_count:
+                # e26s05: a frame after an escalation = the stream is back.
+                state.leap_stall_count = 0
+            drive_leap_mappings(snapshot)  # e26s03: push leap-bound mappings
+            # e26s04: while the visualizer is on, capture the hand geometry and
+            # publish one rate-capped composite (the poll thread is the only
+            # writer of the visualizer snapshot; the main tick only uploads the
+            # finished texture).
+            if state.leap_visualizer:
+                hands = _leap_viz_capture_geometry(event)
+                with state.leap_lock:
+                    state.leap_viz_hands = hands
+                _leap_viz_publish_if_due(time.time())
+
+        def on_image_event(self, event):  # type: ignore[no-untyped-def]
+            # IR frames arrive ONLY while the Images policy is set, i.e. while
+            # the visualizer is on — the copy must happen synchronously (the C
+            # buffer is valid only until the next poll, same UAF as tracking).
+            if not state.leap_visualizer:
+                return
+            try:
+                ir = _leap_viz_copy_ir(event.image[0])
+            except Exception as e:
+                log_error("Leap", f"viz image: {e}")
+                return
+            with state.leap_lock:
+                state.leap_viz_ir = ir
+            _leap_viz_publish_if_due(time.time())
+
+        def on_connection_lost_event(self, event):  # type: ignore[no-untyped-def]
+            state.leap_status = "disconnected"
+
+        def on_device_lost_event(self, event):  # type: ignore[no-untyped-def]
+            state.leap_status = "disconnected"
+
+        def on_error(self, error):  # type: ignore[no-untyped-def]
+            if type(error).__name__ in ("LeapTimeoutError", "LeapNotConnectedError"):
+                return  # idle poll / handshake in progress: not failures
+            state.leap_status = "disconnected"
+            log_error("Leap", f"poll: {error}")
+
+    return _LeapTrackingListener()
+
+
+def _leap_backoff_sleep(seconds: float) -> None:
+    """Interruptible backoff after a stall-forced reconnect (e26s05).
+
+    Sleeps in short steps so an engine-off during the backoff reacts within a
+    second instead of after the full escalated wait.
+    """
+    deadline = time.time() + seconds
+    while state.leap_enabled and time.time() < deadline:
+        time.sleep(min(1.0, deadline - time.time()))
+
+
+def leap_control_loop() -> None:
+    """Leap Motion worker (e26s01): keep one auto-polling connection while enabled.
+
+    The library's own poll thread (auto_poll=True) owns the LeapC handshake and
+    event loop — the official example pattern; our listener normalizes tracking
+    frames into state.leap_values. The worker thread only manages the lifecycle:
+    open when enabled (retry/backoff on failure), watch the status, reconnect
+    after a loss, close when disabled.
+    """
+    missing_logged = False
+    while True:
+        if not state.leap_enabled:
+            time.sleep(0.2)
+            continue
+        lib = _leap_lib()
+        if lib is None:
+            state.leap_status = "missing"
+            if not missing_logged:
+                append_log("Leap", "library/service not available (leapc-python-api + Gemini)")
+                missing_logged = True
+            time.sleep(5.0)
+            continue
+        missing_logged = False
+        connection: Any = None
+        try:
+            connection = lib.Connection()
+            connection.add_listener(_leap_listener(lib))
+            # NOTE: connection.open() is a @contextmanager — calling it without
+            # `with` is a silent no-op. connect() is the plain-method equivalent
+            # that keeps the connection open for this worker's keep-alive loop.
+            connection.connect(auto_poll=True, timeout=3)
+            connection.set_tracking_mode(lib.TrackingMode.Desktop)
+            state.leap_status = "connected"
+            state.leap_last_frame = time.time()  # e26s05: silence window starts fresh
+            append_log("Leap", "connected")
+            # e26s04: a persisted visualizer toggle asks for IR as soon as the
+            # (re)connection is up; afterwards the keep-alive below follows it.
+            if state.leap_visualizer:
+                _leap_set_images_policy(connection, lib, True)
+        except Exception as e:
+            log_error("Leap", f"connect: {e}")
+            with contextlib.suppress(Exception):
+                connection.disconnect()
+            state.leap_status = "disconnected"
+            time.sleep(2.0)
+            continue
+        # Keep the connection open while enabled; a lost service/device flips the
+        # status to disconnected (listener) so this loop exits and reconnects.
+        # The keep-alive also watches the visualizer toggle and sets/clears the
+        # LeapC Images policy on the live connection (no reconnect needed) and
+        # the e26s05 watchdog: the service can wedge silently (evaluator frozen
+        # while the process + USB stay alive) with NO events arriving, so after
+        # LEAP_STALL_TIMEOUT of tracking silence this loop forces a reconnect.
+        viz_policy = bool(state.leap_visualizer)
+        stall_exit = False
+        while state.leap_enabled and state.leap_status != "disconnected":
+            if leap.stall_detected(time.time(), state.leap_last_frame):
+                stall_exit = True
+                state.leap_stall_count += 1
+                state.leap_status = "disconnected"
+                if state.leap_stall_count == leap.LEAP_STALL_ESCALATION_COUNT:
+                    append_log(
+                        "Leap",
+                        "tracking keeps stalling - restart the hand-tracking "
+                        "service or replug the device",
+                    )
+                elif state.leap_stall_count < leap.LEAP_STALL_ESCALATION_COUNT:
+                    append_log(
+                        "Leap",
+                        "tracking stalled (no frames for "
+                        f"{leap.LEAP_STALL_TIMEOUT:.0f}s) - reconnecting "
+                        f"(attempt {state.leap_stall_count})",
+                    )
+                break
+            viz_now = bool(state.leap_visualizer)
+            if viz_now != viz_policy:
+                viz_policy = viz_now
+                _leap_set_images_policy(connection, lib, viz_now)
+            time.sleep(0.5)
+        with contextlib.suppress(Exception):
+            connection.disconnect()
+        if stall_exit:
+            # a wedged service is not hot-looped: back off (fast, then slow),
+            # interruptibly so an engine-off during the backoff reacts quickly.
+            _leap_backoff_sleep(leap.stall_retry_wait(state.leap_stall_count))
+
+
 def show_settings_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     """Open the general settings window from the top menubar."""
     dpg.show_item("settings_window")
@@ -3658,6 +4518,7 @@ _FOCUS_TRACKED_WINDOWS: tuple[str, ...] = (
     "mapper_window",
     "settings_window",
     "midi_window",
+    "leap_window",
     "help_window",
 )
 
@@ -4081,19 +4942,29 @@ def on_lowpass_toggle(sender: Any, app_data: Any, user_data: Any) -> None:
     state.lowpass_enabled = bool(app_data)
 
 
-def toggle_audio_stream(sender: Any, app_data: Any, user_data: Any) -> None:
-    global audio_stream
-    if user_data == "vu_meter":
-        state.is_audio_analyzing = app_data
-    elif user_data == "beat_tracking":
-        state.is_beat_tracking = app_data
-    needs_stream = state.is_audio_analyzing or state.is_beat_tracking
+def _sync_analysis_widgets() -> None:
+    """Mirror the analysis flags onto their checkboxes (e28s03)."""
+    for tag, flag in (
+        ("cb_spectrum_analysis", state.is_audio_analyzing),
+        ("cb_bpm_analysis", state.is_beat_tracking),
+    ):
+        if dpg.does_item_exist(tag):
+            dpg.set_value(tag, bool(flag))
 
+
+def _sync_audio_stream() -> bool:
+    """Open/close the shared input stream to match the analysis flags (e28s03).
+
+    Returns False when the requested stream could not be opened (no input
+    device or a device failure); the callers flip the flags back off and sync
+    the widgets — the same bounce a failed manual click produces.
+    """
+    global audio_stream
+    needs_stream = state.is_audio_analyzing or state.is_beat_tracking
     if needs_stream and audio_stream is None:
-        device_string = dpg.get_value("combo_devices")
+        device_string = str(dpg.get_value("combo_devices"))
         if "No input device" in device_string:
-            dpg.set_value(sender, False)
-            return
+            return False
         device_id = int(device_string.split(":")[0])
         try:
             audio_stream = sd.InputStream(
@@ -4105,12 +4976,53 @@ def toggle_audio_stream(sender: Any, app_data: Any, user_data: Any) -> None:
             )
             audio_stream.start()
         except Exception:
-            dpg.set_value(sender, False)
+            audio_stream = None
+            return False
     elif not needs_stream and audio_stream is not None:
         audio_stream.stop()
         audio_stream.close()
         audio_stream = None
         dpg.set_value("testo_bpm", "BPM: ---")
+    return True
+
+
+def set_audio_analysis_flags(spectrum: bool, bpm: bool) -> None:
+    """Restore the analysis checkboxes from a project (e28s03, main thread).
+
+    Sets both flags + widgets, then opens the input stream when any flag is on
+    (the device combo is restored before this call). On a failed open the flags
+    bounce back off with a log, exactly like a failed manual click — a rig
+    without capture never hangs with a phantom analysis flag.
+    """
+    state.is_audio_analyzing = bool(spectrum)
+    state.is_beat_tracking = bool(bpm)
+    _sync_analysis_widgets()
+    if not _sync_audio_stream():
+        state.is_audio_analyzing = False
+        state.is_beat_tracking = False
+        _sync_analysis_widgets()
+        log_error("Audio", "analysis disabled: no usable input device")
+
+
+def toggle_audio_stream(sender: Any, app_data: Any, user_data: Any) -> None:
+    """Checkbox clicks: flip one analysis flag, sync the widgets and the stream.
+
+    e28s03: the failure bounce (set_value(sender, False)) is now the flag +
+    widget sync — a failed open flips the clicked flag back off.
+    """
+    if user_data == "vu_meter":
+        state.is_audio_analyzing = bool(app_data)
+    elif user_data == "beat_tracking":
+        state.is_beat_tracking = bool(app_data)
+    else:
+        return
+    _sync_analysis_widgets()
+    if not _sync_audio_stream():
+        if user_data == "vu_meter":
+            state.is_audio_analyzing = False
+        else:
+            state.is_beat_tracking = False
+        _sync_analysis_widgets()
 
 
 def toggle_play(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -4146,6 +5058,16 @@ for _tile_title_font_path in _TILE_TITLE_FONT_PATHS:
     if os.path.exists(_tile_title_font_path):
         with dpg.font_registry():
             _tile_title_font = dpg.add_font(_tile_title_font_path, size=MEDIA_TITLE_FONT_SIZE)
+        break
+
+# e32s02: larger ProggyTiny for the Mapper row line numbers (one step above the
+# 10 px mapper font, so the numbers stay compact but readable).
+for _mapper_line_no_font_path in _TILE_TITLE_FONT_PATHS:
+    if os.path.exists(_mapper_line_no_font_path):
+        with dpg.font_registry():
+            _mapper_line_no_font = dpg.add_font(
+                _mapper_line_no_font_path, size=MAPPER_LINE_NO_FONT_SIZE
+            )
         break
 
 with dpg.handler_registry():
@@ -4441,6 +5363,7 @@ with dpg.window(
     )
     dpg.add_checkbox(
         label="Enable Level Analysis (Spectrum)",
+        tag="cb_spectrum_analysis",  # e28s03: stable tag for project restore
         callback=toggle_audio_stream,
         user_data="vu_meter",
     )
@@ -4521,6 +5444,7 @@ with dpg.window(
     with dpg.group(horizontal=True):
         dpg.add_checkbox(
             label="Enable BPM Analysis (Essentia)",
+            tag="cb_bpm_analysis",  # e28s03: stable tag for project restore
             callback=toggle_audio_stream,
             user_data="beat_tracking",
         )
@@ -4682,6 +5606,60 @@ with dpg.window(label="MIDI", width=520, height=520, pos=(560, 320), tag="midi_w
     dpg.add_spacer(height=4)
     dpg.add_button(label="Save", callback=save_midi_controllers, width=80)
 
+# WINDOW 8: Leap Motion (hidden; opened from Settings > "Leap Motion"). One
+# window hosts EVERYTHING (user request, e26s02): the Enable switch, the
+# device/service status line and the LIVE two-hand value monitor — static rows
+# built ONCE at construction (one row per snapshot field, both hands), refreshed
+# by tick_leap_monitor on the main thread. e26s04 adds the embedded visualizer
+# toggle + hidden panel between the status line and the monitor; the window
+# stays COMPACT (560x680, never widens — user decision), the monitor child
+# shrinks when the panel is shown. Never touches the external leap package at
+# import time.
+
+# e26s04: compact visualizer layout. The always-present toggle row costs the
+# monitor ~25 px; showing the 150-tall panel costs a further ~165 px and the
+# monitor scrolls (it is already a child_window).
+LEAP_MONITOR_H: int = 535
+LEAP_MONITOR_VIZ_H: int = 370
+LEAP_VIZ_PANEL_H: int = 158
+with dpg.window(
+    label="Leap Motion", width=560, height=680, pos=(560, 300), tag="leap_window", show=False
+):
+    dpg.add_checkbox(
+        label="Enable Leap Motion",
+        tag="leap_enable_cb",
+        default_value=state.leap_enabled,
+        callback=on_leap_enable,
+    )
+    dpg.add_separator()
+    dpg.add_spacer(height=4)
+    dpg.add_text("", tag="leap_status_text")
+    dpg.add_spacer(height=4)
+    dpg.add_separator()
+    dpg.add_checkbox(
+        label="Show device view + hands",
+        tag="leap_viz_cb",
+        default_value=state.leap_visualizer,
+        callback=on_leap_visualizer,
+    )
+    with dpg.child_window(height=LEAP_VIZ_PANEL_H, show=False, tag="leap_viz_panel"):
+        dpg.add_text("Waiting for the Leap device...", tag="leap_viz_wait_text")
+    with (
+        dpg.child_window(height=LEAP_MONITOR_H, tag="leap_monitor_scroll"),
+        dpg.group(horizontal=True),
+    ):
+        for hand in leap.LEAP_HANDS:
+            with dpg.group(tag=f"leap_mon_{hand}_col"):
+                themed_text(f"{hand.capitalize()} hand", slot="text_bright")
+                for field in leap.LEAP_FIELDS:
+                    meta = leap.leap_field(field)
+                    with dpg.group(horizontal=True):
+                        themed_text(meta["label"], slot="text_dim")
+                        dpg.add_text(
+                            leap.LEAP_MONITOR_PLACEHOLDER,
+                            tag=f"leap_mon_{hand}_{field}",
+                        )
+
 # e16/e22/e23/e24: Mapper window — the body is rebuilt by refresh_mapper_ui()
 # (menu open, create, delete, prune, resize) as a stack of wrapping source
 # blocks. Hidden at boot and never part of the saved layout (transient
@@ -4721,6 +5699,7 @@ threading.Thread(target=fade_tick_loop, daemon=True).start()
 threading.Thread(target=spectrum_analyzer_loop, daemon=True).start()
 threading.Thread(target=midi_clock_loop, daemon=True).start()
 threading.Thread(target=midi_control_loop, daemon=True).start()  # e09: control worker
+threading.Thread(target=leap_control_loop, daemon=True).start()  # e26: leap worker
 
 threading.Thread(target=sequencer_tick, daemon=True).start()
 threading.Thread(target=visual_metronome_loop, daemon=True).start()
@@ -4754,6 +5733,7 @@ with dpg.viewport_menu_bar():
     with dpg.menu(label="Settings"):  # e12s01: config panels under one menu
         dpg.add_menu_item(label="General", callback=show_settings_window)
         dpg.add_menu_item(label="MIDI", callback=show_midi_window)
+        dpg.add_menu_item(label="Leap Motion", callback=show_leap_window)  # e26
 
 # e11s03/e13s02: project file dialogs are created ON DEMAND by
 # show_open_project_dialog / show_save_project_dialog (_recreate_project_dialog)
@@ -4809,6 +5789,10 @@ try:
         tick_window_menu()  # e17: keep the Windows-menu list + active mark fresh
 
         tick_midi_learn_timeout()  # e18: expire stale MIDI Learn sessions (incl. mapper)
+
+        tick_leap_monitor()  # e26s02: live two-hand values in the Leap Motion window
+
+        tick_leap_visualizer()  # e26s04: embed the IR + skeleton frame (when shown)
 
         request_missing_thumbnails(time.time())
 

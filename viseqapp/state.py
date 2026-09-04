@@ -268,6 +268,52 @@ _controller_lock = threading.Lock()
 _controller_profiles: dict[str, dict[str, Any]] = {}
 
 
+# e26: Leap Motion engine state (worker-owned). leap_values is mutated IN
+# PLACE (clear + update under leap_lock) so facade re-exports stay live; the
+# worker writes it from its own thread, the UI reads copies on the main thread.
+leap_enabled: bool = False
+
+
+leap_status: str = "missing"  # missing | disconnected | connected | tracking
+
+
+leap_values: dict[str, float] = {}
+
+
+leap_lock = threading.Lock()
+
+
+# e26s04: visualizer toggle mirror (main-thread flag; the worker watches it to
+# manage the LeapC Images policy) + the poll-thread visualizer snapshot. The
+# snapshot is written only on the library poll thread under leap_lock; the main
+# thread swaps a reference (microseconds), never a deep copy of the arrays.
+leap_visualizer: bool = False
+leap_viz_ir: np.ndarray | None = None  # latest grayscale IR copy (240, 640)
+leap_viz_hands: list[dict[str, Any]] | None = None  # latest hand-geometry dicts
+leap_viz_frame: np.ndarray | None = None  # latest RGBA float32 composite (h, w, 4)
+leap_viz_seq: int = 0  # incremented on every composite publish
+leap_viz_last_render: float = 0.0  # poll-thread rate-gate timestamp
+leap_viz_uploaded_seq: int = 0  # main-thread only: last seq uploaded to the texture
+leap_viz_tex_created: bool = False  # main-thread only: raw texture built once
+
+
+# e26s05: stall watchdog state (worker-owned, no new lock — same practice as
+# leap_status). leap_last_frame is the epoch of the last tracking event (0 =
+# never); leap_stall_count counts consecutive watchdog-forced reconnects.
+leap_last_frame: float = 0.0
+leap_stall_count: int = 0
+
+
+# e26s02: leap window tag -> last rendered text (main-thread only, avoids
+# re-writing unchanged monitor cells / the status line on every main tick).
+leap_monitor_cache: dict[str, str] = {}
+
+
+# e26s03: per-mapping drive bookkeeping (mapping id -> {last_raw, last_push}).
+# Written by the leap worker listener thread when it pushes a mapped value.
+leap_drive_state: dict[int, dict[str, Any]] = {}
+
+
 # e16: Mapper state — OSC property mappings (see viseqapp/mapper.py).
 # Each entry: {id, target_id, property, control, value}; ids come from the
 # monotonic counter (like monitor_player_counter).
