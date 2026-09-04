@@ -13,13 +13,13 @@ included).
 
 The easiest way to run viSeq on Linux is the self-contained AppImage: a single
 file with Python, all libraries and the app bundled — **no Python, no pip, no
-root**. Starting with release **0.3.0**, download
+root**. Starting with release **0.4.0**, download
 `viseq-<version>-x86_64.AppImage` from the
 [GitHub Releases](https://github.com/lupin3rd/viseq/releases) page, then:
 
 ```bash
-chmod +x viseq-0.3.0-x86_64.AppImage
-./viseq-0.3.0-x86_64.AppImage
+chmod +x viseq-0.4.0-x86_64.AppImage
+./viseq-0.4.0-x86_64.AppImage
 ```
 
 ### Where your data lives
