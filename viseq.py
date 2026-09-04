@@ -1161,14 +1161,25 @@ def frame_sleep() -> float:
 # ==============================================================================
 
 
-def midi_action_track_assign(row: int) -> None:
-    """Assign the currently selected media to track row (e10s06: viseq selection first)."""
-    target_id = get_current_target_id()
+def assign_target_to_track(row: int, target_id: str | None) -> None:
+    """Point a sequencer row at a source; None is a no-op (e30s01).
+
+    The one assign choke point shared by the row clip-slot click / MIDI learn
+    (via midi_action_track_assign, e10s06 selection-first) and the tile
+    context-menu "Add to Step Sequencer" line items (the right-clicked
+    source, e30s01): it writes the row's target id + OSC base address and
+    swaps the clip-slot thumbnail.
+    """
     if target_id is None:
         return
     tracks_data[row]["target_id"] = target_id
     tracks_data[row]["base_address"] = f"/vimix/{target_id}"
     update_track_slot_ui(row)
+
+
+def midi_action_track_assign(row: int) -> None:
+    """Assign the currently selected media to track row (e10s06: viseq selection first)."""
+    assign_target_to_track(row, get_current_target_id())
 
 
 def assign_clip_to_track(sender: Any, app_data: Any, user_data: Any) -> None:
@@ -1527,20 +1538,44 @@ def update_step_ui(row: int, col: int) -> None:
     update_step_theme(row, col, is_head=(state.is_playing and state.current_step == col))
 
 
-def _add_tile_context_items(target_id: str) -> None:
-    """Both right-click actions of a Mediagrid tile: regen thumb + new mapping (e16).
+def on_tile_add_to_sequencer(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Tile context menu > Add to Step Sequencer > line N (e30s01).
 
-    Must run inside a ``with dpg.window(popup=True, ...)`` block so the items are
-    parented to that popup window. Every tile calls this — the two actions must
-    never drift apart.
+    Assigns the RIGHT-CLICKED tile source to the chosen row through the shared
+    assign core — unlike the clip-slot click, no grid selection is needed: the
+    menu carries the source explicitly (user_data = (target_id, row)).
+    """
+    target_id, row = user_data
+    assign_target_to_track(int(row), target_id)
+
+
+def _add_tile_context_items(target_id: str) -> None:
+    """The three right-click actions of a Mediagrid tile (e16, e30s01).
+
+    Must run inside a ``with dpg.window(popup=True, ...)`` block so the items
+    are parented to that popup window. Every tile calls this — the actions
+    must never drift apart. e30s01 menu: Regenerate Thumbnails, a separator,
+    Add to Step Sequencer (a hover submenu with one 'line N' item per
+    sequencer row — DPG renders dpg.menu inside popup windows as an ImGui
+    submenu) and Add to Mapper (the renamed new-mapping entry).
     """
     dpg.add_menu_item(
-        label="Regenerate Thumbnail (Random)",
+        label="Regenerate Thumbnails",
         callback=regen_thumb_callback,
         user_data=target_id,
     )
+    dpg.add_separator()
+    with dpg.menu(label="Add to Step Sequencer"):
+        for row in range(NUM_TRACKS):
+            dpg.add_menu_item(
+                label=f"line {row + 1}",  # 1-based human row label (e30s01)
+                callback=on_tile_add_to_sequencer,
+                user_data=(target_id, row),
+            )
     dpg.add_menu_item(
-        label="New Mapping...",
+        label="Add to Mapper",
         callback=open_new_mapping_dialog,
         user_data=target_id,
     )
@@ -3929,7 +3964,7 @@ def delete_mapping(sender: Any = None, app_data: Any = None, user_data: Any = No
 def open_new_mapping_dialog(
     sender: Any = None, app_data: Any = None, user_data: Any = None
 ) -> None:
-    """Mediagrid tile right-click > New Mapping...: modal asking property + control."""
+    """Mediagrid tile right-click > Add to Mapper: modal asking property + control."""
     state.mapper_pending_target = str(user_data)
     if dpg.does_item_exist("mapper_new_dialog"):
         dpg.delete_item("mapper_new_dialog")
