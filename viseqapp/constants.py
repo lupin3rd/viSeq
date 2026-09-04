@@ -175,6 +175,12 @@ MAPPER_ROW_THUMB_W = SLOT_BUTTON_WIDTH  # px width of the row thumbnail (= the s
 MAPPER_ROW_THUMB_H = SLOT_BUTTON_HEIGHT  # px height of the row thumbnail
 
 
+MAPPER_LINE_NO_W = 16  # px width of the row line-number column (e32s02; two ProggyTiny digits)
+
+
+MAPPER_LINE_NO_TEXT_H = 13  # px text height used to center the line number in the row
+
+
 MAPPER_TEXT_H = 17  # px height of one compact text/drag row (measured: drag box 17 px)
 
 

@@ -54,6 +54,8 @@ from viseqapp.constants import (
     MAPPER_CTRL_H,
     MAPPER_DRAG_W,
     MAPPER_KNOB_H,
+    MAPPER_LINE_NO_TEXT_H,
+    MAPPER_LINE_NO_W,
     MAPPER_MAX_MAPPINGS,
     MAPPER_MINI_W,
     MAPPER_RESET_H,
@@ -3296,6 +3298,31 @@ def _mapper_row_height(mappings: list[dict[str, Any]]) -> int:
     return max(MAPPER_ROW_THUMB_H + 2, height)
 
 
+def _mapper_line_number(row_no: int, target_id: str, parent: Any, height: int) -> None:
+    """Small 1-based row number left of the row thumbnail (e32s02).
+
+    A narrow borderless slot as tall as the row whose ProggyTiny digit is
+    vertically centered — the same spacer technique the thumbnail slot uses —
+    so every row reads '1  [thumb] cards' and the number matches the tile
+    menu's "Add to Mapper > line N" (both number mapper.row_targets() order).
+    """
+    with dpg.child_window(
+        parent=parent,
+        width=MAPPER_LINE_NO_W,
+        height=height,
+        border=False,
+        no_scrollbar=True,
+        tag=f"mapper_line_no_{target_id}",
+    ):
+        dpg.add_spacer(height=max(0, (height - MAPPER_LINE_NO_TEXT_H) // 2))
+        themed_text(
+            str(row_no),
+            slot="text_dim",
+            tag=f"mapper_line_no_txt_{target_id}",
+        )
+    _bind_mapper_font(f"mapper_line_no_txt_{target_id}")
+
+
 def _mapper_row_thumb(target_id: str, parent: Any, height: int) -> None:
     """The source thumbnail slot at the start of a mapper row (e22s01).
 
@@ -3831,15 +3858,17 @@ def _mapper_cards_per_line() -> int:
     """How many mapping mini-cards fit one source line at the live window width.
 
     e24s02: the Mapper wraps instead of overflowing — the capacity derives from
-    the current mapper window width minus the 110 px thumbnail block, over the
-    card pitch (MAPPER_MINI_W + the 4 px horizontal item spacing).
+    the current mapper window width minus the row lead (the e32s02 line-number
+    column + the 110 px thumbnail block + their item spacings), over the card
+    pitch (MAPPER_MINI_W + the 4 px horizontal item spacing).
     """
     width = dpg.get_item_width("mapper_window")
     if not width:
         width = MAPPER_WINDOW_WIDTH
     available = width - 8  # window content padding
     pitch = MAPPER_MINI_W + 4
-    return max(1, int((available - (MAPPER_ROW_THUMB_W + 4)) // pitch))
+    lead = MAPPER_LINE_NO_W + 4 + MAPPER_ROW_THUMB_W + 4  # number + thumb, each + spacing
+    return max(1, int((available - lead) // pitch))
 
 
 def refresh_mapper_ui() -> None:
@@ -3876,18 +3905,25 @@ def refresh_mapper_ui() -> None:
         if target in rows:
             rows[target].append(mapping)
     per_line = _mapper_cards_per_line()
-    for target_id, mappings in rows.items():
+    for row_no, (target_id, mappings) in enumerate(rows.items(), start=1):
         block = dpg.add_group(parent="mapper_mappings_group")
         row_height = _mapper_row_height(mappings)
-        for line_index in range(0, len(mappings), per_line):
+        for wrap_index in range(0, len(mappings), per_line):
             line = dpg.add_group(horizontal=True, parent=block)
-            if line_index == 0:
+            if wrap_index == 0:
+                # e32s02: the row number leads the line (1-based window order,
+                # matches the tile menu "Add to Mapper > line N")
+                _mapper_line_number(row_no, target_id, parent=line, height=row_height)
                 _mapper_row_thumb(target_id, parent=line, height=row_height)
             else:
                 # alignment slot: continuation lines start where the cards of
-                # the first line start (the thumbnail is rendered once)
-                dpg.add_spacer(width=MAPPER_ROW_THUMB_W, parent=line)
-            for mapping in mappings[line_index : line_index + per_line]:
+                # the first line start (number column + thumbnail slot + the
+                # 4 px group spacing, e32s02)
+                dpg.add_spacer(
+                    width=MAPPER_LINE_NO_W + 4 + MAPPER_ROW_THUMB_W,
+                    parent=line,
+                )
+            for mapping in mappings[wrap_index : wrap_index + per_line]:
                 _render_mapper_card(mapping, parent=line, height=row_height)
 
 
