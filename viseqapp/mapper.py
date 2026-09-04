@@ -241,6 +241,23 @@ def retarget_source(old_target_id: str, new_target_id: str) -> int:
     return moved
 
 
+def row_targets() -> list[str]:
+    """The Mapper window's row order: distinct target ids, first appearance (e31s01).
+
+    One source row per target in the exact order refresh_mapper_ui renders
+    (e22s01). The composition root consumes this both for the body grouping
+    and for the tile context-menu "Add to Mapper" line items, so a menu
+    "line N" always names window row N. Falsy targets are skipped (they never
+    reach the live state through add_mapping/sanitize_mapping).
+    """
+    seen: list[str] = []
+    for mapping in state.mapper_mappings:
+        target = mapping.get("target_id")
+        if target and target not in seen:
+            seen.append(target)
+    return seen
+
+
 def set_mapping_value(mapping_id: int, value: float) -> None:
     """Store a clamped value on the mapping (no OSC; e16s01).
 

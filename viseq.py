@@ -1551,15 +1551,34 @@ def on_tile_add_to_sequencer(
     assign_target_to_track(int(row), target_id)
 
 
+def on_tile_add_to_mapper_line(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Add to Mapper > line N: re-point that mapper row onto the clicked source (e31s01).
+
+    The row's CURRENT source is resolved at click time (mapper.row_targets(),
+    first-appearance window order) — the popup can outlive mapper changes — and
+    re-pointed onto the right-clicked source with the e29 retarget core; a stale
+    index or a row already carrying the clicked source is a no-op (no refresh).
+    """
+    target_id, line_index = user_data
+    rows = mapper.row_targets()
+    if line_index >= len(rows):
+        return
+    if mapper.retarget_source(rows[line_index], target_id):
+        refresh_mapper_ui()
+
+
 def _add_tile_context_items(target_id: str) -> None:
-    """The three right-click actions of a Mediagrid tile (e16, e30s01).
+    """The three right-click actions of a Mediagrid tile (e16, e30s01, e31s01).
 
     Must run inside a ``with dpg.window(popup=True, ...)`` block so the items
     are parented to that popup window. Every tile calls this — the actions
-    must never drift apart. e30s01 menu: Regenerate Thumbnails, a separator,
-    Add to Step Sequencer (a hover submenu with one 'line N' item per
-    sequencer row — DPG renders dpg.menu inside popup windows as an ImGui
-    submenu) and Add to Mapper (the renamed new-mapping entry).
+    must never drift apart. Menu: Regenerate Thumbnails, a separator, Add to
+    Step Sequencer (a hover submenu with one 'line N' item per sequencer
+    row), and Add to Mapper — a submenu whose FIRST item is 'new' (the
+    classic mapping dialog) followed by one 'line N' item per mapper row that
+    exists right now (window order; re-points the row onto this source).
     """
     dpg.add_menu_item(
         label="Regenerate Thumbnails",
@@ -1574,11 +1593,18 @@ def _add_tile_context_items(target_id: str) -> None:
                 callback=on_tile_add_to_sequencer,
                 user_data=(target_id, row),
             )
-    dpg.add_menu_item(
-        label="Add to Mapper",
-        callback=open_new_mapping_dialog,
-        user_data=target_id,
-    )
+    with dpg.menu(label="Add to Mapper"):
+        dpg.add_menu_item(
+            label="new",
+            callback=open_new_mapping_dialog,
+            user_data=target_id,
+        )
+        for line_index in range(len(mapper.row_targets())):
+            dpg.add_menu_item(
+                label=f"line {line_index + 1}",  # 1-based window row label (e31s01)
+                callback=on_tile_add_to_mapper_line,
+                user_data=(target_id, line_index),
+            )
 
 
 def _tile_popup_tag(target_id: str) -> str:
@@ -3837,10 +3863,13 @@ def refresh_mapper_ui() -> None:
             parent="mapper_mappings_group",
         )
         return
-    # group the flat list by source; dict order = first appearance of the source
-    rows: dict[str, list[dict[str, Any]]] = {}
+    # group the flat list by source; row order = mapper.row_targets() (the one
+    # source of row order, e31s01 — the tile menu "line N" items use it too)
+    rows: dict[str, list[dict[str, Any]]] = {target: [] for target in mapper.row_targets()}
     for mapping in state.mapper_mappings:
-        rows.setdefault(mapping["target_id"], []).append(mapping)
+        target = mapping["target_id"]
+        if target in rows:
+            rows[target].append(mapping)
     per_line = _mapper_cards_per_line()
     for target_id, mappings in rows.items():
         block = dpg.add_group(parent="mapper_mappings_group")
