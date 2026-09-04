@@ -1631,15 +1631,20 @@ def _create_tile_popup(target_id: str) -> None:
 def on_tile_context_click(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     """Right-click on a Mediagrid tile: show the tile's action popup (e16).
 
-    e27s02 (BUG-2026-09-03T175000): the popup must be positioned at the
-    cursor first — an unpositioned DPG popup window opens at the top-left of
-    the viewport instead of under the tile. The client-space mouse
-    (get_mouse_pos(local=False)) is the coordinate space set_item_pos uses.
+    e32s01 (BUG-2026-09-04T180936): the popup is REBUILT at open time — its
+    Add to Mapper submenu must list the mapper rows that exist right now, and
+    mapper changes (add/delete/retarget) never rebuild the grid that used to
+    own the popup. e27s02 (BUG-2026-09-03T175000): the rebuilt popup must be
+    positioned at the cursor first — an unpositioned DPG popup window opens
+    at the top-left of the viewport instead of under the tile. The
+    client-space mouse (get_mouse_pos(local=False)) is the coordinate space
+    set_item_pos uses.
     """
-    popup_tag = _tile_popup_tag(user_data)
-    if dpg.does_item_exist(popup_tag):
-        dpg.set_item_pos(popup_tag, dpg.get_mouse_pos(local=False))
-        dpg.show_item(popup_tag)
+    target_id = user_data
+    _create_tile_popup(target_id)  # fresh items: current mapper rows (e32s01)
+    popup_tag = _tile_popup_tag(target_id)
+    dpg.set_item_pos(popup_tag, dpg.get_mouse_pos(local=False))
+    dpg.show_item(popup_tag)
 
 
 def regen_thumb_callback(sender: Any, app_data: Any, user_data: Any) -> None:
