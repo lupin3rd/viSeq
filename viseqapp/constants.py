@@ -175,7 +175,13 @@ MAPPER_ROW_THUMB_W = SLOT_BUTTON_WIDTH  # px width of the row thumbnail (= the s
 MAPPER_ROW_THUMB_H = SLOT_BUTTON_HEIGHT  # px height of the row thumbnail
 
 
-MAPPER_LINE_NO_W = 16  # px width of the row line-number column (e32s02; two ProggyTiny digits)
+MAPPER_LINE_NO_W = 20  # px width of the row line-number column (e32s02; indent + two digits)
+
+
+MAPPER_LINE_NO_INDENT = 2  # px right shift of the line number inside its column (e32s02 tuning)
+
+
+MAPPER_LINE_NO_FONT_SIZE = 13  # px size of the row line numbers (ProggyTiny, > the 10 px font)
 
 
 MAPPER_LINE_NO_TEXT_H = 13  # px text height used to center the line number in the row

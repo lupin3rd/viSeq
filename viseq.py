@@ -54,6 +54,8 @@ from viseqapp.constants import (
     MAPPER_CTRL_H,
     MAPPER_DRAG_W,
     MAPPER_KNOB_H,
+    MAPPER_LINE_NO_FONT_SIZE,
+    MAPPER_LINE_NO_INDENT,
     MAPPER_LINE_NO_TEXT_H,
     MAPPER_LINE_NO_W,
     MAPPER_MAX_MAPPINGS,
@@ -266,6 +268,10 @@ _TILE_TITLE_FONT_PATHS: tuple[str, ...] = (
     str(Path(__file__).resolve().parent / "assets" / "ProggyTiny.ttf"),
 )
 _tile_title_font: Any = None
+
+# e32s02: a larger ProggyTiny for the Mapper row line numbers (same guarded pattern;
+# missing asset -> None -> the numbers fall back to the 10 px mapper font).
+_mapper_line_no_font: Any = None
 
 # --- e09: MIDI control engine (single mido stack; notes + CCs, user-configurable bindings) ---
 
@@ -3305,6 +3311,8 @@ def _mapper_line_number(row_no: int, target_id: str, parent: Any, height: int) -
     vertically centered — the same spacer technique the thumbnail slot uses —
     so every row reads '1  [thumb] cards' and the number matches the tile
     menu's "Add to Mapper > line N" (both number mapper.row_targets() order).
+    The digit is one ProggyTiny step larger than the 10 px mapper texts and
+    sits a few px right of the slot edge (e32s02 tuning).
     """
     with dpg.child_window(
         parent=parent,
@@ -3318,9 +3326,12 @@ def _mapper_line_number(row_no: int, target_id: str, parent: Any, height: int) -
         themed_text(
             str(row_no),
             slot="text_dim",
+            indent=MAPPER_LINE_NO_INDENT,
             tag=f"mapper_line_no_txt_{target_id}",
         )
-    _bind_mapper_font(f"mapper_line_no_txt_{target_id}")
+    font = _mapper_line_no_font or _mapper_font()
+    if font is not None and dpg.does_item_exist(f"mapper_line_no_txt_{target_id}"):
+        dpg.bind_item_font(f"mapper_line_no_txt_{target_id}", font)
 
 
 def _mapper_row_thumb(target_id: str, parent: Any, height: int) -> None:
@@ -5041,6 +5052,16 @@ for _tile_title_font_path in _TILE_TITLE_FONT_PATHS:
     if os.path.exists(_tile_title_font_path):
         with dpg.font_registry():
             _tile_title_font = dpg.add_font(_tile_title_font_path, size=MEDIA_TITLE_FONT_SIZE)
+        break
+
+# e32s02: larger ProggyTiny for the Mapper row line numbers (one step above the
+# 10 px mapper font, so the numbers stay compact but readable).
+for _mapper_line_no_font_path in _TILE_TITLE_FONT_PATHS:
+    if os.path.exists(_mapper_line_no_font_path):
+        with dpg.font_registry():
+            _mapper_line_no_font = dpg.add_font(
+                _mapper_line_no_font_path, size=MAPPER_LINE_NO_FONT_SIZE
+            )
         break
 
 with dpg.handler_registry():
