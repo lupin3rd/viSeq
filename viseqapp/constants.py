@@ -233,6 +233,10 @@ MAPPER_LEARN_SLOTS = 4
 MAPPER_MARKER_W = 15
 MAPPER_MARKER_H = 15
 
+# e33s04: wider spacing BETWEEN the learn-bar groups (replaces the almost
+# invisible DPG vertical separators — the user asked for plain space).
+MARKER_GROUP_GAP = 18
+
 
 VIOSC_IP = "127.0.0.1"
 

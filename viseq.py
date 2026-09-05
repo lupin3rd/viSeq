@@ -75,6 +75,7 @@ from viseqapp.constants import (
     MAPPER_WINDOW_WIDTH,
     MAPPER_X_H,
     MAPPER_X_W,
+    MARKER_GROUP_GAP,
     MEDIA_ALPHA_SLIDER_W,
     MEDIA_BADGE_H,
     MEDIA_BADGE_W,
@@ -3235,7 +3236,7 @@ def _sync_media_learn_bar() -> None:
         learn_marker(MIDI_ACTION_SOURCE_NEXT, {}, parent=bar, tag="media_mk_next")
         learn_marker(MIDI_ACTION_SOURCE_PREV, {}, parent=bar, tag="media_mk_prev")
         learn_marker(MIDI_ACTION_REGEN_SELECTED, {}, parent=bar, tag="media_mk_regen")
-        _bar_divider(bar)
+        _learn_group_gap(bar)
         for slot in range(1, NUM_TRACKS + 1):
             learn_marker(
                 MIDI_ACTION_SEQ_ROW_ASSIGN,
@@ -3244,7 +3245,7 @@ def _sync_media_learn_bar() -> None:
                 tag=f"media_mk_seq_{slot}",
                 tooltip=f"Map: sequencer line {slot} (selected source)",
             )
-        _bar_divider(bar)
+        _learn_group_gap(bar)
         for slot in range(1, MAPPER_LEARN_SLOTS + 1):
             learn_marker(
                 MIDI_ACTION_MAPPER_LINE,
@@ -3255,9 +3256,9 @@ def _sync_media_learn_bar() -> None:
             )
 
 
-def _bar_divider(parent: Any) -> None:
-    """A thin separator inside a horizontal learn bar (group divider)."""
-    dpg.add_separator(parent=parent)
+def _learn_group_gap(parent: Any) -> None:
+    """A wider gap BETWEEN the learn-bar groups (e33s04)."""
+    dpg.add_spacer(width=MARKER_GROUP_GAP, parent=parent)
 
 
 def _sync_sequencer_learn_strip() -> None:
@@ -3286,7 +3287,7 @@ def _sync_sequencer_learn_strip() -> None:
         _strip_marker(strip, MIDI_ACTION_NUDGE_BACK, {}, "seq_mk_nudge_back")
         _strip_marker(strip, MIDI_ACTION_NUDGE_FORWARD, {}, "seq_mk_nudge_forward")
         _strip_marker(strip, MIDI_ACTION_TRANSPORT_TAP, {}, "seq_mk_tap")
-        _bar_divider(strip)
+        _learn_group_gap(strip)
         for mode in (
             BEAT_SOURCE_ANALYSIS,
             BEAT_SOURCE_BAND1,
