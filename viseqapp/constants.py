@@ -229,7 +229,12 @@ MAPPER_ADD_W = 24
 MAPPER_ADD_H = 22
 
 
-MAPPER_DRAG_W = 40  # px width of the from/to drag boxes on the output/input lines
+MAPPER_DRAG_W = 40  # px width of the from/to drag boxes on the slider 'output:'/'input:' lines
+
+
+# e34s02: px width of the from/to drag boxes in the compact knob/button band —
+# smaller than MAPPER_DRAG_W so 'Out'/'Inp' + two boxes fit beside the 44 px control.
+MAPPER_BAND_DRAG_W = 34
 
 # e33s04: fixed slot count of the Mapper in the learn bar (user rule: 4 lines,
 # pre-bindable even when fewer rows exist — a missing line is a logged no-op).

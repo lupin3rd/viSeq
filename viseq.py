@@ -52,6 +52,7 @@ from viseqapp.constants import (
     LOG_HISTORY_LIMIT,
     MAPPER_ADD_H,
     MAPPER_ADD_W,
+    MAPPER_BAND_DRAG_W,
     MAPPER_CB_W,
     MAPPER_CTRL_H,
     MAPPER_DRAG_W,
@@ -3730,25 +3731,38 @@ def _mapper_caption_spacer(label: str, spec: dict[str, Any]) -> int:
 
 
 def _mapper_row_height(mappings: list[dict[str, Any]]) -> int:
-    """Compact uniform height for one source row (e23 bugfix).
+    """Compact uniform height for one source row (e23 bugfix, e34s02 model).
 
-    Fits the tallest mini-card in the row: the 6+6 px content inset, the
-    caption row (the 16 px X button), the control (slider/button box 14 px,
-    knob fixed 44 px), the 'output:' line, and the 'input:' line when ANY card
-    in the row has a bound source. Measured on DPG 2.3.1 with the compact
-    mapper theme (10 px ProggyTiny font, WindowPadding 4, FramePadding y 2,
-    ItemSpacing y 2): slider rows are ~60 px, knob rows ~90 px.
+    Fits the tallest mini-card in the row over the models that are present:
+    the legacy vertical anatomy (caption + 17 px slider + the 'output:' line +
+    the 'input:' line when a source is bound — sliders, answer A) and the
+    compact band anatomy (caption + the 44 px knob/button band, its readouts
+    INSIDE the band). A row mixing both takes the taller model; learn mode
+    adds the in-card marker strip row (e34s03 moves the strip out). Measured
+    on DPG 2.3.1 with the compact mapper theme (10 px ProggyTiny font,
+    WindowPadding 4, FramePadding y 2, ItemSpacing y 2).
     """
-    control = MAPPER_KNOB_H if any(m["control"] == "knob" for m in mappings) else MAPPER_CTRL_H
-    height = (
-        MAPPER_ROW_PAD_V + MAPPER_X_H + MAPPER_ROW_GAP + control + MAPPER_ROW_GAP + MAPPER_TEXT_H
+    pad, x_h, gap, text = (
+        MAPPER_ROW_PAD_V,
+        MAPPER_X_H,
+        MAPPER_ROW_GAP,
+        MAPPER_TEXT_H,
     )
-    if any(m.get("band") is not None or m.get("midi") is not None for m in mappings):
-        height += MAPPER_ROW_GAP + MAPPER_TEXT_H
+    any_source = any(
+        m.get("band") is not None or m.get("midi") is not None or m.get("leap") is not None
+        for m in mappings
+    )
+    height = MAPPER_ROW_THUMB_H + 2  # the row always fits the 70 px thumbnail
+    if any(m["control"] in ("knob", "button") for m in mappings):
+        height = max(height, pad + x_h + gap + MAPPER_KNOB_H)  # compact band
+    if any(m["control"] == "slider" for m in mappings):
+        slider_h = pad + x_h + gap + MAPPER_CTRL_H + gap + text
+        if any_source:
+            slider_h += gap + text
+        height = max(height, slider_h)
     if state.midi_learn_mode:  # e33s02: the caption marker strip adds one row
         height += MAPPER_ROW_GAP + MAPPER_MARKER_H
-    # the row always fits the 70 px source thumbnail (plus 2 px air)
-    return max(MAPPER_ROW_THUMB_H + 2, height)
+    return height
 
 
 def _mapper_line_number(row_no: int, target_id: str, parent: Any, height: int) -> None:
@@ -3881,14 +3895,118 @@ def _mapper_row_add(target_id: str, parent: Any, height: int) -> None:
         dpg.add_text("Add a mapper to this line")
 
 
+def _mapper_card_has_source(mapping: dict[str, Any]) -> bool:
+    """True when a mapping is bound to a band/MIDI/leap source (its Inp row shows).
+
+    The one source-of-truth the readout/row-height decisions share (e34s02).
+    """
+    return (
+        mapping.get("band") is not None
+        or mapping.get("midi") is not None
+        or mapping.get("leap") is not None
+    )
+
+
+def _mapper_readout_line(
+    label: str,
+    mid: int,
+    kind: str,
+    from_value: float,
+    to_value: float,
+    width: int,
+) -> None:
+    """One from/to readout row: a short label + two drag boxes (e34s02).
+
+    Shared by the legacy slider lines (label 'output:'/'input:', wide boxes)
+    and the compact Out/Inp column beside the band control (label 'Out'/'Inp',
+    MAPPER_BAND_DRAG_W boxes). Tags and handler wire-up stay the same for both
+    so on_mapper_output/input and the card right-click registry keep working.
+    """
+    callback = on_mapper_output if kind == "out" else on_mapper_input
+    with dpg.group(horizontal=True):
+        themed_text(label, slot="text_dim", tag=f"mapper_{kind}_lbl_{mid}")
+        dpg.add_drag_float(
+            default_value=from_value,
+            width=width,
+            format="%.2f",
+            speed=0.01,
+            callback=callback,
+            user_data=(mid, "from"),
+            tag=f"mapper_{kind}_from_{mid}",
+        )
+        dpg.add_drag_float(
+            default_value=to_value,
+            width=width,
+            format="%.2f",
+            speed=0.01,
+            callback=callback,
+            user_data=(mid, "to"),
+            tag=f"mapper_{kind}_to_{mid}",
+        )
+    _bind_mapper_font(f"mapper_{kind}_lbl_{mid}")
+    _bind_mapper_font(f"mapper_{kind}_from_{mid}")
+    _bind_mapper_font(f"mapper_{kind}_to_{mid}")
+
+
+def _mapper_band_control(mapping: dict[str, Any], mid: int) -> None:
+    """Compact control band of a knob/button card (e34s02, answer B).
+
+    ONE row as tall as the 44 px control: the control on the LEFT, and on the
+    right the 'Out' readout (always) with the 'Inp' readout under it when a
+    band/MIDI/leap source is bound — the readout no longer stacks BELOW the
+    control, so the rows shrink. The button becomes a 44 px square showing the
+    value; the caption row above keeps the property label.
+    """
+    out_from = mapping["output_from"]
+    out_to = mapping["output_to"]
+    with dpg.group(horizontal=True):
+        if mapping["control"] == "knob":
+            dpg.add_knob_float(
+                min_value=out_from,
+                max_value=out_to,
+                default_value=mapping["value"],
+                width=MAPPER_KNOB_H,
+                callback=on_mapper_control,
+                user_data=mid,
+                tag=f"mapper_knob_{mid}",
+            )
+            _bind_mapper_font(f"mapper_knob_{mid}")
+        else:  # button: a 44 px square labelled with the value
+            dpg.add_button(
+                label=f"{mapping['value']:.2f}",
+                width=MAPPER_KNOB_H,
+                height=MAPPER_KNOB_H,
+                callback=on_mapper_button,
+                user_data=mid,
+                tag=f"mapper_btn_{mid}",
+            )
+            _bind_mapper_font(f"mapper_btn_{mid}")
+        with dpg.group():
+            _mapper_readout_line("Out", mid, "out", out_from, out_to, MAPPER_BAND_DRAG_W)
+            if _mapper_card_has_source(mapping):
+                in_from = mapping.get("input_from")
+                in_to = mapping.get("input_to")
+                _mapper_readout_line(
+                    "Inp",
+                    mid,
+                    "in",
+                    in_from if in_from is not None else 0.0,
+                    in_to if in_to is not None else 1.0,
+                    MAPPER_BAND_DRAG_W,
+                )
+
+
 def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> None:
     """One bordered mapping mini-card inside a source row (e22s01, e23s01).
 
-    e23 anatomy (top to bottom): the caption row — dim property label left, X
-    delete button right (NO value text: the control shows the value) — then the
-    control spanning the full content width with the mapping's OUTPUT range,
-    then the small 'output:' from/to line. The 'input:' line (e23s02) follows
-    when a band or MIDI source is bound. The card height is the row height
+    Anatomy (e34s02): the caption row — dim property label left, X delete
+    button right (NO value text: the control shows the value) — then the
+    control. e34s02 (answers A/B): slider cards keep the vertical anatomy —
+    slider spanning the content width, then the 'output:' from/to line and
+    (when a band/MIDI/leap source is bound) the 'input:' line BELOW. Knob and
+    button cards collapse into ONE band as tall as the 44 px control: the
+    control LEFT, the 'Out' (always) and 'Inp' (bound source only) readouts
+    RIGHT (see _mapper_band_control). The card height is the row height
     (per-content, see _mapper_row_height). Tags are unchanged so the band/MIDI
     drive and delete keep working; the right-click source menu lives on the
     CARD (buttons cannot host DPG handler registries).
@@ -3935,6 +4053,7 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
             )
         # e33s02/e33s03: the learn-marker strip — rendered ONLY while MIDI Learn is
         # on; each marker captures (action_id, params) so the next MIDI press binds it.
+        # e34s03 moves the strip OUT of the card (a dedicated line under the cards).
         if state.midi_learn_mode:
             with dpg.group(horizontal=True) as marker_strip:
                 learn_marker(
@@ -3957,6 +4076,8 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
                 )
         _bind_mapper_font(f"mapper_prop_{mid}")
         if mapping["control"] == "slider":
+            # e34s02 (answer A): the slider keeps the vertical anatomy — control
+            # spanning the content width, then the legacy readout lines BELOW.
             dpg.add_slider_float(
                 min_value=out_from,
                 max_value=out_to,
@@ -3966,82 +4087,22 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
                 user_data=mid,
                 tag=f"mapper_slider_{mid}",
             )
-        elif mapping["control"] == "knob":
-            dpg.add_knob_float(
-                min_value=out_from,
-                max_value=out_to,
-                default_value=mapping["value"],
-                width=44,
-                callback=on_mapper_control,
-                user_data=mid,
-                tag=f"mapper_knob_{mid}",
-            )
+            _bind_mapper_font(f"mapper_slider_{mid}")
+            _mapper_readout_line("output:", mid, "out", out_from, out_to, MAPPER_DRAG_W)
+            if _mapper_card_has_source(mapping):
+                in_from = mapping.get("input_from")
+                in_to = mapping.get("input_to")
+                _mapper_readout_line(
+                    "input:",
+                    mid,
+                    "in",
+                    in_from if in_from is not None else 0.0,
+                    in_to if in_to is not None else 1.0,
+                    MAPPER_DRAG_W,
+                )
         else:
-            dpg.add_button(
-                label=f"{spec['label']}: {mapping['value']:.2f}",
-                width=content_w,
-                callback=on_mapper_button,
-                user_data=mid,
-                tag=f"mapper_btn_{mid}",
-            )
-        _bind_mapper_font(
-            f"mapper_{'btn' if mapping['control'] == 'button' else mapping['control']}_{mid}"
-        )
-        # e23s01: the OSC output range of the control travel (from/to)
-        with dpg.group(horizontal=True):
-            themed_text("output:", slot="text_dim", tag=f"mapper_out_lbl_{mid}")
-            dpg.add_drag_float(
-                default_value=out_from,
-                width=MAPPER_DRAG_W,
-                format="%.2f",
-                speed=0.01,
-                callback=on_mapper_output,
-                user_data=(mid, "from"),
-                tag=f"mapper_out_from_{mid}",
-            )
-            dpg.add_drag_float(
-                default_value=out_to,
-                width=MAPPER_DRAG_W,
-                format="%.2f",
-                speed=0.01,
-                callback=on_mapper_output,
-                user_data=(mid, "to"),
-                tag=f"mapper_out_to_{mid}",
-            )
-        _bind_mapper_font(f"mapper_out_lbl_{mid}")
-        _bind_mapper_font(f"mapper_out_from_{mid}")
-        _bind_mapper_font(f"mapper_out_to_{mid}")
-        # e23s02: the raw input range of the bound source (band or MIDI)
-        if (
-            mapping.get("band") is not None
-            or mapping.get("midi") is not None
-            or mapping.get("leap") is not None
-        ):
-            in_from = mapping.get("input_from")
-            in_to = mapping.get("input_to")
-            with dpg.group(horizontal=True):
-                themed_text("input:", slot="text_dim", tag=f"mapper_in_lbl_{mid}")
-                dpg.add_drag_float(
-                    default_value=in_from if in_from is not None else 0.0,
-                    width=MAPPER_DRAG_W,
-                    format="%.2f",
-                    speed=0.01,
-                    callback=on_mapper_input,
-                    user_data=(mid, "from"),
-                    tag=f"mapper_in_from_{mid}",
-                )
-                dpg.add_drag_float(
-                    default_value=in_to if in_to is not None else 1.0,
-                    width=MAPPER_DRAG_W,
-                    format="%.2f",
-                    speed=0.01,
-                    callback=on_mapper_input,
-                    user_data=(mid, "to"),
-                    tag=f"mapper_in_to_{mid}",
-                )
-            _bind_mapper_font(f"mapper_in_lbl_{mid}")
-            _bind_mapper_font(f"mapper_in_from_{mid}")
-            _bind_mapper_font(f"mapper_in_to_{mid}")
+            # knob / button: the compact band (e34s02)
+            _mapper_band_control(mapping, mid)
         _render_mapper_source_menu(mapping)
 
 
@@ -4466,15 +4527,16 @@ def on_mapper_control(sender: Any, app_data: Any, user_data: Any) -> None:
 
 
 def on_mapper_button(sender: Any, app_data: Any, user_data: Any) -> None:
-    """Button press: toggle output_from (OFF) / output_to (ON), send OSC, refresh the label."""
+    """Button press: toggle output_from (OFF) / output_to (ON), send OSC, refresh the label.
+
+    e34s02: the button is a 44 px square labelled with the value only (the
+    property name lives in the caption row above the control).
+    """
     mid = int(user_data)
     value = mapper.send_button_mapping(mid)
-    mapping = mapper.find_mapping(mid)
-    if mapping is not None:
-        spec = mapper.MAPPER_PROPERTIES[mapping["property"]]
-        btn_tag = f"mapper_btn_{mid}"
-        if dpg.does_item_exist(btn_tag):
-            dpg.configure_item(btn_tag, label=f"{spec['label']}: {value:.2f}")
+    btn_tag = f"mapper_btn_{mid}"
+    if dpg.does_item_exist(btn_tag):
+        dpg.configure_item(btn_tag, label=f"{value:.2f}")
 
 
 def _sync_mapper_control(mid: int) -> None:
@@ -4499,9 +4561,8 @@ def _sync_mapper_control(mid: int) -> None:
     if kind in ("slider", "knob"):
         dpg.configure_item(tag, min_value=out_from, max_value=out_to)
         dpg.set_value(tag, mapping["value"])
-    else:  # button: its label shows the current output value
-        spec = mapper.MAPPER_PROPERTIES[mapping["property"]]
-        dpg.configure_item(tag, label=f"{spec['label']}: {mapping['value']:.2f}")
+    else:  # button: its label shows the current output value (e34s02, value only)
+        dpg.configure_item(tag, label=f"{mapping['value']:.2f}")
 
 
 def on_mapper_output(sender: Any, app_data: Any, user_data: Any) -> None:
