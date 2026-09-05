@@ -3737,10 +3737,11 @@ def _mapper_row_height(mappings: list[dict[str, Any]]) -> int:
     the legacy vertical anatomy (caption + 17 px slider + the 'output:' line +
     the 'input:' line when a source is bound — sliders, answer A) and the
     compact band anatomy (caption + the 44 px knob/button band, its readouts
-    INSIDE the band). A row mixing both takes the taller model; learn mode
-    adds the in-card marker strip row (e34s03 moves the strip out). Measured
-    on DPG 2.3.1 with the compact mapper theme (10 px ProggyTiny font,
-    WindowPadding 4, FramePadding y 2, ItemSpacing y 2).
+    INSIDE the band). A row mixing both takes the taller model; the card rows
+    are height-constant across learn transitions — the card markers render in
+    dedicated strip lines UNDER each card line (e34s03), outside the cards.
+    Measured on DPG 2.3.1 with the compact mapper theme (10 px ProggyTiny
+    font, WindowPadding 4, FramePadding y 2, ItemSpacing y 2).
     """
     pad, x_h, gap, text = (
         MAPPER_ROW_PAD_V,
@@ -3760,8 +3761,6 @@ def _mapper_row_height(mappings: list[dict[str, Any]]) -> int:
         if any_source:
             slider_h += gap + text
         height = max(height, slider_h)
-    if state.midi_learn_mode:  # e33s02: the caption marker strip adds one row
-        height += MAPPER_ROW_GAP + MAPPER_MARKER_H
     return height
 
 
@@ -3893,6 +3892,41 @@ def _mapper_row_add(target_id: str, parent: Any, height: int) -> None:
         )
     with dpg.tooltip(parent=f"mapper_add_btn_{target_id}"):
         dpg.add_text("Add a mapper to this line")
+
+
+def _mapper_marker_slot(mid: int, parent: Any) -> None:
+    """One card's three markers in the under-card strip line (e34s03, answer D).
+
+    The enable/reset/value M markers of one mapper card, centred on the card
+    slot (MAPPER_MINI_W wide) so the strip rows stay aligned under the cards;
+    the markers render OUTSIDE the bordered card (the card never hosts them).
+    Captures and tags are unchanged (mapper_mk_enable/reset/value_<id>) so the
+    learn capture path and existing bindings are untouched.
+    """
+    cluster_w = 3 * MAPPER_MARKER_W  # the three 15 px M buttons + item gaps
+    indent = max(0, (MAPPER_MINI_W - cluster_w) // 2)
+    slot_tag = f"mapper_mk_slot_{mid}"
+    dpg.add_group(horizontal=True, parent=parent, tag=slot_tag)
+    dpg.add_spacer(width=indent, parent=slot_tag)
+    learn_marker(
+        MIDI_ACTION_MAPPER_ENABLE,
+        {"mapping_id": mid},
+        parent=slot_tag,
+        tag=f"mapper_mk_enable_{mid}",
+    )
+    learn_marker(
+        MIDI_ACTION_MAPPER_RESET,
+        {"mapping_id": mid},
+        parent=slot_tag,
+        tag=f"mapper_mk_reset_{mid}",
+    )
+    learn_marker(
+        MIDI_ACTION_MAPPER_MAPPING,  # e33s03: the control value (e18 semantics)
+        {"mapping_id": mid},
+        parent=slot_tag,
+        tag=f"mapper_mk_value_{mid}",
+    )
+    dpg.add_spacer(width=max(0, MAPPER_MINI_W - indent - cluster_w), parent=slot_tag)
 
 
 def _mapper_card_has_source(mapping: dict[str, Any]) -> bool:
@@ -4051,29 +4085,9 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
                 user_data=mid,
                 tag=f"mapper_del_{mid}",
             )
-        # e33s02/e33s03: the learn-marker strip — rendered ONLY while MIDI Learn is
-        # on; each marker captures (action_id, params) so the next MIDI press binds it.
-        # e34s03 moves the strip OUT of the card (a dedicated line under the cards).
-        if state.midi_learn_mode:
-            with dpg.group(horizontal=True) as marker_strip:
-                learn_marker(
-                    MIDI_ACTION_MAPPER_ENABLE,
-                    {"mapping_id": mid},
-                    parent=marker_strip,
-                    tag=f"mapper_mk_enable_{mid}",
-                )
-                learn_marker(
-                    MIDI_ACTION_MAPPER_RESET,
-                    {"mapping_id": mid},
-                    parent=marker_strip,
-                    tag=f"mapper_mk_reset_{mid}",
-                )
-                learn_marker(
-                    MIDI_ACTION_MAPPER_MAPPING,  # e33s03: the control value (e18 semantics)
-                    {"mapping_id": mid},
-                    parent=marker_strip,
-                    tag=f"mapper_mk_value_{mid}",
-                )
+        # e34s03: the card markers moved OUT of the card — while MIDI Learn is
+        # on they render in a dedicated strip line UNDER each card line (see
+        # refresh_mapper_ui + _mapper_marker_slot); the card itself stays clean.
         _bind_mapper_font(f"mapper_prop_{mid}")
         if mapping["control"] == "slider":
             # e34s02 (answer A): the slider keeps the vertical anatomy — control
@@ -4506,6 +4520,20 @@ def refresh_mapper_ui() -> None:
                     _render_mapper_card(mappings[slot], parent=line, height=row_height)
                 else:
                     _mapper_row_add(target_id, parent=line, height=row_height)
+            # e34s03 (answer D): while learn mode is on every card LINE gets a
+            # marker strip line directly UNDER it — the cards' markers live
+            # outside the bordered cards, aligned under each card slot. The
+            # add-only slot lines carry no markers.
+            if state.midi_learn_mode and any(slot < len(mappings) for slot in slot_line):
+                strip = dpg.add_group(
+                    horizontal=True,
+                    parent=block,
+                    tag=f"mapper_mk_strip_{row_no}_{line_no}",
+                )
+                dpg.add_spacer(width=_mapper_row_lead_px(), parent=strip)
+                for slot in slot_line:
+                    if slot < len(mappings):
+                        _mapper_marker_slot(mappings[slot]["id"], parent=strip)
 
 
 def show_mapper_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
