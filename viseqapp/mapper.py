@@ -286,18 +286,39 @@ def row_targets() -> list[str]:
 
 
 def row_slots(card_count: int, per_line: int) -> list[list[int]]:
-    """Visual-line slot groups of one mapper row incl. the trailing ADD slot (e34s01).
+    """Visual-line groups of one mapper row's CARDS (e34s01).
 
-    Slot indices 0..card_count-1 address the row's mapper cards; the ADD slot
-    is the virtual slot index == card_count. Chunking over count + 1 slots lets
-    the per-row '+' participate in the wrap: while there is room the add slot
-    shares the last card line, and a full last line pushes it onto its own
-    continuation line instead of clipping at the window edge. ``per_line`` is
-    the window-derived card capacity (values <= 0 degrade to 1).
+    Chunks the card indices into lines of ``per_line`` cards. The per-row '+'
+    is NOT a card-sized slot any more (2026-09-05 resize bug: it used to wrap
+    like a 150 px card): it is a small trailing button appended to the row's
+    last card line when the pixel room fits it (see add_fits_last_line); this
+    helper only places the cards. ``per_line`` is the window-derived card
+    capacity (values <= 0 degrade to 1).
     """
     per_line = max(1, int(per_line))
-    slots = list(range(card_count + 1))
-    return [slots[i : i + per_line] for i in range(0, len(slots), per_line)]
+    return [list(range(i, min(i + per_line, card_count))) for i in range(0, card_count, per_line)]
+
+
+def add_fits_last_line(
+    card_count: int, per_line: int, card_area: int, pitch: int, add_pitch: int
+) -> bool:
+    """Whether the row's '+' fits at the END of its last card line (e34s01).
+
+    ``card_area`` is the window content width minus the row-lead offset (the
+    room the cards share), ``pitch`` one card plus its spacing, ``add_pitch``
+    the '+' button plus its spacing. A full last line (card_count a multiple
+    of per_line) still leaves ``card_area % pitch`` of room — usually enough
+    for the small '+' — so the '+' stays on the line with the last mapper and
+    only moves to its own narrow line when that remainder is smaller than the
+    button (very narrow windows). No cards -> the '+' does not fit anywhere.
+    """
+    if card_count <= 0:
+        return False
+    per_line = max(1, int(per_line))
+    last_count = card_count % per_line
+    if last_count == 0:
+        last_count = per_line
+    return card_area - last_count * pitch >= add_pitch
 
 
 def set_mapping_value(mapping_id: int, value: float) -> None:

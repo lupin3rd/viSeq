@@ -160,7 +160,8 @@ MONITOR_SPEED_TEXT_SIZE = 12  # px font size of the speed label inside the disc
 # their OWN content (see _mapper_row_height): slider rows ~60 px, knob rows
 # taller, +16 px when a source is bound. Measured on DearPyGui 2.3.1 with the
 # compact theme (WindowPadding 4/FramePadding y 2/ItemSpacing 2): content inset
-# ~6 px top + ~12 px bottom air (MAPPER_ROW_PAD_V = 18), a small-font text/drag row is
+# ~4 px top + ~4 px bottom air (MAPPER_ROW_PAD_V = 8 — trimmed 2026-09-05 so the
+# cards no longer show a dead band at the bottom), a small-font text/drag row is
 # 17 px, a slider/button box 17 px, the knob a fixed 44 px, gaps 2 px; the
 # ProggyTiny-10 advance is 6 px/char (widest label 'Transparency' = 72 px).
 MAPPER_WINDOW_WIDTH = 660
@@ -199,7 +200,8 @@ MAPPER_KNOB_H = 44  # px height of the fixed knob widget
 MAPPER_ROW_GAP = 2  # px item spacing between the card rows
 
 
-MAPPER_ROW_PAD_V = 18  # card inset: 6 top + 12 bottom air (guards the last line vs font drift)
+MAPPER_ROW_PAD_V = 8  # card inset: 4 top + 4 bottom air (2026-09-05: was 6+12 —
+# rows reclaimed ~8-10 px and the cards no longer show a dead band at the bottom)
 
 
 MAPPER_SMALL_CHAR_PX = 6  # px advance of the 10 px ProggyTiny mapper font (measured)
@@ -223,10 +225,11 @@ MAPPER_RESET_H = 16  # px height of the reset button
 MAPPER_CB_W = 16  # px width of the enable checkbox on a caption row (measured, compact theme)
 
 
-# e34s01: per-row '+' add button — the slot spans the card pitch (wrap capacity)
-# while the clickable '+' itself stays small and centered in the slot.
-MAPPER_ADD_W = 24
-MAPPER_ADD_H = 22
+# e34s01: per-row '+' add button — a NARROW trailing slot (2026-09-05 rework:
+# it used to span the full card pitch and wrapped like a 150 px card on resize).
+MAPPER_ADD_W = 24  # the '+' button width
+MAPPER_ADD_H = 22  # the '+' button height
+MAPPER_ADD_SLOT_W = 36  # the slot child + its spacing (small, NOT the card pitch)
 
 
 MAPPER_DRAG_W = 40  # px width of the from/to drag boxes on the slider 'output:'/'input:' lines

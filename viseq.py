@@ -51,6 +51,7 @@ from viseqapp.constants import (
     LAYOUT_WINDOW_TAGS,
     LOG_HISTORY_LIMIT,
     MAPPER_ADD_H,
+    MAPPER_ADD_SLOT_W,
     MAPPER_ADD_W,
     MAPPER_BAND_DRAG_W,
     MAPPER_CB_W,
@@ -3884,16 +3885,17 @@ def on_mapper_row_thumb_click(
 
 
 def _mapper_row_add(target_id: str, parent: Any, height: int) -> None:
-    """The per-row '+' add slot at the end of a mapper row (e34s01).
+    """The per-row '+' add button at the end of a mapper row (e34s01).
 
-    A borderless child window of the card pitch and the row height (the exact
-    footprint the wrap reserves for it, so lines stay aligned) holding a small
-    centered '+' button; a click opens the New-Mapping dialog with the row's
-    source preselected, so the created mapping lands on this row.
+    A NARROW borderless slot (MAPPER_ADD_SLOT_W, not the card pitch — the 2026-09-05
+    rework: the '+' no longer wraps like a 150 px card on resize) as tall as the
+    row, holding a small centered '+' button; a click opens the New-Mapping
+    dialog with the row's source preselected, so the created mapping lands on
+    this row.
     """
     with dpg.child_window(
         parent=parent,
-        width=MAPPER_MINI_W,
+        width=MAPPER_ADD_SLOT_W,
         height=height,
         border=False,
         no_scrollbar=True,
@@ -4533,12 +4535,21 @@ def refresh_mapper_ui() -> None:
         if target in rows:
             rows[target].append(mapping)
     per_line = _mapper_cards_per_line()
+    width = dpg.get_item_width("mapper_window") or MAPPER_WINDOW_WIDTH
+    card_area = width - 8 - (_mapper_row_lead_px() + 4)
+    pitch = MAPPER_MINI_W + 4
     for row_no, (target_id, mappings) in enumerate(rows.items(), start=1):
         block = dpg.add_group(parent="mapper_mappings_group")
         row_height = _mapper_row_height(mappings)
-        # e34s01: lines chunk over (cards + the ADD slot) so the per-row '+'
-        # participates in the wrap and is never clipped (mapper.row_slots).
-        for line_no, slot_line in enumerate(mapper.row_slots(len(mappings), per_line)):
+        # e34s01 (2026-09-05 rework): the per-row '+' is a SMALL trailing
+        # button, not a card slot — it rides the row's last card line when the
+        # pixel room fits it (mapper.add_fits_last_line) and only moves to its
+        # own narrow line when a very narrow window leaves no room.
+        add_inline = mapper.add_fits_last_line(
+            len(mappings), per_line, card_area, pitch, MAPPER_ADD_SLOT_W
+        )
+        lines = mapper.row_slots(len(mappings), per_line)
+        for line_no, slot_line in enumerate(lines):
             line = dpg.add_group(horizontal=True, parent=block)
             if line_no == 0:
                 # e32s02: the row number leads the line (1-based window order,
@@ -4562,8 +4573,9 @@ def refresh_mapper_ui() -> None:
             for slot in slot_line:
                 if slot < len(mappings):
                     _render_mapper_card(mappings[slot], parent=line, height=row_height)
-                else:
-                    _mapper_row_add(target_id, parent=line, height=row_height)
+            # e34s01: the small '+' rides the last card line when it fits
+            if add_inline and line_no == len(lines) - 1:
+                _mapper_row_add(target_id, parent=line, height=row_height)
             # e34s03 (answer D): while learn mode is on every card LINE gets a
             # marker strip line directly UNDER it — the cards' markers live
             # outside the bordered cards, aligned under each card slot. The
@@ -4578,6 +4590,12 @@ def refresh_mapper_ui() -> None:
                 for slot in slot_line:
                     if slot < len(mappings):
                         _mapper_marker_slot(mappings[slot], parent=strip)
+        if not add_inline:
+            # a very narrow window: the '+' gets its own narrow line under the
+            # cards (aligned with them) instead of overflowing the edge
+            line = dpg.add_group(horizontal=True, parent=block)
+            dpg.add_spacer(width=_mapper_row_lead_px(), parent=line)
+            _mapper_row_add(target_id, parent=line, height=row_height)
 
 
 def show_mapper_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
