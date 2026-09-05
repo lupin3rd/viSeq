@@ -225,6 +225,10 @@ MAPPER_CB_W = 16  # px width of the enable checkbox on a caption row (measured, 
 
 MAPPER_DRAG_W = 40  # px width of the from/to drag boxes on the output/input lines
 
+# e33s02: learn-marker button on a card caption / row lead (compact, tooltip-only)
+MAPPER_MARKER_W = 18
+MAPPER_MARKER_H = 16
+
 
 VIOSC_IP = "127.0.0.1"
 
@@ -382,6 +386,15 @@ MIDI_ACTION_TRACK_ASSIGN = "track_assign"
 
 
 MIDI_ACTION_MAPPER_MAPPING = "mapper_mapping"  # e18: a learned MIDI control drives a Mapper mapping
+
+# e33s02: marker-based learn targets on a Mapper card caption (enable + reset)
+MIDI_ACTION_MAPPER_ENABLE = "mapper_enable"  # toggle the e24 armed flag (momentary)
+MIDI_ACTION_MAPPER_RESET = "mapper_reset"  # return the control to its neutral default (e27)
+
+
+# e33s02: momentary learn actions trigger at CC value >= this threshold (MIDI's
+# conventional CC-switch split); lower CC values are a deliberate no-op.
+MIDI_CC_TRIGGER_THRESHOLD = 64
 
 
 DEFAULT_CONFIG: dict[str, Any] = {

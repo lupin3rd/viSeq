@@ -14,7 +14,9 @@ from dataclasses import dataclass
 
 from viseqapp.constants import (
     MIDI_ACTION_BEAT_SOURCE,
+    MIDI_ACTION_MAPPER_ENABLE,
     MIDI_ACTION_MAPPER_MAPPING,
+    MIDI_ACTION_MAPPER_RESET,
     MIDI_ACTION_NUDGE_BACK,
     MIDI_ACTION_NUDGE_FORWARD,
     MIDI_ACTION_SEQ_TOGGLE,
@@ -71,6 +73,12 @@ ACTION_SPECS: dict[str, ActionSpec] = {
     ),
     MIDI_ACTION_MAPPER_MAPPING: ActionSpec(
         MIDI_ACTION_MAPPER_MAPPING, "Mapper value", CATEGORY_MAPPER, KIND_VALUE
+    ),
+    MIDI_ACTION_MAPPER_ENABLE: ActionSpec(
+        MIDI_ACTION_MAPPER_ENABLE, "Enable mapping", CATEGORY_MAPPER, KIND_MOMENTARY
+    ),
+    MIDI_ACTION_MAPPER_RESET: ActionSpec(
+        MIDI_ACTION_MAPPER_RESET, "Reset mapping", CATEGORY_MAPPER, KIND_MOMENTARY
     ),
 }
 

@@ -58,6 +58,8 @@ from viseqapp.constants import (
     MAPPER_LINE_NO_FONT_SIZE,
     MAPPER_LINE_NO_TEXT_H,
     MAPPER_LINE_NO_W,
+    MAPPER_MARKER_H,
+    MAPPER_MARKER_W,
     MAPPER_MAX_MAPPINGS,
     MAPPER_MINI_W,
     MAPPER_RESET_H,
@@ -86,7 +88,9 @@ from viseqapp.constants import (
     MEDIA_TITLE_RESERVE_PX,
     MEDIA_TITLE_WRAP,
     MIDI_ACTION_BEAT_SOURCE,
+    MIDI_ACTION_MAPPER_ENABLE,
     MIDI_ACTION_MAPPER_MAPPING,
+    MIDI_ACTION_MAPPER_RESET,
     MIDI_ACTION_NUDGE_BACK,
     MIDI_ACTION_NUDGE_FORWARD,
     MIDI_ACTION_SEQ_TOGGLE,
@@ -94,6 +98,7 @@ from viseqapp.constants import (
     MIDI_ACTION_TRANSPORT_PLAY,
     MIDI_ACTION_TRANSPORT_RESYNC,
     MIDI_ACTION_TRANSPORT_TAP,
+    MIDI_CC_TRIGGER_THRESHOLD,
     MIDI_CLOCK_PULSES_PER_BEAT,
     MIDI_LEARN_TIMEOUT_SECONDS,
     MONITOR_ALPHA_W,
@@ -2830,6 +2835,50 @@ def midi_beats_from_pulses(pulses: int) -> int:
 
 # ---------- e09: MIDI control engine ----------
 
+# e33s02: momentary Mapper actions trigger at CC value >= MIDI_CC_TRIGGER_THRESHOLD
+# (the shared threshold convention; lower values are a deliberate no-op).
+
+
+def _log_stale_midi_target(action: str, key: int) -> None:
+    """Throttled diagnostic: a binding referenced an entity that no longer exists.
+
+    A captured binding can outlive its target (the mapping was deleted): the
+    dispatch must be a logged no-op, never a crash. One line per second per
+    action id (same pattern as _log_unknown_midi_action).
+    """
+    now = time.time()
+    if now - _last_unknown_action_log.get(action, 0.0) < 1.0:
+        return
+    _last_unknown_action_log[action] = now
+    append_log("MIDI", f"{action}: no mapping {key}")
+
+
+def _exec_mapper_enable(params: dict[str, Any], value: int) -> None:
+    """e33s02: toggle a mapping's armed flag (note / CC >= 64); stale id no-op."""
+    mid = int(params.get("mapping_id", -1))
+    mapping = mapper.find_mapping(mid)
+    if mapping is None:
+        _log_stale_midi_target(MIDI_ACTION_MAPPER_ENABLE, mid)
+        return
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    enabled = not bool(mapping["enabled"])
+    mapper.set_mapping_enabled(mid, enabled)
+    if dpg.does_item_exist(f"mapper_enable_{mid}"):
+        dpg.set_value(f"mapper_enable_{mid}", enabled)  # the card checkbox follows in place
+
+
+def _exec_mapper_reset(params: dict[str, Any], value: int) -> None:
+    """e33s02: reset a mapping to its neutral default (same core as the R button)."""
+    mid = int(params.get("mapping_id", -1))
+    if mapper.find_mapping(mid) is None:
+        _log_stale_midi_target(MIDI_ACTION_MAPPER_RESET, mid)
+        return
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    reset_mapping(None, None, mid)  # neutral + widget re-sync, mouse-path identical
+
+
 # e33s01: one dispatcher per registered action (viseqapp/actions.py owns the
 # metadata). Lambdas close over the module helpers, which resolve at call time.
 _MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
@@ -2845,6 +2894,9 @@ _MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
     MIDI_ACTION_TRACK_ASSIGN: lambda p, v: midi_action_track_assign(int(p.get("row", 0))),
     # e18: a learned MIDI control drives a Mapper mapping (raw 0..127 value)
     MIDI_ACTION_MAPPER_MAPPING: lambda p, v: midi_mapping_value(int(p.get("mapping_id", 0)), v),
+    # e33s02: card caption learn markers (armed flag, reset)
+    MIDI_ACTION_MAPPER_ENABLE: _exec_mapper_enable,
+    MIDI_ACTION_MAPPER_RESET: _exec_mapper_reset,
 }
 
 _last_unknown_action_log: dict[str, float] = {}  # action id -> last log time (throttle)
@@ -2940,6 +2992,56 @@ def _exit_midi_learn() -> None:
         dpg.set_item_label("midi_learn_btn", "Learn mapping...")
     if dpg.does_item_exist("midi_learn_status"):
         dpg.set_value("midi_learn_status", "MIDI Learn off")
+    _refresh_learn_surfaces()
+
+
+def _refresh_learn_surfaces() -> None:
+    """Rebuild the surfaces whose learn markers are conditional on the mode (e33s02).
+
+    Markers are rendered only while state.midi_learn_mode is on, so entering or
+    leaving learn mode must rebuild the Mapper body (its refresh already guards
+    on the body existing). Future marker surfaces (menus, menubar) hook here too.
+    """
+    if dpg.does_item_exist("mapper_mappings_group"):
+        refresh_mapper_ui()
+
+
+def learn_marker(action_id: str, params: dict[str, Any], tag: str | None = None) -> str:
+    """Add ONE uniform learn marker button (e33s02): click captures the action.
+
+    The marker is a small button labeled by a dot whose tooltip names the action
+    (registry label); its click stores (action_id, params) as the pending learn
+    capture instead of executing anything. Callers render markers ONLY while
+    state.midi_learn_mode is on — the surfaces rebuild on learn transitions via
+    _refresh_learn_surfaces, so markers never need show/hide juggling.
+    """
+    marker_tag = dpg.add_button(
+        label="\u2022",
+        width=MAPPER_MARKER_W,
+        height=MAPPER_MARKER_H,
+        callback=on_learn_marker_click,
+        user_data=(action_id, params),
+        tag=tag,
+    )
+    with dpg.tooltip(parent=marker_tag):
+        dpg.add_text(f"Map: {actions.action_label(action_id)}")
+    return marker_tag
+
+
+def on_learn_marker_click(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """A learn marker was clicked: capture its (action_id, params) as the pending binding.
+
+    The mouse behavior of the mapped control itself is never hijacked — markers
+    are separate buttons; this handler only records what the next MIDI message
+    will bind. Outside learn mode a stray click captures nothing.
+    """
+    if not state.midi_learn_mode:
+        return
+    action_id, params = user_data
+    state.midi_learn_pending = (action_id, params)
+    state.midi_learn_started_at = time.time()
+    if dpg.does_item_exist("midi_learn_status"):
+        dpg.set_value("midi_learn_status", "Now press your MIDI button")
 
 
 def midi_learn_complete(binding: dict[str, Any], port_name: str | None = None) -> None:
@@ -3018,6 +3120,7 @@ def toggle_midi_learn(sender: Any = None, app_data: Any = None, user_data: Any =
         dpg.set_item_label("midi_learn_btn", "Cancel learn")
     if dpg.does_item_exist("midi_learn_status"):
         dpg.set_value("midi_learn_status", "MIDI Learn: click a viseq control")
+    _refresh_learn_surfaces()  # e33s02: show the learn markers on the Mapper body
 
 
 def on_midi_enable(sender: Any, app_data: Any, user_data: Any) -> None:
@@ -3331,6 +3434,8 @@ def _mapper_row_height(mappings: list[dict[str, Any]]) -> int:
     )
     if any(m.get("band") is not None or m.get("midi") is not None for m in mappings):
         height += MAPPER_ROW_GAP + MAPPER_TEXT_H
+    if state.midi_learn_mode:  # e33s02: the caption marker strip adds one row
+        height += MAPPER_ROW_GAP + MAPPER_MARKER_H
     # the row always fits the 70 px source thumbnail (plus 2 px air)
     return max(MAPPER_ROW_THUMB_H + 2, height)
 
@@ -3488,6 +3593,20 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
                 user_data=mid,
                 tag=f"mapper_del_{mid}",
             )
+        # e33s02: the learn-marker strip — rendered ONLY while MIDI Learn is on;
+        # each marker captures (action_id, params) so the next MIDI press binds it.
+        if state.midi_learn_mode:
+            with dpg.group(horizontal=True):
+                learn_marker(
+                    MIDI_ACTION_MAPPER_ENABLE,
+                    {"mapping_id": mid},
+                    tag=f"mapper_mk_enable_{mid}",
+                )
+                learn_marker(
+                    MIDI_ACTION_MAPPER_RESET,
+                    {"mapping_id": mid},
+                    tag=f"mapper_mk_reset_{mid}",
+                )
         _bind_mapper_font(f"mapper_prop_{mid}")
         if mapping["control"] == "slider":
             dpg.add_slider_float(
