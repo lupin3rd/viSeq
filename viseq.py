@@ -3060,7 +3060,7 @@ def learn_marker(
     render thread in real DearPyGui (reproduced 2026-09-05).
     """
     marker_tag = dpg.add_button(
-        label="\u2022",
+        label="M",
         width=MAPPER_MARKER_W,
         height=MAPPER_MARKER_H,
         callback=on_learn_marker_click,
@@ -3068,6 +3068,7 @@ def learn_marker(
         parent=parent,
         tag=tag,
     )
+    dpg.bind_item_theme(marker_tag, theme_learn_marker)  # red 'M' (e33)
     with dpg.tooltip(parent=marker_tag):
         dpg.add_text(f"Map: {actions.action_label(action_id)}")
     return marker_tag
@@ -5373,6 +5374,13 @@ with dpg.theme() as theme_mapper_compact, dpg.theme_component(dpg.mvAll):
     dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 4, 2)
     dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 3)
     dpg.add_theme_style(dpg.mvStyleVar_GrabRounding, 2)
+
+with dpg.theme() as theme_learn_marker, dpg.theme_component(dpg.mvButton):
+    # e33: the red 'M' learn markers — the red text signals "bind this to MIDI"
+    # and stands out from the dim card captions (fixed accent red on every
+    # palette; the markers only appear during a MIDI Learn session).
+    dpg.add_theme_color(dpg.mvThemeCol_Text, (225, 60, 60, 255))
+    dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 0, 0)
 
 with dpg.theme() as theme_seq_row_compact, dpg.theme_component(dpg.mvAll):
     # Tighter item spacing for the sequencer transport/beat-source row (e10s08):

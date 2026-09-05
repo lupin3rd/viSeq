@@ -226,8 +226,8 @@ MAPPER_CB_W = 16  # px width of the enable checkbox on a caption row (measured, 
 MAPPER_DRAG_W = 40  # px width of the from/to drag boxes on the output/input lines
 
 # e33s02: learn-marker button on a card caption / row lead (compact, tooltip-only)
-MAPPER_MARKER_W = 18
-MAPPER_MARKER_H = 16
+MAPPER_MARKER_W = 15
+MAPPER_MARKER_H = 15
 
 
 VIOSC_IP = "127.0.0.1"
