@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 from viseqapp.constants import (
     MIDI_ACTION_BEAT_SOURCE,
+    MIDI_ACTION_ENABLE_CORRECTION,
     MIDI_ACTION_MAPPER_BAND,
     MIDI_ACTION_MAPPER_ENABLE,
     MIDI_ACTION_MAPPER_LINE,
@@ -114,6 +115,12 @@ ACTION_SPECS: dict[str, ActionSpec] = {
         MIDI_ACTION_SEQ_ROW_ASSIGN,
         "Assign selected source to sequencer line",
         CATEGORY_SEQUENCER,
+        KIND_MOMENTARY,
+    ),
+    MIDI_ACTION_ENABLE_CORRECTION: ActionSpec(
+        MIDI_ACTION_ENABLE_CORRECTION,
+        "Enable color correction",
+        CATEGORY_MEDIAGRID,
         KIND_MOMENTARY,
     ),
 }

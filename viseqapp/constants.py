@@ -410,6 +410,7 @@ MIDI_ACTION_SOURCE_NEXT = "source_next"  # select the next source in the grid or
 MIDI_ACTION_SOURCE_PREV = "source_prev"  # select the previous source in the grid order (wrap)
 MIDI_ACTION_REGEN_SELECTED = "regen_selected_thumb"  # regen the selected source's thumbs
 MIDI_ACTION_SEQ_ROW_ASSIGN = "seq_row_assign"  # selected source -> a sequencer row (slot)
+MIDI_ACTION_ENABLE_CORRECTION = "enable_correction"  # arm the SELECTED source's CC block
 
 
 # e33s02: momentary learn actions trigger at CC value >= this threshold (MIDI's

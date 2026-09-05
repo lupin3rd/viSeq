@@ -90,6 +90,7 @@ from viseqapp.constants import (
     MEDIA_TITLE_RESERVE_PX,
     MEDIA_TITLE_WRAP,
     MIDI_ACTION_BEAT_SOURCE,
+    MIDI_ACTION_ENABLE_CORRECTION,
     MIDI_ACTION_MAPPER_BAND,
     MIDI_ACTION_MAPPER_ENABLE,
     MIDI_ACTION_MAPPER_LINE,
@@ -1632,6 +1633,29 @@ def _add_tile_context_items(target_id: str) -> None:
                 callback=on_tile_add_to_mapper_line,
                 user_data=(target_id, line_index),
             )
+    # e33s04: after the three actions — a separator, then per-source color correction
+    dpg.add_separator()
+    dpg.add_menu_item(
+        label="Enable color correction",
+        callback=on_tile_enable_color_correction,
+        user_data=target_id,
+    )
+
+
+def on_tile_enable_color_correction(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Tile context menu > Enable color correction: turn ON the source's CC block.
+
+    The address /vimix/<target>/correction is the frozen-contract path the
+    Mapper catalog already uses ('correction' 0..1, from the vimix wiki); the
+    menu item arms it (1.0). The mouse path is tile-anchored; the MIDI twin is
+    selection-relative (enable_correction) per the volatile-source rule.
+    """
+    target_id = user_data
+    addr = f"/vimix/{target_id}/correction"
+    osc_client.send_message(addr, 1.0)
+    append_log("OUT", f"{addr} [1.00]")
 
 
 def _tile_popup_tag(target_id: str) -> str:
@@ -3017,6 +3041,25 @@ def _exec_seq_row_assign(params: dict[str, Any], value: int) -> None:
     assign_target_to_track(row, selected)
 
 
+def _exec_enable_correction(params: dict[str, Any], value: int) -> None:
+    """e33s04: arm the color-correction block of the SELECTED source (1.0).
+
+    The mouse twin (tile menu) is tile-anchored; the MIDI action is
+
+    selection-relative per the volatile-source rule.
+
+    """
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    selected = state.viseq_selected_source
+    if selected is None:
+        _log_stale_midi_target(MIDI_ACTION_ENABLE_CORRECTION, "no selection")
+        return
+    addr = f"/vimix/{selected}/correction"
+    osc_client.send_message(addr, 1.0)
+    append_log("OUT", f"{addr} [1.00]")
+
+
 # e33s01: one dispatcher per registered action (viseqapp/actions.py owns the
 # metadata). Lambdas close over the module helpers, which resolve at call time.
 _MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
@@ -3044,6 +3087,7 @@ _MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
     # e33s04: selection-relative actions — never anchored to a volatile source
     MIDI_ACTION_REGEN_SELECTED: _exec_regen_selected,
     MIDI_ACTION_SEQ_ROW_ASSIGN: _exec_seq_row_assign,
+    MIDI_ACTION_ENABLE_CORRECTION: _exec_enable_correction,
 }
 
 _last_unknown_action_log: dict[str, float] = {}  # action id -> last log time (throttle)
@@ -3236,6 +3280,7 @@ def _sync_media_learn_bar() -> None:
         learn_marker(MIDI_ACTION_SOURCE_NEXT, {}, parent=bar, tag="media_mk_next")
         learn_marker(MIDI_ACTION_SOURCE_PREV, {}, parent=bar, tag="media_mk_prev")
         learn_marker(MIDI_ACTION_REGEN_SELECTED, {}, parent=bar, tag="media_mk_regen")
+        learn_marker(MIDI_ACTION_ENABLE_CORRECTION, {}, parent=bar, tag="media_mk_cc")
         _learn_group_gap(bar)
         for slot in range(1, NUM_TRACKS + 1):
             learn_marker(
