@@ -3046,14 +3046,18 @@ def _refresh_learn_surfaces() -> None:
         refresh_mapper_ui()
 
 
-def learn_marker(action_id: str, params: dict[str, Any], tag: str | None = None) -> str:
+def learn_marker(
+    action_id: str, params: dict[str, Any], parent: Any, tag: str | None = None
+) -> str:
     """Add ONE uniform learn marker button (e33s02): click captures the action.
 
     The marker is a small button labeled by a dot whose tooltip names the action
     (registry label); its click stores (action_id, params) as the pending learn
     capture instead of executing anything. Callers render markers ONLY while
     state.midi_learn_mode is on — the surfaces rebuild on learn transitions via
-    _refresh_learn_surfaces, so markers never need show/hide juggling.
+    _refresh_learn_surfaces, so markers never need show/hide juggling. The
+    parent is EXPLICIT: a parentless add_button outside a with-block hangs the
+    render thread in real DearPyGui (reproduced 2026-09-05).
     """
     marker_tag = dpg.add_button(
         label="\u2022",
@@ -3061,6 +3065,7 @@ def learn_marker(action_id: str, params: dict[str, Any], tag: str | None = None)
         height=MAPPER_MARKER_H,
         callback=on_learn_marker_click,
         user_data=(action_id, params),
+        parent=parent,
         tag=tag,
     )
     with dpg.tooltip(parent=marker_tag):
@@ -3635,20 +3640,23 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
         # e33s02/e33s03: the learn-marker strip — rendered ONLY while MIDI Learn is
         # on; each marker captures (action_id, params) so the next MIDI press binds it.
         if state.midi_learn_mode:
-            with dpg.group(horizontal=True):
+            with dpg.group(horizontal=True) as marker_strip:
                 learn_marker(
                     MIDI_ACTION_MAPPER_ENABLE,
                     {"mapping_id": mid},
+                    parent=marker_strip,
                     tag=f"mapper_mk_enable_{mid}",
                 )
                 learn_marker(
                     MIDI_ACTION_MAPPER_RESET,
                     {"mapping_id": mid},
+                    parent=marker_strip,
                     tag=f"mapper_mk_reset_{mid}",
                 )
                 learn_marker(
                     MIDI_ACTION_MAPPER_MAPPING,  # e33s03: the control value (e18 semantics)
                     {"mapping_id": mid},
+                    parent=marker_strip,
                     tag=f"mapper_mk_value_{mid}",
                 )
         _bind_mapper_font(f"mapper_prop_{mid}")
@@ -3774,7 +3782,7 @@ def _render_mapper_source_menu(mapping: dict[str, Any]) -> None:
             # e33s03: uniform label + learn-marker rows while learning — the
             # marker captures the band action, the label keeps its click behavior
             for band_id in (2, 3):
-                with dpg.group(horizontal=True):
+                with dpg.group(horizontal=True) as band_row:
                     dpg.add_button(
                         label=f"Map Band {band_id}",
                         callback=set_mapping_band,
@@ -3783,6 +3791,7 @@ def _render_mapper_source_menu(mapping: dict[str, Any]) -> None:
                     learn_marker(
                         MIDI_ACTION_MAPPER_BAND,
                         {"mapping_id": mid, "band": band_id},
+                        parent=band_row,
                         tag=f"mapper_mk_band{band_id}_{mid}",
                     )
             with dpg.group(horizontal=True):
@@ -4123,6 +4132,7 @@ def refresh_mapper_ui() -> None:
                     learn_marker(
                         MIDI_ACTION_MAPPER_LINE,
                         {"line": row_no - 1},
+                        parent=line,
                         tag=f"mapper_mk_line_{target_id}",
                     )
             else:
