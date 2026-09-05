@@ -395,12 +395,12 @@ MIDI_ACTION_MAPPER_RESET = "mapper_reset"  # return the control to its neutral d
 MIDI_ACTION_MAPPER_LINE = "mapper_line"  # variant B: selected media -> the mapper row (line)
 MIDI_ACTION_MAPPER_BAND = "mapper_band"  # bind the mapping to an audio band (2/3)
 
-# e33s04: source browsing + tile-anchored actions (Mediagrid learn markers)
+# e33s04: source browsing + selection-relative actions (Mediagrid learn bar).
+# Rule (user, 2026-09-05): bindings never anchor to a volatile source — the
+# action applies to the SELECTED source at trigger time.
 MIDI_ACTION_SOURCE_NEXT = "source_next"  # select the next source in the grid order (wrap)
 MIDI_ACTION_SOURCE_PREV = "source_prev"  # select the previous source in the grid order (wrap)
-MIDI_ACTION_TILE_REGEN_THUMB = "tile_regen_thumb"  # regen the thumbs of a specific tile
-MIDI_ACTION_TILE_SEQ_ASSIGN = "tile_seq_assign"  # this tile -> a sequencer row (variant A)
-MIDI_ACTION_TILE_MAPPER_LINE = "tile_mapper_line"  # this tile -> a mapper line (variant A)
+MIDI_ACTION_REGEN_SELECTED = "regen_selected_thumb"  # regen the selected source's thumbs
 
 
 # e33s02: momentary learn actions trigger at CC value >= this threshold (MIDI's

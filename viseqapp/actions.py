@@ -21,12 +21,10 @@ from viseqapp.constants import (
     MIDI_ACTION_MAPPER_RESET,
     MIDI_ACTION_NUDGE_BACK,
     MIDI_ACTION_NUDGE_FORWARD,
+    MIDI_ACTION_REGEN_SELECTED,
     MIDI_ACTION_SEQ_TOGGLE,
     MIDI_ACTION_SOURCE_NEXT,
     MIDI_ACTION_SOURCE_PREV,
-    MIDI_ACTION_TILE_MAPPER_LINE,
-    MIDI_ACTION_TILE_REGEN_THUMB,
-    MIDI_ACTION_TILE_SEQ_ASSIGN,
     MIDI_ACTION_TRACK_ASSIGN,
     MIDI_ACTION_TRANSPORT_PLAY,
     MIDI_ACTION_TRANSPORT_RESYNC,
@@ -105,21 +103,9 @@ ACTION_SPECS: dict[str, ActionSpec] = {
     MIDI_ACTION_SOURCE_PREV: ActionSpec(
         MIDI_ACTION_SOURCE_PREV, "Previous source", CATEGORY_MEDIAGRID, KIND_MOMENTARY
     ),
-    MIDI_ACTION_TILE_REGEN_THUMB: ActionSpec(
-        MIDI_ACTION_TILE_REGEN_THUMB,
-        "Regenerate tile thumbnails",
-        CATEGORY_MEDIAGRID,
-        KIND_MOMENTARY,
-    ),
-    MIDI_ACTION_TILE_SEQ_ASSIGN: ActionSpec(
-        MIDI_ACTION_TILE_SEQ_ASSIGN,
-        "Assign tile to sequencer line",
-        CATEGORY_MEDIAGRID,
-        KIND_MOMENTARY,
-    ),
-    MIDI_ACTION_TILE_MAPPER_LINE: ActionSpec(
-        MIDI_ACTION_TILE_MAPPER_LINE,
-        "Assign tile to mapper line",
+    MIDI_ACTION_REGEN_SELECTED: ActionSpec(
+        MIDI_ACTION_REGEN_SELECTED,
+        "Regenerate selected source thumbnails",
         CATEGORY_MEDIAGRID,
         KIND_MOMENTARY,
     ),

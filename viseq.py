@@ -95,12 +95,10 @@ from viseqapp.constants import (
     MIDI_ACTION_MAPPER_RESET,
     MIDI_ACTION_NUDGE_BACK,
     MIDI_ACTION_NUDGE_FORWARD,
+    MIDI_ACTION_REGEN_SELECTED,
     MIDI_ACTION_SEQ_TOGGLE,
     MIDI_ACTION_SOURCE_NEXT,
     MIDI_ACTION_SOURCE_PREV,
-    MIDI_ACTION_TILE_MAPPER_LINE,
-    MIDI_ACTION_TILE_REGEN_THUMB,
-    MIDI_ACTION_TILE_SEQ_ASSIGN,
     MIDI_ACTION_TRACK_ASSIGN,
     MIDI_ACTION_TRANSPORT_PLAY,
     MIDI_ACTION_TRANSPORT_RESYNC,
@@ -1592,7 +1590,7 @@ def on_tile_add_to_mapper_line(
 
 
 def _add_tile_context_items(target_id: str) -> None:
-    """The right-click actions of a Mediagrid tile (e16, e30s01, e31s01).
+    """The three right-click actions of a Mediagrid tile (e16, e30s01, e31s01).
 
     Must run inside a ``with dpg.window(popup=True, ...)`` block so the items
     are parented to that popup window. Every tile calls this — the actions
@@ -1601,14 +1599,11 @@ def _add_tile_context_items(target_id: str) -> None:
     row), and Add to Mapper — a submenu whose FIRST item is 'new' (the
     classic mapping dialog) followed by one 'line N' item per mapper row that
     exists right now (window order; re-points the row onto this source).
-    e33s04: while MIDI Learn is on the rows flatten to label + red-M marker
-    rows (native submenus cannot host the markers) — Regenerate Thumbnails,
-    every sequencer line and every mapper line get a marker capturing the
-    tile-anchored action; the dialog opener 'new' stays unmarked.
+    e33s04 (user rule): the popup carries NO learn markers — a binding must
+    never anchor to a volatile source. The selection-relative actions live on
+    the stable surfaces instead: mapper line markers on the Mapper rows and
+    the regen marker in the sources-window learn bar.
     """
-    if state.midi_learn_mode:
-        _add_tile_learn_rows(target_id)
-        return
     dpg.add_menu_item(
         label="Regenerate Thumbnails",
         callback=regen_thumb_callback,
@@ -1633,58 +1628,6 @@ def _add_tile_context_items(target_id: str) -> None:
                 label=f"line {line_index + 1}",  # 1-based window row label (e31s01)
                 callback=on_tile_add_to_mapper_line,
                 user_data=(target_id, line_index),
-            )
-
-
-def _add_tile_learn_rows(target_id: str) -> None:
-    """Learn-mode rows of the tile popup: one label + red-M marker per action (e33s04).
-
-    Clicking the label keeps today's mouse behavior; the marker captures the
-    tile-anchored action (params carry target_id, row/line). Dialog-openers
-    ('new') and nothing destructive get a marker.
-    """
-    with dpg.group(horizontal=True) as regen_row:
-        dpg.add_button(
-            label="Regenerate Thumbnails",
-            callback=regen_thumb_callback,
-            user_data=target_id,
-        )
-        learn_marker(
-            MIDI_ACTION_TILE_REGEN_THUMB,
-            {"target_id": target_id},
-            parent=regen_row,
-        )
-    themed_text("Add to Step Sequencer", slot="text_dim")
-    for row in range(NUM_TRACKS):
-        with dpg.group(horizontal=True) as seq_row:
-            dpg.add_button(
-                label=f"line {row + 1}",
-                callback=on_tile_add_to_sequencer,
-                user_data=(target_id, row),
-            )
-            learn_marker(
-                MIDI_ACTION_TILE_SEQ_ASSIGN,
-                {"target_id": target_id, "row": row},
-                parent=seq_row,
-            )
-    themed_text("Add to Mapper", slot="text_dim")
-    with dpg.group(horizontal=True):
-        dpg.add_button(
-            label="new",  # dialog opener — never a marker (picker exclusion)
-            callback=open_new_mapping_dialog,
-            user_data=target_id,
-        )
-    for line_index in range(len(mapper.row_targets())):
-        with dpg.group(horizontal=True) as mapper_row:
-            dpg.add_button(
-                label=f"line {line_index + 1}",
-                callback=on_tile_add_to_mapper_line,
-                user_data=(target_id, line_index),
-            )
-            learn_marker(
-                MIDI_ACTION_TILE_MAPPER_LINE,
-                {"target_id": target_id, "line": line_index},
-                parent=mapper_row,
             )
 
 
@@ -3035,39 +2978,19 @@ def _cycle_media_selection(direction: int) -> None:
     select_media_source(ids[(index + direction) % len(ids)])
 
 
-def _exec_tile_regen_thumb(params: dict[str, Any], value: int) -> None:
-    """e33s04: regenerate the thumbnails of one tile (mouse-path identical)."""
+def _exec_regen_selected(params: dict[str, Any], value: int) -> None:
+    """e33s04: regenerate the thumbnails of the SELECTED source at trigger time.
+
+    The binding never anchors to a source (the user swaps sources constantly):
+    the action applies to state.viseq_selected_source when the button fires.
+    """
     if value < MIDI_CC_TRIGGER_THRESHOLD:
         return
-    regen_thumb_callback(None, None, str(params.get("target_id", "")))
-
-
-def _exec_tile_seq_assign(params: dict[str, Any], value: int) -> None:
-    """e33s04: assign one tile's source to a sequencer row (variant A)."""
-    if value < MIDI_CC_TRIGGER_THRESHOLD:
+    selected = state.viseq_selected_source
+    if selected is None:
+        _log_stale_midi_target(MIDI_ACTION_REGEN_SELECTED, "no selection")
         return
-    target = str(params.get("target_id", ""))
-    row = int(params.get("row", -1))
-    if target not in _source_target_ids_in_grid_order():
-        _log_stale_midi_target(MIDI_ACTION_TILE_SEQ_ASSIGN, f"no source {target}")
-        return
-    if row < 0 or row >= NUM_TRACKS:
-        _log_stale_midi_target(MIDI_ACTION_TILE_SEQ_ASSIGN, f"no track {row}")
-        return
-    on_tile_add_to_sequencer(None, None, (target, row))
-
-
-def _exec_tile_mapper_line(params: dict[str, Any], value: int) -> None:
-    """e33s04: re-point one mapper line onto the tile's source (variant A)."""
-    if value < MIDI_CC_TRIGGER_THRESHOLD:
-        return
-    target = str(params.get("target_id", ""))
-    line = int(params.get("line", -1))
-    rows = mapper.row_targets()
-    if line < 0 or line >= len(rows):
-        _log_stale_midi_target(MIDI_ACTION_TILE_MAPPER_LINE, f"no line {line}")
-        return
-    on_tile_add_to_mapper_line(None, None, (target, line))
+    regen_thumb_callback(None, None, selected)
 
 
 # e33s01: one dispatcher per registered action (viseqapp/actions.py owns the
@@ -3094,10 +3017,8 @@ _MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
     # e33s04: source browsing (Mediagrid selection cycle)
     MIDI_ACTION_SOURCE_NEXT: _exec_source_next,
     MIDI_ACTION_SOURCE_PREV: _exec_source_prev,
-    # e33s04: tile-anchored actions (tile popup learn rows)
-    MIDI_ACTION_TILE_REGEN_THUMB: _exec_tile_regen_thumb,
-    MIDI_ACTION_TILE_SEQ_ASSIGN: _exec_tile_seq_assign,
-    MIDI_ACTION_TILE_MAPPER_LINE: _exec_tile_mapper_line,
+    # e33s04: selection-relative actions — never anchored to a volatile source
+    MIDI_ACTION_REGEN_SELECTED: _exec_regen_selected,
 }
 
 _last_unknown_action_log: dict[str, float] = {}  # action id -> last log time (throttle)
@@ -3278,6 +3199,7 @@ def _sync_media_learn_bar() -> None:
     with dpg.group(**bar_kwargs) as bar:
         learn_marker(MIDI_ACTION_SOURCE_NEXT, {}, parent=bar, tag="media_mk_next")
         learn_marker(MIDI_ACTION_SOURCE_PREV, {}, parent=bar, tag="media_mk_prev")
+        learn_marker(MIDI_ACTION_REGEN_SELECTED, {}, parent=bar, tag="media_mk_regen")
 
 
 def midi_learn_complete(binding: dict[str, Any], port_name: str | None = None) -> None:
