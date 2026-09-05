@@ -162,7 +162,7 @@ MONITOR_SPEED_TEXT_SIZE = 12  # px font size of the speed label inside the disc
 # compact theme (WindowPadding 4/FramePadding y 2/ItemSpacing 2): content inset
 # ~4 px top + ~4 px bottom air (MAPPER_ROW_PAD_V = 8 — trimmed 2026-09-05 so the
 # cards no longer show a dead band at the bottom), a small-font text/drag row is
-# 17 px, a slider/button box 17 px, the knob a fixed 44 px, gaps 2 px; the
+# 14 px, a slider/button box 14 px, the knob a fixed 44 px, gaps 2 px; the
 # ProggyTiny-10 advance is 6 px/char (widest label 'Transparency' = 72 px).
 MAPPER_WINDOW_WIDTH = 660
 
@@ -188,10 +188,12 @@ MAPPER_LINE_NO_FONT_SIZE = 13  # px size of the row line numbers (ProggyTiny, > 
 MAPPER_LINE_NO_TEXT_H = 13  # px text height used to center the line number in the row
 
 
-MAPPER_TEXT_H = 17  # px height of one compact text/drag row (measured: drag box 17 px)
+MAPPER_TEXT_H = 14  # px height of one compact text/drag row (measured 2026-09-06 on the
+# 10 px ProggyTiny theme: a drag box is ~14 px, not 17 — the old value left a
+# visible dead band under the last readout row of a card)
 
 
-MAPPER_CTRL_H = 17  # px height of a compact slider/button box (measured)
+MAPPER_CTRL_H = 14  # px height of a compact slider/button box (same 10 px-font measure)
 
 
 MAPPER_KNOB_H = 44  # px height of the fixed knob widget
