@@ -50,6 +50,8 @@ from viseqapp.constants import (
     LAYOUT_ALWAYS_HIDDEN_TAGS,
     LAYOUT_WINDOW_TAGS,
     LOG_HISTORY_LIMIT,
+    MAPPER_ADD_H,
+    MAPPER_ADD_W,
     MAPPER_CB_W,
     MAPPER_CTRL_H,
     MAPPER_DRAG_W,
@@ -3850,6 +3852,35 @@ def on_mapper_row_thumb_click(
         refresh_mapper_ui()
 
 
+def _mapper_row_add(target_id: str, parent: Any, height: int) -> None:
+    """The per-row '+' add slot at the end of a mapper row (e34s01).
+
+    A borderless child window of the card pitch and the row height (the exact
+    footprint the wrap reserves for it, so lines stay aligned) holding a small
+    centered '+' button; a click opens the New-Mapping dialog with the row's
+    source preselected, so the created mapping lands on this row.
+    """
+    with dpg.child_window(
+        parent=parent,
+        width=MAPPER_MINI_W,
+        height=height,
+        border=False,
+        no_scrollbar=True,
+        tag=f"mapper_add_{target_id}",
+    ):
+        dpg.add_spacer(height=max(0, (height - MAPPER_ADD_H) // 2))
+        dpg.add_button(
+            label="+",
+            width=MAPPER_ADD_W,
+            height=MAPPER_ADD_H,
+            callback=open_new_mapping_dialog,
+            user_data=target_id,
+            tag=f"mapper_add_btn_{target_id}",
+        )
+    with dpg.tooltip(parent=f"mapper_add_btn_{target_id}"):
+        dpg.add_text("Add a mapper to this line")
+
+
 def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> None:
     """One bordered mapping mini-card inside a source row (e22s01, e23s01).
 
@@ -4386,9 +4417,11 @@ def refresh_mapper_ui() -> None:
     for row_no, (target_id, mappings) in enumerate(rows.items(), start=1):
         block = dpg.add_group(parent="mapper_mappings_group")
         row_height = _mapper_row_height(mappings)
-        for wrap_index in range(0, len(mappings), per_line):
+        # e34s01: lines chunk over (cards + the ADD slot) so the per-row '+'
+        # participates in the wrap and is never clipped (mapper.row_slots).
+        for line_no, slot_line in enumerate(mapper.row_slots(len(mappings), per_line)):
             line = dpg.add_group(horizontal=True, parent=block)
-            if wrap_index == 0:
+            if line_no == 0:
                 # e32s02: the row number leads the line (1-based window order,
                 # matches the tile menu "Add to Mapper > line N")
                 _mapper_line_number(row_no, target_id, parent=line, height=row_height)
@@ -4407,8 +4440,11 @@ def refresh_mapper_ui() -> None:
                     width=_mapper_row_lead_px(),
                     parent=line,
                 )
-            for mapping in mappings[wrap_index : wrap_index + per_line]:
-                _render_mapper_card(mapping, parent=line, height=row_height)
+            for slot in slot_line:
+                if slot < len(mappings):
+                    _render_mapper_card(mappings[slot], parent=line, height=row_height)
+                else:
+                    _mapper_row_add(target_id, parent=line, height=row_height)
 
 
 def show_mapper_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:

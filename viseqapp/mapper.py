@@ -258,6 +258,21 @@ def row_targets() -> list[str]:
     return seen
 
 
+def row_slots(card_count: int, per_line: int) -> list[list[int]]:
+    """Visual-line slot groups of one mapper row incl. the trailing ADD slot (e34s01).
+
+    Slot indices 0..card_count-1 address the row's mapper cards; the ADD slot
+    is the virtual slot index == card_count. Chunking over count + 1 slots lets
+    the per-row '+' participate in the wrap: while there is room the add slot
+    shares the last card line, and a full last line pushes it onto its own
+    continuation line instead of clipping at the window edge. ``per_line`` is
+    the window-derived card capacity (values <= 0 degrade to 1).
+    """
+    per_line = max(1, int(per_line))
+    slots = list(range(card_count + 1))
+    return [slots[i : i + per_line] for i in range(0, len(slots), per_line)]
+
+
 def set_mapping_value(mapping_id: int, value: float) -> None:
     """Store a clamped value on the mapping (no OSC; e16s01).
 

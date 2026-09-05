@@ -223,6 +223,12 @@ MAPPER_RESET_H = 16  # px height of the reset button
 MAPPER_CB_W = 16  # px width of the enable checkbox on a caption row (measured, compact theme)
 
 
+# e34s01: per-row '+' add button — the slot spans the card pitch (wrap capacity)
+# while the clickable '+' itself stays small and centered in the slot.
+MAPPER_ADD_W = 24
+MAPPER_ADD_H = 22
+
+
 MAPPER_DRAG_W = 40  # px width of the from/to drag boxes on the output/input lines
 
 # e33s04: fixed slot count of the Mapper in the learn bar (user rule: 4 lines,
