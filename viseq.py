@@ -20,7 +20,7 @@ from PIL import Image
 from pythonosc import dispatcher, udp_client
 
 import viseqapp  # noqa: F401  scaffold hook (REFACTOR_LATEST.md commit 1): proves the package import path works at boot
-from viseqapp import leap, mapper, state
+from viseqapp import actions, leap, mapper, state
 from viseqapp.audio import (
     _set_band_variable,
     apply_spectrum_agc,
@@ -2830,27 +2830,53 @@ def midi_beats_from_pulses(pulses: int) -> int:
 
 # ---------- e09: MIDI control engine ----------
 
+# e33s01: one dispatcher per registered action (viseqapp/actions.py owns the
+# metadata). Lambdas close over the module helpers, which resolve at call time.
+_MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
+    MIDI_ACTION_SEQ_TOGGLE: lambda p, v: midi_action_seq_toggle(
+        int(p.get("row", 0)), int(p.get("col", 0))
+    ),
+    MIDI_ACTION_TRANSPORT_PLAY: lambda p, v: toggle_play(),
+    MIDI_ACTION_TRANSPORT_RESYNC: lambda p, v: callback_resync(),
+    MIDI_ACTION_TRANSPORT_TAP: lambda p, v: midi_action_transport_tap(),
+    MIDI_ACTION_NUDGE_BACK: lambda p, v: callback_nudge_backward(),
+    MIDI_ACTION_NUDGE_FORWARD: lambda p, v: callback_nudge_forward(),
+    MIDI_ACTION_BEAT_SOURCE: lambda p, v: midi_action_beat_source(str(p.get("mode", ""))),
+    MIDI_ACTION_TRACK_ASSIGN: lambda p, v: midi_action_track_assign(int(p.get("row", 0))),
+    # e18: a learned MIDI control drives a Mapper mapping (raw 0..127 value)
+    MIDI_ACTION_MAPPER_MAPPING: lambda p, v: midi_mapping_value(int(p.get("mapping_id", 0)), v),
+}
+
+_last_unknown_action_log: dict[str, float] = {}  # action id -> last log time (throttle)
+
+
+def _log_unknown_midi_action(action: str) -> None:
+    """Throttled diagnostic: a binding referenced an action the registry does not know.
+
+    A stale binding (its action removed from the catalog, or a config edited by
+    hand) must be visible in the Logs window without flooding it — one line per
+    second per action id, same pattern as _log_unmatched_midi.
+    """
+    now = time.time()
+    if now - _last_unknown_action_log.get(action, 0.0) < 1.0:
+        return
+    _last_unknown_action_log[action] = now
+    append_log("MIDI", f"unknown action {action}")
+
 
 def midi_execute(action: str, params: dict[str, Any], value: int) -> None:
-    """Execute a resolved MIDI action on the main thread (called via ui_task_queue, e09)."""
-    if action == MIDI_ACTION_SEQ_TOGGLE:
-        midi_action_seq_toggle(int(params.get("row", 0)), int(params.get("col", 0)))
-    elif action == MIDI_ACTION_TRANSPORT_PLAY:
-        toggle_play()
-    elif action == MIDI_ACTION_TRANSPORT_RESYNC:
-        callback_resync()
-    elif action == MIDI_ACTION_TRANSPORT_TAP:
-        midi_action_transport_tap()
-    elif action == MIDI_ACTION_NUDGE_BACK:
-        callback_nudge_backward()
-    elif action == MIDI_ACTION_NUDGE_FORWARD:
-        callback_nudge_forward()
-    elif action == MIDI_ACTION_BEAT_SOURCE:
-        midi_action_beat_source(str(params.get("mode", "")))
-    elif action == MIDI_ACTION_TRACK_ASSIGN:
-        midi_action_track_assign(int(params.get("row", 0)))
-    elif action == MIDI_ACTION_MAPPER_MAPPING:  # e18: drive a Mapper control
-        midi_mapping_value(int(params.get("mapping_id", 0)), value)
+    """Execute a resolved MIDI action on the main thread (called via ui_task_queue, e09).
+
+    e33s01: the action vocabulary lives in the registry (viseqapp/actions.py) and
+    the dispatch in the _MIDI_EXECUTORS map — adding an action is one spec plus
+    one entry here, never a new if/elif branch. An id the registry does not know
+    (stale binding) is a logged no-op.
+    """
+    executor = _MIDI_EXECUTORS.get(action)
+    if executor is None:
+        _log_unknown_midi_action(action)
+        return
+    executor(params, value)
 
 
 def _midi_enqueue_execute(action: str, params: dict[str, Any], value: int) -> None:
@@ -2945,7 +2971,9 @@ def midi_learn_complete(binding: dict[str, Any], port_name: str | None = None) -
     if dpg.does_item_exist("midi_learn_status"):
         dpg.set_value(
             "midi_learn_status",
-            f"Bound: {action} <- {binding['device']} {binding['type']} {binding['number']}",
+            "Bound: "
+            f"{actions.action_label(action)} <- "
+            f"{binding['device']} {binding['type']} {binding['number']}",
         )
 
 
@@ -3005,7 +3033,8 @@ def _midi_binding_label(binding: dict[str, Any]) -> str:
     suffix = f" {params}" if params else ""
     return (
         f"{binding.get('device', '?')} {binding.get('type', '?')} "
-        f"{binding.get('number', '?')} -> {binding.get('action', '?')}{suffix}"
+        f"{binding.get('number', '?')} -> "
+        f"{actions.action_label(str(binding.get('action', '?')))}{suffix}"
     )
 
 
