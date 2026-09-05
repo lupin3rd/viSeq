@@ -406,6 +406,9 @@ MIDI_ACTION_TRACK_ASSIGN = "track_assign"
 
 MIDI_ACTION_MAPPER_MAPPING = "mapper_mapping"  # e18: a learned MIDI control drives a Mapper mapping
 
+
+MIDI_ACTION_MAPPER_CUE_OPEN = "mapper_cue_open"  # e34s05: open a cue-list mapping's window
+
 # e33s02: marker-based learn targets on a Mapper card caption (enable + reset)
 MIDI_ACTION_MAPPER_ENABLE = "mapper_enable"  # toggle the e24 armed flag (momentary)
 MIDI_ACTION_MAPPER_RESET = "mapper_reset"  # return the control to its neutral default (e27)

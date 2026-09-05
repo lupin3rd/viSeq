@@ -95,6 +95,7 @@ from viseqapp.constants import (
     MIDI_ACTION_BEAT_SOURCE,
     MIDI_ACTION_ENABLE_CORRECTION,
     MIDI_ACTION_MAPPER_BAND,
+    MIDI_ACTION_MAPPER_CUE_OPEN,
     MIDI_ACTION_MAPPER_ENABLE,
     MIDI_ACTION_MAPPER_LINE,
     MIDI_ACTION_MAPPER_MAPPING,
@@ -2941,6 +2942,22 @@ def _exec_mapper_band(params: dict[str, Any], value: int) -> None:
     set_mapping_band(None, None, (mid, int(params.get("band", 0))))  # mouse-path identical
 
 
+def _exec_mapper_cue_open(params: dict[str, Any], value: int) -> None:
+    """e34s05: open a cue-list mapping's window (same core as the card button).
+
+    The e33 rule: the new cue-list control ships MIDI-mappable — a momentary
+    press (CC >= 64) opens the mapping's cue-list window; a stale mapping id is
+    a logged no-op.
+    """
+    mid = int(params.get("mapping_id", -1))
+    if mapper.find_mapping(mid) is None:
+        _log_stale_midi_target(MIDI_ACTION_MAPPER_CUE_OPEN, f"no mapping {mid}")
+        return
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    open_cue_list_window(None, None, mid)
+
+
 def _source_numeric_sort_key(data: dict[str, Any], key: str) -> int:
     """Numeric sort key of a vimix source (its 'index' field, else the dict key).
 
@@ -3084,6 +3101,7 @@ _MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
     # e33s03: row line assign (variant B) + audio-band source
     MIDI_ACTION_MAPPER_LINE: _exec_mapper_line,
     MIDI_ACTION_MAPPER_BAND: _exec_mapper_band,
+    MIDI_ACTION_MAPPER_CUE_OPEN: _exec_mapper_cue_open,
     # e33s04: source browsing (Mediagrid selection cycle)
     MIDI_ACTION_SOURCE_NEXT: _exec_source_next,
     MIDI_ACTION_SOURCE_PREV: _exec_source_prev,
@@ -3894,16 +3912,20 @@ def _mapper_row_add(target_id: str, parent: Any, height: int) -> None:
         dpg.add_text("Add a mapper to this line")
 
 
-def _mapper_marker_slot(mid: int, parent: Any) -> None:
-    """One card's three markers in the under-card strip line (e34s03, answer D).
+def _mapper_marker_slot(mapping: dict[str, Any], parent: Any) -> None:
+    """One card's markers in the under-card strip line (e34s03, answer D).
 
     The enable/reset/value M markers of one mapper card, centred on the card
     slot (MAPPER_MINI_W wide) so the strip rows stay aligned under the cards;
     the markers render OUTSIDE the bordered card (the card never hosts them).
-    Captures and tags are unchanged (mapper_mk_enable/reset/value_<id>) so the
-    learn capture path and existing bindings are untouched.
+    e34s05: a cue-list card also gets its dedicated window-action marker
+    (mapper_mk_cue_open_<id> — the e33 rule). Captures and tags are unchanged
+    so the learn capture path and existing bindings are untouched.
     """
-    cluster_w = 3 * MAPPER_MARKER_W  # the three 15 px M buttons + item gaps
+    mid = mapping["id"]
+    has_cue_open = mapping["control"] == "cue list"
+    marker_count = 4 if has_cue_open else 3
+    cluster_w = marker_count * MAPPER_MARKER_W  # the M buttons + item gaps
     indent = max(0, (MAPPER_MINI_W - cluster_w) // 2)
     slot_tag = f"mapper_mk_slot_{mid}"
     dpg.add_group(horizontal=True, parent=parent, tag=slot_tag)
@@ -3926,6 +3948,13 @@ def _mapper_marker_slot(mid: int, parent: Any) -> None:
         parent=slot_tag,
         tag=f"mapper_mk_value_{mid}",
     )
+    if has_cue_open:  # e34s05: open this mapping's cue-list window
+        learn_marker(
+            MIDI_ACTION_MAPPER_CUE_OPEN,
+            {"mapping_id": mid},
+            parent=slot_tag,
+            tag=f"mapper_mk_cue_open_{mid}",
+        )
     dpg.add_spacer(width=max(0, MAPPER_MINI_W - indent - cluster_w), parent=slot_tag)
 
 
@@ -4548,7 +4577,7 @@ def refresh_mapper_ui() -> None:
                 dpg.add_spacer(width=_mapper_row_lead_px(), parent=strip)
                 for slot in slot_line:
                     if slot < len(mappings):
-                        _mapper_marker_slot(mappings[slot]["id"], parent=strip)
+                        _mapper_marker_slot(mappings[slot], parent=strip)
 
 
 def show_mapper_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
