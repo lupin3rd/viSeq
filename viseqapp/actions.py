@@ -22,6 +22,11 @@ from viseqapp.constants import (
     MIDI_ACTION_NUDGE_BACK,
     MIDI_ACTION_NUDGE_FORWARD,
     MIDI_ACTION_SEQ_TOGGLE,
+    MIDI_ACTION_SOURCE_NEXT,
+    MIDI_ACTION_SOURCE_PREV,
+    MIDI_ACTION_TILE_MAPPER_LINE,
+    MIDI_ACTION_TILE_REGEN_THUMB,
+    MIDI_ACTION_TILE_SEQ_ASSIGN,
     MIDI_ACTION_TRACK_ASSIGN,
     MIDI_ACTION_TRANSPORT_PLAY,
     MIDI_ACTION_TRANSPORT_RESYNC,
@@ -32,6 +37,9 @@ from viseqapp.constants import (
 CATEGORY_TRANSPORT = "transport"
 CATEGORY_SEQUENCER = "sequencer"
 CATEGORY_MAPPER = "mapper"
+
+# e33s04: Mediagrid actions (source browsing + tile-anchored context rows).
+CATEGORY_MEDIAGRID = "mediagrid"
 
 # Kinds describe how the incoming MIDI value maps onto the action.
 KIND_MOMENTARY = "momentary"  # note edges trigger; CC fires at the >=64 threshold
@@ -90,6 +98,30 @@ ACTION_SPECS: dict[str, ActionSpec] = {
     ),
     MIDI_ACTION_MAPPER_BAND: ActionSpec(
         MIDI_ACTION_MAPPER_BAND, "Audio band source", CATEGORY_MAPPER, KIND_MOMENTARY
+    ),
+    MIDI_ACTION_SOURCE_NEXT: ActionSpec(
+        MIDI_ACTION_SOURCE_NEXT, "Next source", CATEGORY_MEDIAGRID, KIND_MOMENTARY
+    ),
+    MIDI_ACTION_SOURCE_PREV: ActionSpec(
+        MIDI_ACTION_SOURCE_PREV, "Previous source", CATEGORY_MEDIAGRID, KIND_MOMENTARY
+    ),
+    MIDI_ACTION_TILE_REGEN_THUMB: ActionSpec(
+        MIDI_ACTION_TILE_REGEN_THUMB,
+        "Regenerate tile thumbnails",
+        CATEGORY_MEDIAGRID,
+        KIND_MOMENTARY,
+    ),
+    MIDI_ACTION_TILE_SEQ_ASSIGN: ActionSpec(
+        MIDI_ACTION_TILE_SEQ_ASSIGN,
+        "Assign tile to sequencer line",
+        CATEGORY_MEDIAGRID,
+        KIND_MOMENTARY,
+    ),
+    MIDI_ACTION_TILE_MAPPER_LINE: ActionSpec(
+        MIDI_ACTION_TILE_MAPPER_LINE,
+        "Assign tile to mapper line",
+        CATEGORY_MEDIAGRID,
+        KIND_MOMENTARY,
     ),
 }
 

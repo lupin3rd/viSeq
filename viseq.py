@@ -96,6 +96,11 @@ from viseqapp.constants import (
     MIDI_ACTION_NUDGE_BACK,
     MIDI_ACTION_NUDGE_FORWARD,
     MIDI_ACTION_SEQ_TOGGLE,
+    MIDI_ACTION_SOURCE_NEXT,
+    MIDI_ACTION_SOURCE_PREV,
+    MIDI_ACTION_TILE_MAPPER_LINE,
+    MIDI_ACTION_TILE_REGEN_THUMB,
+    MIDI_ACTION_TILE_SEQ_ASSIGN,
     MIDI_ACTION_TRACK_ASSIGN,
     MIDI_ACTION_TRANSPORT_PLAY,
     MIDI_ACTION_TRANSPORT_RESYNC,
@@ -1587,7 +1592,7 @@ def on_tile_add_to_mapper_line(
 
 
 def _add_tile_context_items(target_id: str) -> None:
-    """The three right-click actions of a Mediagrid tile (e16, e30s01, e31s01).
+    """The right-click actions of a Mediagrid tile (e16, e30s01, e31s01).
 
     Must run inside a ``with dpg.window(popup=True, ...)`` block so the items
     are parented to that popup window. Every tile calls this — the actions
@@ -1596,7 +1601,14 @@ def _add_tile_context_items(target_id: str) -> None:
     row), and Add to Mapper — a submenu whose FIRST item is 'new' (the
     classic mapping dialog) followed by one 'line N' item per mapper row that
     exists right now (window order; re-points the row onto this source).
+    e33s04: while MIDI Learn is on the rows flatten to label + red-M marker
+    rows (native submenus cannot host the markers) — Regenerate Thumbnails,
+    every sequencer line and every mapper line get a marker capturing the
+    tile-anchored action; the dialog opener 'new' stays unmarked.
     """
+    if state.midi_learn_mode:
+        _add_tile_learn_rows(target_id)
+        return
     dpg.add_menu_item(
         label="Regenerate Thumbnails",
         callback=regen_thumb_callback,
@@ -1621,6 +1633,58 @@ def _add_tile_context_items(target_id: str) -> None:
                 label=f"line {line_index + 1}",  # 1-based window row label (e31s01)
                 callback=on_tile_add_to_mapper_line,
                 user_data=(target_id, line_index),
+            )
+
+
+def _add_tile_learn_rows(target_id: str) -> None:
+    """Learn-mode rows of the tile popup: one label + red-M marker per action (e33s04).
+
+    Clicking the label keeps today's mouse behavior; the marker captures the
+    tile-anchored action (params carry target_id, row/line). Dialog-openers
+    ('new') and nothing destructive get a marker.
+    """
+    with dpg.group(horizontal=True) as regen_row:
+        dpg.add_button(
+            label="Regenerate Thumbnails",
+            callback=regen_thumb_callback,
+            user_data=target_id,
+        )
+        learn_marker(
+            MIDI_ACTION_TILE_REGEN_THUMB,
+            {"target_id": target_id},
+            parent=regen_row,
+        )
+    themed_text("Add to Step Sequencer", slot="text_dim")
+    for row in range(NUM_TRACKS):
+        with dpg.group(horizontal=True) as seq_row:
+            dpg.add_button(
+                label=f"line {row + 1}",
+                callback=on_tile_add_to_sequencer,
+                user_data=(target_id, row),
+            )
+            learn_marker(
+                MIDI_ACTION_TILE_SEQ_ASSIGN,
+                {"target_id": target_id, "row": row},
+                parent=seq_row,
+            )
+    themed_text("Add to Mapper", slot="text_dim")
+    with dpg.group(horizontal=True):
+        dpg.add_button(
+            label="new",  # dialog opener — never a marker (picker exclusion)
+            callback=open_new_mapping_dialog,
+            user_data=target_id,
+        )
+    for line_index in range(len(mapper.row_targets())):
+        with dpg.group(horizontal=True) as mapper_row:
+            dpg.add_button(
+                label=f"line {line_index + 1}",
+                callback=on_tile_add_to_mapper_line,
+                user_data=(target_id, line_index),
+            )
+            learn_marker(
+                MIDI_ACTION_TILE_MAPPER_LINE,
+                {"target_id": target_id, "line": line_index},
+                parent=mapper_row,
             )
 
 
@@ -1956,11 +2020,7 @@ def refresh_tile_selection_themes() -> None:
 
 def on_media_tile_click(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     """Select a media from the Mediagrid — the viseq-side primary selection (e10s06)."""
-    target_id = user_data
-    if target_id == state.viseq_selected_source:
-        return
-    state.viseq_selected_source = target_id
-    refresh_tile_selection_themes()
+    select_media_source(user_data)
 
 
 def on_tile_alpha_slider(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -2055,19 +2115,9 @@ def update_vimix_sources_ui(json_string: str) -> None:
         current_source = state.global_vimix_state["current_source"]
         data_dict = state.global_vimix_state["sources"]
 
-        def get_sort_index(k):
-            idx_val = data_dict[k].get("index")
-            if idx_val is not None:
-                try:
-                    return int(idx_val)
-                except (TypeError, ValueError):
-                    pass
-            try:
-                return int(k)
-            except (TypeError, ValueError):
-                return 0
-
-        sorted_keys = sorted(data_dict.keys(), key=get_sort_index)
+        # grid display order = numeric source 'index' (fallback: dict key); the
+        # shared key feeds both the grid build and the source-browsing cycle
+        sorted_keys = sorted(data_dict.keys(), key=lambda k: _source_numeric_sort_key(data_dict, k))
         # current_source joins the signature so a selection change re-runs the structural
         # tile updates (theme/title/index) — the only per-source fields it affects (perf e07).
         current_signature = f"cols:{state.last_num_cols}_src:{current_source}_" + str(
@@ -2916,6 +2966,110 @@ def _exec_mapper_band(params: dict[str, Any], value: int) -> None:
     set_mapping_band(None, None, (mid, int(params.get("band", 0))))  # mouse-path identical
 
 
+def _source_numeric_sort_key(data: dict[str, Any], key: str) -> int:
+    """Numeric sort key of a vimix source (its 'index' field, else the dict key).
+
+    Shared by the Mediagrid rebuild and the source-browsing cycle so the two
+    can never disagree on the grid order (e33s04). Malformed values sort last.
+    """
+    idx = data[key].get("index")
+    if idx is not None:
+        with contextlib.suppress(TypeError, ValueError):
+            return int(idx)
+    with contextlib.suppress(TypeError, ValueError):
+        return int(key)
+    return 0
+
+
+def _source_target_ids_in_grid_order() -> list[str]:
+    """Mediagrid source ids in the display order (numeric index/key, e33s04)."""
+    data = state.global_vimix_state.get("sources") or {}
+    ids = []
+    for key in sorted(data, key=lambda k: _source_numeric_sort_key(data, k)):
+        name = data[key].get("name")
+        ids.append(str(name) if name else str(key))
+    return ids
+
+
+def select_media_source(target_id: str | None) -> None:
+    """Make a source the viseq-side primary selection (same path as a tile click).
+
+    e33s04: the shared core for on_media_tile_click and the source-browsing
+    actions — set the selection and re-apply the tile themes in place.
+    """
+    if target_id is None or target_id == state.viseq_selected_source:
+        return
+    state.viseq_selected_source = target_id
+    refresh_tile_selection_themes()
+
+
+def _exec_source_next(params: dict[str, Any], value: int) -> None:
+    """e33s04: move the Mediagrid selection to the next source (grid order, wrap)."""
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    _cycle_media_selection(+1)
+
+
+def _exec_source_prev(params: dict[str, Any], value: int) -> None:
+    """e33s04: move the Mediagrid selection to the previous source (grid order, wrap)."""
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    _cycle_media_selection(-1)
+
+
+def _cycle_media_selection(direction: int) -> None:
+    """Step the Mediagrid selection by one in the grid order (e33s04).
+
+    Wraps around the ends; with no current selection, next picks the first and
+    prev the last; zero or one source is a no-op. The CC >= threshold gate is
+    applied by the momentary dispatch helpers.
+    """
+    ids = _source_target_ids_in_grid_order()
+    if len(ids) < 2:
+        return
+    current = state.viseq_selected_source
+    if current is None or current not in ids:
+        select_media_source(ids[0] if direction > 0 else ids[-1])
+        return
+    index = ids.index(current)
+    select_media_source(ids[(index + direction) % len(ids)])
+
+
+def _exec_tile_regen_thumb(params: dict[str, Any], value: int) -> None:
+    """e33s04: regenerate the thumbnails of one tile (mouse-path identical)."""
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    regen_thumb_callback(None, None, str(params.get("target_id", "")))
+
+
+def _exec_tile_seq_assign(params: dict[str, Any], value: int) -> None:
+    """e33s04: assign one tile's source to a sequencer row (variant A)."""
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    target = str(params.get("target_id", ""))
+    row = int(params.get("row", -1))
+    if target not in _source_target_ids_in_grid_order():
+        _log_stale_midi_target(MIDI_ACTION_TILE_SEQ_ASSIGN, f"no source {target}")
+        return
+    if row < 0 or row >= NUM_TRACKS:
+        _log_stale_midi_target(MIDI_ACTION_TILE_SEQ_ASSIGN, f"no track {row}")
+        return
+    on_tile_add_to_sequencer(None, None, (target, row))
+
+
+def _exec_tile_mapper_line(params: dict[str, Any], value: int) -> None:
+    """e33s04: re-point one mapper line onto the tile's source (variant A)."""
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    target = str(params.get("target_id", ""))
+    line = int(params.get("line", -1))
+    rows = mapper.row_targets()
+    if line < 0 or line >= len(rows):
+        _log_stale_midi_target(MIDI_ACTION_TILE_MAPPER_LINE, f"no line {line}")
+        return
+    on_tile_add_to_mapper_line(None, None, (target, line))
+
+
 # e33s01: one dispatcher per registered action (viseqapp/actions.py owns the
 # metadata). Lambdas close over the module helpers, which resolve at call time.
 _MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
@@ -2937,6 +3091,13 @@ _MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
     # e33s03: row line assign (variant B) + audio-band source
     MIDI_ACTION_MAPPER_LINE: _exec_mapper_line,
     MIDI_ACTION_MAPPER_BAND: _exec_mapper_band,
+    # e33s04: source browsing (Mediagrid selection cycle)
+    MIDI_ACTION_SOURCE_NEXT: _exec_source_next,
+    MIDI_ACTION_SOURCE_PREV: _exec_source_prev,
+    # e33s04: tile-anchored actions (tile popup learn rows)
+    MIDI_ACTION_TILE_REGEN_THUMB: _exec_tile_regen_thumb,
+    MIDI_ACTION_TILE_SEQ_ASSIGN: _exec_tile_seq_assign,
+    MIDI_ACTION_TILE_MAPPER_LINE: _exec_tile_mapper_line,
 }
 
 _last_unknown_action_log: dict[str, float] = {}  # action id -> last log time (throttle)
@@ -3040,10 +3201,11 @@ def _refresh_learn_surfaces() -> None:
 
     Markers are rendered only while state.midi_learn_mode is on, so entering or
     leaving learn mode must rebuild the Mapper body (its refresh already guards
-    on the body existing). Future marker surfaces (menus, menubar) hook here too.
+    on the body existing) and create/drop the Mediagrid learn bar (e33s04).
     """
     if dpg.does_item_exist("mapper_mappings_group"):
         refresh_mapper_ui()
+    _sync_media_learn_bar()
 
 
 def learn_marker(
@@ -3059,15 +3221,17 @@ def learn_marker(
     parent is EXPLICIT: a parentless add_button outside a with-block hangs the
     render thread in real DearPyGui (reproduced 2026-09-05).
     """
-    marker_tag = dpg.add_button(
-        label="M",
-        width=MAPPER_MARKER_W,
-        height=MAPPER_MARKER_H,
-        callback=on_learn_marker_click,
-        user_data=(action_id, params),
-        parent=parent,
-        tag=tag,
-    )
+    marker_kwargs: dict[str, Any] = {
+        "label": "M",
+        "width": MAPPER_MARKER_W,
+        "height": MAPPER_MARKER_H,
+        "callback": on_learn_marker_click,
+        "user_data": (action_id, params),
+        "parent": parent,
+    }
+    if tag is not None:
+        marker_kwargs["tag"] = tag  # tag=None would raise 'Must be int' in real DPG
+    marker_tag = dpg.add_button(**marker_kwargs)
     dpg.bind_item_theme(marker_tag, theme_learn_marker)  # red 'M' (e33)
     with dpg.tooltip(parent=marker_tag):
         dpg.add_text(f"Map: {actions.action_label(action_id)}")
@@ -3088,6 +3252,32 @@ def on_learn_marker_click(sender: Any = None, app_data: Any = None, user_data: A
     state.midi_learn_started_at = time.time()
     if dpg.does_item_exist("midi_learn_status"):
         dpg.set_value("midi_learn_status", "Now press your MIDI button")
+
+
+def _sync_media_learn_bar() -> None:
+    """Create or drop the Mediagrid source-browsing learn bar (e33s04).
+
+    While MIDI Learn is on, the sources window shows two red-M markers above the
+    grid ("Next source" / "Previous source"); leaving learn mode removes the
+    bar. The bar is rebuilt from scratch every time so it can never go stale.
+    """
+    bar_tag = "media_learn_bar"
+    if dpg.does_item_exist(bar_tag):
+        dpg.delete_item(bar_tag)
+    if not state.midi_learn_mode:
+        return
+    if not dpg.does_item_exist("vimix_media_group"):
+        return
+    bar_kwargs: dict[str, Any] = {
+        "parent": "vimix_media_group",
+        "horizontal": True,
+        "tag": bar_tag,
+    }
+    if dpg.does_item_exist("media_grid"):
+        bar_kwargs["before"] = "media_grid"  # stay above the tiles
+    with dpg.group(**bar_kwargs) as bar:
+        learn_marker(MIDI_ACTION_SOURCE_NEXT, {}, parent=bar, tag="media_mk_next")
+        learn_marker(MIDI_ACTION_SOURCE_PREV, {}, parent=bar, tag="media_mk_prev")
 
 
 def midi_learn_complete(binding: dict[str, Any], port_name: str | None = None) -> None:
