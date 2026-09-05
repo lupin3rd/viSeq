@@ -40,7 +40,34 @@ MAPPER_PROPERTIES: dict[str, dict[str, Any]] = {
     "speed": {"label": "Speed", "min": 0.1, "max": 10.0},
 }
 
-MAPPER_CONTROLS: tuple[str, str, str] = ("slider", "knob", "button")
+MAPPER_CONTROLS: tuple[str, str, str, str] = (
+    "slider",
+    "knob",
+    "button",
+    "cue list",  # e34s04: a button-like trigger whose card opens its cue-list window
+)
+
+# e34s04: control -> widget-tag kind — the tags the UI derives from a control
+# (mapper_slider_N / mapper_knob_N / mapper_btn_N / mapper_cue_N) come from ONE
+# map so the renderer, the right-click registry, the value relabel and the
+# sync/reconfigure paths can never disagree. "btn" is the e23 naming quirk.
+MAPPER_CONTROL_TAG_KINDS: dict[str, str] = {
+    "slider": "slider",
+    "knob": "knob",
+    "button": "btn",
+    "cue list": "cue",
+}
+
+
+def control_tag_kind(control: str) -> str:
+    """The widget-tag kind of a control (KeyError = catalog bug, not a user path)."""
+    return MAPPER_CONTROL_TAG_KINDS[control]
+
+
+def button_like(control: str) -> bool:
+    """True for the momentary two-state controls (e34s04): the button and the
+    cue-list trigger share the toggle/reset/OFF-end semantics."""
+    return control in ("button", "cue list")
 
 
 def _spec_of(prop: str) -> dict[str, Any]:
@@ -341,9 +368,9 @@ def reset_mapping_value(mapping_id: int) -> float:
 
     The neutral default is the value the mapping was CREATED at: the catalog
     midpoint of the property (brightness/alpha 0.0, hue 0.5, transparency
-    1.0, gamma 0.0, ...). A button mapping returns to the OFF end
-    (output_from) instead — the un-pressed state, consistent with
-    toggle_mapping_value. A remapped output range (e23) clamps the neutral
+    1.0, gamma 0.0, ...). A button-like control (button, cue list — e34s04)
+    returns to the OFF end (output_from) instead — the un-pressed state,
+    consistent with toggle_mapping_value. A remapped output range (e23) clamps the neutral
     into the mapping's own interval, exactly like set_mapping_output
     re-clamps. Returns the effective stored value (0.0 for an unknown id);
     the e24 gate applies: a disabled mapping stores + moves but sends no OSC.
@@ -351,7 +378,7 @@ def reset_mapping_value(mapping_id: int) -> float:
     mapping = find_mapping(mapping_id)
     if mapping is None:
         return 0.0
-    if mapping["control"] == "button":
+    if button_like(mapping["control"]):  # e34s04: button + cue list reset to OFF
         neutral = mapping["output_from"]
     else:
         spec = _spec_of(mapping["property"])

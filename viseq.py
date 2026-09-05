@@ -3754,7 +3754,7 @@ def _mapper_row_height(mappings: list[dict[str, Any]]) -> int:
         for m in mappings
     )
     height = MAPPER_ROW_THUMB_H + 2  # the row always fits the 70 px thumbnail
-    if any(m["control"] in ("knob", "button") for m in mappings):
+    if any(m["control"] in ("knob", "button", "cue list") for m in mappings):
         height = max(height, pad + x_h + gap + MAPPER_KNOB_H)  # compact band
     if any(m["control"] == "slider" for m in mappings):
         slider_h = pad + x_h + gap + MAPPER_CTRL_H + gap + text
@@ -3983,18 +3983,22 @@ def _mapper_readout_line(
 
 
 def _mapper_band_control(mapping: dict[str, Any], mid: int) -> None:
-    """Compact control band of a knob/button card (e34s02, answer B).
+    """Compact control band of a knob/button/cue-list card (e34s02, e34s04).
 
     ONE row as tall as the 44 px control: the control on the LEFT, and on the
-    right the 'Out' readout (always) with the 'Inp' readout under it when a
-    band/MIDI/leap source is bound — the readout no longer stacks BELOW the
-    control, so the rows shrink. The button becomes a 44 px square showing the
-    value; the caption row above keeps the property label.
+    right the readout — knob/button: the 'Out' line (always) with the 'Inp'
+    line under it when a band/MIDI/leap source is bound; cue list: a
+    'Cue list...' button that opens the mapping's cue-list window instead of
+    the Out/Inp fields (e34s04, answer E). The readout no longer stacks BELOW
+    the control, so the rows shrink; the trigger becomes a 44 px square
+    showing the value; the caption row above keeps the property label.
     """
+    control = mapping["control"]
+    kind = mapper.control_tag_kind(control)
     out_from = mapping["output_from"]
     out_to = mapping["output_to"]
     with dpg.group(horizontal=True):
-        if mapping["control"] == "knob":
+        if control == "knob":
             dpg.add_knob_float(
                 min_value=out_from,
                 max_value=out_to,
@@ -4002,32 +4006,42 @@ def _mapper_band_control(mapping: dict[str, Any], mid: int) -> None:
                 width=MAPPER_KNOB_H,
                 callback=on_mapper_control,
                 user_data=mid,
-                tag=f"mapper_knob_{mid}",
+                tag=f"mapper_{kind}_{mid}",
             )
-            _bind_mapper_font(f"mapper_knob_{mid}")
-        else:  # button: a 44 px square labelled with the value
+        else:  # button / cue list: a 44 px square trigger labelled with the value
             dpg.add_button(
                 label=f"{mapping['value']:.2f}",
                 width=MAPPER_KNOB_H,
                 height=MAPPER_KNOB_H,
                 callback=on_mapper_button,
                 user_data=mid,
-                tag=f"mapper_btn_{mid}",
+                tag=f"mapper_{kind}_{mid}",
             )
-            _bind_mapper_font(f"mapper_btn_{mid}")
-        with dpg.group():
-            _mapper_readout_line("Out", mid, "out", out_from, out_to, MAPPER_BAND_DRAG_W)
-            if _mapper_card_has_source(mapping):
-                in_from = mapping.get("input_from")
-                in_to = mapping.get("input_to")
-                _mapper_readout_line(
-                    "Inp",
-                    mid,
-                    "in",
-                    in_from if in_from is not None else 0.0,
-                    in_to if in_to is not None else 1.0,
-                    MAPPER_BAND_DRAG_W,
-                )
+        _bind_mapper_font(f"mapper_{kind}_{mid}")
+        if control == "cue list":
+            # e34s04: the right area hosts ONE button opening the cue-list window
+            dpg.add_button(
+                label="Cue list...",
+                width=MAPPER_MINI_W - 8 - MAPPER_KNOB_H - 2,
+                callback=open_cue_list_window,
+                user_data=mid,
+                tag=f"mapper_cue_open_{mid}",
+            )
+            _bind_mapper_font(f"mapper_cue_open_{mid}")
+        else:
+            with dpg.group():
+                _mapper_readout_line("Out", mid, "out", out_from, out_to, MAPPER_BAND_DRAG_W)
+                if _mapper_card_has_source(mapping):
+                    in_from = mapping.get("input_from")
+                    in_to = mapping.get("input_to")
+                    _mapper_readout_line(
+                        "Inp",
+                        mid,
+                        "in",
+                        in_from if in_from is not None else 0.0,
+                        in_to if in_to is not None else 1.0,
+                        MAPPER_BAND_DRAG_W,
+                    )
 
 
 def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> None:
@@ -4139,10 +4153,11 @@ def _render_mapper_source_menu(mapping: dict[str, Any]) -> None:
     value binding instead.
     """
     mid = mapping["id"]
-    # the control tag is mapper_slider_N / mapper_knob_N / mapper_BTN_N
-    # ('btn' — building it from the control name would look for the
-    # nonexistent mapper_button_N and abort the whole refresh).
-    control_kind = "btn" if mapping["control"] == "button" else mapping["control"]
+    # the control tag comes from the shared control->kind map (e34s04):
+    # mapper_slider_N / mapper_knob_N / mapper_btn_N / mapper_cue_N — the map
+    # keeps the e23 'btn' quirk in ONE place (building it from the control
+    # name would look for the nonexistent mapper_button_N and abort).
+    control_kind = mapper.control_tag_kind(mapping["control"])
     menu_tag = f"mapper_menu_{mid}"
     reg_tag = f"mapper_menu_reg_{mid}"
     for stale in (menu_tag, reg_tag):
@@ -4555,16 +4570,22 @@ def on_mapper_control(sender: Any, app_data: Any, user_data: Any) -> None:
 
 
 def on_mapper_button(sender: Any, app_data: Any, user_data: Any) -> None:
-    """Button press: toggle output_from (OFF) / output_to (ON), send OSC, refresh the label.
+    """Button/cue-list press: toggle output_from (OFF) / output_to (ON), send OSC,
+    refresh the label.
 
-    e34s02: the button is a 44 px square labelled with the value only (the
-    property name lives in the caption row above the control).
+    e34s02/e34s04: the trigger is a 44 px square labelled with the value only
+    (the property name lives in the caption row above the control); the tag
+    comes from the shared control->kind map (mapper_btn_N / mapper_cue_N).
     """
     mid = int(user_data)
     value = mapper.send_button_mapping(mid)
-    btn_tag = f"mapper_btn_{mid}"
-    if dpg.does_item_exist(btn_tag):
-        dpg.configure_item(btn_tag, label=f"{value:.2f}")
+    mapping = mapper.find_mapping(mid)
+    if mapping is None:
+        return
+    kind = mapper.control_tag_kind(mapping["control"])
+    tag = f"mapper_{kind}_{mid}"
+    if dpg.does_item_exist(tag):
+        dpg.configure_item(tag, label=f"{value:.2f}")
 
 
 def _sync_mapper_control(mid: int) -> None:
@@ -4576,12 +4597,8 @@ def _sync_mapper_control(mid: int) -> None:
     mapping = mapper.find_mapping(mid)
     if mapping is None:
         return
-    kind = mapping["control"]
-    # the button control's tag is mapper_btn_N, NOT mapper_button_N — the same
-    # naming quirk the source-menu registry documents (e23s01; e27s01 reset
-    # re-labels button cards through this path, as does an output-range edit)
-    control_kind = "btn" if kind == "button" else kind
-    tag = f"mapper_{control_kind}_{mid}"
+    kind = mapper.control_tag_kind(mapping["control"])  # e34s04: slider/knob/btn/cue
+    tag = f"mapper_{kind}_{mid}"
     if not dpg.does_item_exist(tag):
         return
     out_from = mapping["output_from"]
@@ -4589,7 +4606,7 @@ def _sync_mapper_control(mid: int) -> None:
     if kind in ("slider", "knob"):
         dpg.configure_item(tag, min_value=out_from, max_value=out_to)
         dpg.set_value(tag, mapping["value"])
-    else:  # button: its label shows the current output value (e34s02, value only)
+    else:  # button-like trigger: its label shows the current output value
         dpg.configure_item(tag, label=f"{mapping['value']:.2f}")
 
 
@@ -4697,6 +4714,45 @@ def mapper_dialog_cancel(sender: Any = None, app_data: Any = None, user_data: An
     """Dialog Cancel: close without creating a mapping."""
     if dpg.does_item_exist("mapper_new_dialog"):
         dpg.delete_item("mapper_new_dialog")
+
+
+def open_cue_list_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """'Cue list...' on a cue-list card: open the mapping's cue-list window (e34s04).
+
+    Scaffold shell — the user will define the cue-list purpose in a later
+    initiative; today the window shows the mapping context (source + property)
+    and a placeholder note. Created on demand like the mapper dialogs;
+    non-modal so the Mapper stays usable. Unknown mapping ids are a no-op.
+    """
+    mid = int(user_data)
+    mapping = mapper.find_mapping(mid)
+    if mapping is None:
+        return
+    if dpg.does_item_exist("cue_list_window"):
+        dpg.delete_item("cue_list_window")
+    with dpg.window(
+        label="Cue list",
+        tag="cue_list_window",
+        width=360,
+        height=220,
+        no_resize=True,
+    ):
+        themed_text("Cue list", slot="text")
+        dpg.add_separator()
+        themed_text(f"Source: {mapping['target_id']}", slot="text")
+        themed_text(f"Property: {mapping['property']}", slot="text_dim")
+        dpg.add_spacer(height=8)
+        themed_text(
+            "The cue list editor will land here in a later update.",
+            slot="text_dim",
+        )
+        dpg.add_spacer(height=10)
+        dpg.add_button(
+            label="Close",
+            width=90,
+            callback=lambda: dpg.delete_item("cue_list_window"),
+        )
+    dpg.show_item("cue_list_window")
 
 
 def midi_control_loop() -> None:
