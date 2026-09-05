@@ -88,7 +88,9 @@ from viseqapp.constants import (
     MEDIA_TITLE_RESERVE_PX,
     MEDIA_TITLE_WRAP,
     MIDI_ACTION_BEAT_SOURCE,
+    MIDI_ACTION_MAPPER_BAND,
     MIDI_ACTION_MAPPER_ENABLE,
+    MIDI_ACTION_MAPPER_LINE,
     MIDI_ACTION_MAPPER_MAPPING,
     MIDI_ACTION_MAPPER_RESET,
     MIDI_ACTION_NUDGE_BACK,
@@ -2839,18 +2841,18 @@ def midi_beats_from_pulses(pulses: int) -> int:
 # (the shared threshold convention; lower values are a deliberate no-op).
 
 
-def _log_stale_midi_target(action: str, key: int) -> None:
+def _log_stale_midi_target(action: str, detail: str) -> None:
     """Throttled diagnostic: a binding referenced an entity that no longer exists.
 
-    A captured binding can outlive its target (the mapping was deleted): the
-    dispatch must be a logged no-op, never a crash. One line per second per
-    action id (same pattern as _log_unknown_midi_action).
+    A captured binding can outlive its target (the mapping was deleted, the
+    mapper row vanished): the dispatch must be a logged no-op, never a crash.
+    One line per second per action id (same pattern as _log_unknown_midi_action).
     """
     now = time.time()
     if now - _last_unknown_action_log.get(action, 0.0) < 1.0:
         return
     _last_unknown_action_log[action] = now
-    append_log("MIDI", f"{action}: no mapping {key}")
+    append_log("MIDI", f"{action}: {detail}")
 
 
 def _exec_mapper_enable(params: dict[str, Any], value: int) -> None:
@@ -2858,7 +2860,7 @@ def _exec_mapper_enable(params: dict[str, Any], value: int) -> None:
     mid = int(params.get("mapping_id", -1))
     mapping = mapper.find_mapping(mid)
     if mapping is None:
-        _log_stale_midi_target(MIDI_ACTION_MAPPER_ENABLE, mid)
+        _log_stale_midi_target(MIDI_ACTION_MAPPER_ENABLE, f"no mapping {mid}")
         return
     if value < MIDI_CC_TRIGGER_THRESHOLD:
         return
@@ -2872,11 +2874,46 @@ def _exec_mapper_reset(params: dict[str, Any], value: int) -> None:
     """e33s02: reset a mapping to its neutral default (same core as the R button)."""
     mid = int(params.get("mapping_id", -1))
     if mapper.find_mapping(mid) is None:
-        _log_stale_midi_target(MIDI_ACTION_MAPPER_RESET, mid)
+        _log_stale_midi_target(MIDI_ACTION_MAPPER_RESET, f"no mapping {mid}")
         return
     if value < MIDI_CC_TRIGGER_THRESHOLD:
         return
     reset_mapping(None, None, mid)  # neutral + widget re-sync, mouse-path identical
+
+
+def _exec_mapper_line(params: dict[str, Any], value: int) -> None:
+    """e33s03: assign the media selected in the Mediagrid to the mapper row (line).
+
+    Variant B (user-confirmed): the LINE is bound, the SOURCE is read at
+    trigger time — the row resolves via mapper.row_targets() and re-targets
+    onto state.viseq_selected_source, mirroring the e29 row-thumb click rules:
+    no selection, same-source row or a stale line index are no-ops (a stale
+    line is logged).
+    """
+    line = int(params.get("line", -1))
+    rows = mapper.row_targets()
+    if line < 0 or line >= len(rows):
+        _log_stale_midi_target(MIDI_ACTION_MAPPER_LINE, f"no line {line}")
+        return
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    target = rows[line]
+    selected = state.viseq_selected_source
+    if selected is None or selected == target:
+        return
+    if mapper.retarget_source(target, selected):
+        refresh_mapper_ui()
+
+
+def _exec_mapper_band(params: dict[str, Any], value: int) -> None:
+    """e33s03: bind a mapping to an audio band (same core as the card menu)."""
+    mid = int(params.get("mapping_id", -1))
+    if mapper.find_mapping(mid) is None:
+        _log_stale_midi_target(MIDI_ACTION_MAPPER_BAND, f"no mapping {mid}")
+        return
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    set_mapping_band(None, None, (mid, int(params.get("band", 0))))  # mouse-path identical
 
 
 # e33s01: one dispatcher per registered action (viseqapp/actions.py owns the
@@ -2897,6 +2934,9 @@ _MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
     # e33s02: card caption learn markers (armed flag, reset)
     MIDI_ACTION_MAPPER_ENABLE: _exec_mapper_enable,
     MIDI_ACTION_MAPPER_RESET: _exec_mapper_reset,
+    # e33s03: row line assign (variant B) + audio-band source
+    MIDI_ACTION_MAPPER_LINE: _exec_mapper_line,
+    MIDI_ACTION_MAPPER_BAND: _exec_mapper_band,
 }
 
 _last_unknown_action_log: dict[str, float] = {}  # action id -> last log time (throttle)
@@ -3066,8 +3106,7 @@ def midi_learn_complete(binding: dict[str, Any], port_name: str | None = None) -
     refresh_midi_mappings_ui()
     if action == MIDI_ACTION_MAPPER_MAPPING:  # e18: bind the learned control to the mapping
         mapper.set_mapping_midi(int(params.get("mapping_id", 0)), binding)
-        _close_mapper_learn_window()
-        refresh_mapper_ui()
+        refresh_mapper_ui()  # show the input-range line of the bound source
     if dpg.does_item_exist("midi_learn_btn"):
         dpg.set_item_label("midi_learn_btn", "Learn mapping...")
     if dpg.does_item_exist("midi_learn_status"):
@@ -3593,8 +3632,8 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
                 user_data=mid,
                 tag=f"mapper_del_{mid}",
             )
-        # e33s02: the learn-marker strip — rendered ONLY while MIDI Learn is on;
-        # each marker captures (action_id, params) so the next MIDI press binds it.
+        # e33s02/e33s03: the learn-marker strip — rendered ONLY while MIDI Learn is
+        # on; each marker captures (action_id, params) so the next MIDI press binds it.
         if state.midi_learn_mode:
             with dpg.group(horizontal=True):
                 learn_marker(
@@ -3606,6 +3645,11 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
                     MIDI_ACTION_MAPPER_RESET,
                     {"mapping_id": mid},
                     tag=f"mapper_mk_reset_{mid}",
+                )
+                learn_marker(
+                    MIDI_ACTION_MAPPER_MAPPING,  # e33s03: the control value (e18 semantics)
+                    {"mapping_id": mid},
+                    tag=f"mapper_mk_value_{mid}",
                 )
         _bind_mapper_font(f"mapper_prop_{mid}")
         if mapping["control"] == "slider":
@@ -3706,9 +3750,14 @@ def _render_mapper_source_menu(mapping: dict[str, Any]) -> None:
     clicked handler (1000). So, like the Mediagrid tiles, the menu is a popup
     WINDOW shown by a per-card item-handler registry bound to every card
     child (all item types host an item-clicked registry on DPG 2.3.1):
-    right-clicking anywhere on the bordered card opens Band 2/3 / MIDI Learn /
-    Clear source. The ACTIVE source is marked with a checkmark; band and MIDI
-    sources are mutually exclusive (see mapper.set_mapping_band).
+    right-clicking anywhere on the bordered card opens the source menu. The
+    ACTIVE source is marked with a checkmark; band and MIDI sources are
+    mutually exclusive (see mapper.set_mapping_band). e33s03: while MIDI
+    Learn is on the menu rows become uniform label + learn-marker rows (the
+    marker captures mapper_band); the Leap picker row and Clear source are
+    never marker targets (picker/destructive exclusion). The e18 'MIDI
+    Learn...' modal item is gone — the card control marker captures the
+    value binding instead.
     """
     mid = mapping["id"]
     # the control tag is mapper_slider_N / mapper_knob_N / mapper_BTN_N
@@ -3721,36 +3770,57 @@ def _render_mapper_source_menu(mapping: dict[str, Any]) -> None:
         if dpg.does_item_exist(stale):
             dpg.delete_item(stale)
     with dpg.window(popup=True, show=False, no_title_bar=True, autosize=True, tag=menu_tag):
-        dpg.add_menu_item(
-            label="Map Band 2",
-            check=True,
-            default_value=(mapping.get("band") == 2),
-            callback=set_mapping_band,
-            user_data=(mid, 2),
-        )
-        dpg.add_menu_item(
-            label="Map Band 3",
-            check=True,
-            default_value=(mapping.get("band") == 3),
-            callback=set_mapping_band,
-            user_data=(mid, 3),
-        )
-        dpg.add_menu_item(
-            label="MIDI Learn...",
-            check=True,
-            default_value=(mapping.get("midi") is not None),
-            callback=map_mapping_midi_learn,
-            user_data=mid,
-        )
-        dpg.add_menu_item(
-            label="Leap Motion...",
-            check=True,
-            default_value=(mapping.get("leap") is not None),
-            callback=open_mapper_leap_picker,
-            user_data=mid,
-        )
-        dpg.add_separator()
-        dpg.add_menu_item(label="Clear source", callback=clear_mapping_source, user_data=mid)
+        if state.midi_learn_mode:
+            # e33s03: uniform label + learn-marker rows while learning — the
+            # marker captures the band action, the label keeps its click behavior
+            for band_id in (2, 3):
+                with dpg.group(horizontal=True):
+                    dpg.add_button(
+                        label=f"Map Band {band_id}",
+                        callback=set_mapping_band,
+                        user_data=(mid, band_id),
+                    )
+                    learn_marker(
+                        MIDI_ACTION_MAPPER_BAND,
+                        {"mapping_id": mid, "band": band_id},
+                        tag=f"mapper_mk_band{band_id}_{mid}",
+                    )
+            with dpg.group(horizontal=True):
+                dpg.add_button(
+                    label="Leap Motion...",
+                    callback=open_mapper_leap_picker,
+                    user_data=mid,
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_button(
+                    label="Clear source",
+                    callback=clear_mapping_source,
+                    user_data=mid,
+                )
+        else:
+            dpg.add_menu_item(
+                label="Map Band 2",
+                check=True,
+                default_value=(mapping.get("band") == 2),
+                callback=set_mapping_band,
+                user_data=(mid, 2),
+            )
+            dpg.add_menu_item(
+                label="Map Band 3",
+                check=True,
+                default_value=(mapping.get("band") == 3),
+                callback=set_mapping_band,
+                user_data=(mid, 3),
+            )
+            dpg.add_menu_item(
+                label="Leap Motion...",
+                check=True,
+                default_value=(mapping.get("leap") is not None),
+                callback=open_mapper_leap_picker,
+                user_data=mid,
+            )
+            dpg.add_separator()
+            dpg.add_menu_item(label="Clear source", callback=clear_mapping_source, user_data=mid)
     with dpg.item_handler_registry(tag=reg_tag):
         dpg.add_item_clicked_handler(1, callback=lambda *_, m=mid: _show_mapper_menu(m))
     for tag in (
@@ -3874,52 +3944,6 @@ def drive_leap_mappings(snapshot: dict[str, float], now: float | None = None) ->
         ui_task(_move_widget)
 
 
-def _close_mapper_learn_window() -> None:
-    """Delete the mapper MIDI-Learn modal (bound, cancelled or timed out)."""
-    if dpg.does_item_exist("mapper_learn_window"):
-        dpg.delete_item("mapper_learn_window")
-
-
-def _cancel_mapper_learn(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Mapper MIDI-Learn modal Cancel: exit learn mode and close the window."""
-    _exit_midi_learn()
-    _close_mapper_learn_window()
-
-
-def map_mapping_midi_learn(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Mapper control menu > MIDI Learn: the next controller move binds this control.
-
-    Reuses the existing learn machinery: midi_learn_pending carries the
-    mapper_mapping action; the worker completes it via midi_learn_complete,
-    which stores the binding and closes this modal automatically.
-    """
-    mapping_id = int(user_data)
-    if dpg.does_item_exist("mapper_learn_window"):
-        dpg.delete_item("mapper_learn_window")
-    with dpg.window(
-        label="MIDI Learn",
-        tag="mapper_learn_window",
-        modal=True,
-        width=360,
-        height=140,
-        no_resize=True,
-    ):
-        if state.midi_enabled:
-            themed_text("Move a control on your MIDI controller...", slot="text")
-            themed_text(
-                "The control binds to this mapping and the window closes.",
-                slot="text_dim",
-            )
-            state.midi_learn_mode = True
-            state.midi_learn_pending = (MIDI_ACTION_MAPPER_MAPPING, {"mapping_id": mapping_id})
-            state.midi_learn_started_at = time.time()
-        else:
-            themed_text("Enable MIDI in the MIDI window first, then try again.", slot="text")
-        dpg.add_separator()
-        dpg.add_button(label="Cancel", callback=_cancel_mapper_learn, width=120)
-    dpg.show_item("mapper_learn_window")
-
-
 def open_mapper_leap_picker(
     sender: Any = None, app_data: Any = None, user_data: Any = None
 ) -> None:
@@ -3927,7 +3951,8 @@ def open_mapper_leap_picker(
 
     Unlike MIDI there is nothing to LEARN — the signal IS the address, so the
     user picks a hand (Left/Right) and a curated signal from the catalog. The
-    modal mirrors map_mapping_midi_learn's shape.
+    picker is a small modal (same shape the e18 MIDI learn modal had before
+    e33s03 replaced it with the uniform control marker).
     """
     mapping_id = int(user_data)
     if dpg.does_item_exist("mapper_leap_window"):
@@ -4011,12 +4036,25 @@ def midi_mapping_value(mapping_id: int, midi_value: int) -> None:
 
 
 def tick_midi_learn_timeout() -> None:
-    """Expire a stale MIDI Learn session (mapper learn included) past the timeout."""
+    """Expire a stale MIDI Learn session (marker captures included) past the timeout."""
     if state.midi_learn_mode and (
         time.time() - state.midi_learn_started_at > MIDI_LEARN_TIMEOUT_SECONDS
     ):
         _exit_midi_learn()
-        _close_mapper_learn_window()
+
+
+def _mapper_row_lead_px() -> int:
+    """Width of the row lead consumed before the first card of a mapper line.
+
+    The lead is the line-number column + its spacing + the thumbnail slot; while
+    MIDI Learn is on it also includes the e33s03 row line-marker column. The
+    trailing group spacing is excluded (the horizontal line adds it), matching
+    the e32s02 continuation spacer that aligns cards across wrapped lines.
+    """
+    lead = MAPPER_LINE_NO_W + 4 + MAPPER_ROW_THUMB_W
+    if state.midi_learn_mode:  # e33s03: the row line-marker column
+        lead += 4 + MAPPER_MARKER_W
+    return lead
 
 
 def _mapper_cards_per_line() -> int:
@@ -4024,15 +4062,16 @@ def _mapper_cards_per_line() -> int:
 
     e24s02: the Mapper wraps instead of overflowing — the capacity derives from
     the current mapper window width minus the row lead (the e32s02 line-number
-    column + the 110 px thumbnail block + their item spacings), over the card
-    pitch (MAPPER_MINI_W + the 4 px horizontal item spacing).
+    column + the 110 px thumbnail block + their item spacings, and the e33s03
+    line-marker column while learn mode is on), over the card pitch
+    (MAPPER_MINI_W + the 4 px horizontal item spacing).
     """
     width = dpg.get_item_width("mapper_window")
     if not width:
         width = MAPPER_WINDOW_WIDTH
     available = width - 8  # window content padding
     pitch = MAPPER_MINI_W + 4
-    lead = MAPPER_LINE_NO_W + 4 + MAPPER_ROW_THUMB_W + 4  # number + thumb, each + spacing
+    lead = _mapper_row_lead_px() + 4  # row lead + trailing group spacing
     return max(1, int((available - lead) // pitch))
 
 
@@ -4080,12 +4119,17 @@ def refresh_mapper_ui() -> None:
                 # matches the tile menu "Add to Mapper > line N")
                 _mapper_line_number(row_no, target_id, parent=line, height=row_height)
                 _mapper_row_thumb(target_id, parent=line, height=row_height)
+                if state.midi_learn_mode:  # e33s03: map this row's line-assign action
+                    learn_marker(
+                        MIDI_ACTION_MAPPER_LINE,
+                        {"line": row_no - 1},
+                        tag=f"mapper_mk_line_{target_id}",
+                    )
             else:
                 # alignment slot: continuation lines start where the cards of
-                # the first line start (number column + thumbnail slot + the
-                # 4 px group spacing, e32s02)
+                # the first line start (row lead, e32s02/e33s03)
                 dpg.add_spacer(
-                    width=MAPPER_LINE_NO_W + 4 + MAPPER_ROW_THUMB_W,
+                    width=_mapper_row_lead_px(),
                     parent=line,
                 )
             for mapping in mappings[wrap_index : wrap_index + per_line]:

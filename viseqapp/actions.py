@@ -14,7 +14,9 @@ from dataclasses import dataclass
 
 from viseqapp.constants import (
     MIDI_ACTION_BEAT_SOURCE,
+    MIDI_ACTION_MAPPER_BAND,
     MIDI_ACTION_MAPPER_ENABLE,
+    MIDI_ACTION_MAPPER_LINE,
     MIDI_ACTION_MAPPER_MAPPING,
     MIDI_ACTION_MAPPER_RESET,
     MIDI_ACTION_NUDGE_BACK,
@@ -79,6 +81,15 @@ ACTION_SPECS: dict[str, ActionSpec] = {
     ),
     MIDI_ACTION_MAPPER_RESET: ActionSpec(
         MIDI_ACTION_MAPPER_RESET, "Reset mapping", CATEGORY_MAPPER, KIND_MOMENTARY
+    ),
+    MIDI_ACTION_MAPPER_LINE: ActionSpec(
+        MIDI_ACTION_MAPPER_LINE,
+        "Assign selected media to mapper line",
+        CATEGORY_MAPPER,
+        KIND_MOMENTARY,
+    ),
+    MIDI_ACTION_MAPPER_BAND: ActionSpec(
+        MIDI_ACTION_MAPPER_BAND, "Audio band source", CATEGORY_MAPPER, KIND_MOMENTARY
     ),
 }
 

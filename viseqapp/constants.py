@@ -391,6 +391,10 @@ MIDI_ACTION_MAPPER_MAPPING = "mapper_mapping"  # e18: a learned MIDI control dri
 MIDI_ACTION_MAPPER_ENABLE = "mapper_enable"  # toggle the e24 armed flag (momentary)
 MIDI_ACTION_MAPPER_RESET = "mapper_reset"  # return the control to its neutral default (e27)
 
+# e33s03: marker-based learn targets on the Mapper rows and the card source menu
+MIDI_ACTION_MAPPER_LINE = "mapper_line"  # variant B: selected media -> the mapper row (line)
+MIDI_ACTION_MAPPER_BAND = "mapper_band"  # bind the mapping to an audio band (2/3)
+
 
 # e33s02: momentary learn actions trigger at CC value >= this threshold (MIDI's
 # conventional CC-switch split); lower CC values are a deliberate no-op.
