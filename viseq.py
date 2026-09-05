@@ -54,6 +54,7 @@ from viseqapp.constants import (
     MAPPER_CTRL_H,
     MAPPER_DRAG_W,
     MAPPER_KNOB_H,
+    MAPPER_LEARN_SLOTS,
     MAPPER_LINE_NO_DIGIT_PX,
     MAPPER_LINE_NO_FONT_SIZE,
     MAPPER_LINE_NO_TEXT_H,
@@ -96,6 +97,7 @@ from viseqapp.constants import (
     MIDI_ACTION_NUDGE_BACK,
     MIDI_ACTION_NUDGE_FORWARD,
     MIDI_ACTION_REGEN_SELECTED,
+    MIDI_ACTION_SEQ_ROW_ASSIGN,
     MIDI_ACTION_SEQ_TOGGLE,
     MIDI_ACTION_SOURCE_NEXT,
     MIDI_ACTION_SOURCE_PREV,
@@ -2839,12 +2841,14 @@ def _log_stale_midi_target(action: str, detail: str) -> None:
 
     A captured binding can outlive its target (the mapping was deleted, the
     mapper row vanished): the dispatch must be a logged no-op, never a crash.
-    One line per second per action id (same pattern as _log_unknown_midi_action).
+    One line per second per action+detail pair, so different stale reasons
+    under the same action still surface while a repeated press cannot flood.
     """
     now = time.time()
-    if now - _last_unknown_action_log.get(action, 0.0) < 1.0:
+    key = f"{action}:{detail}"
+    if now - _last_unknown_action_log.get(key, 0.0) < 1.0:
         return
-    _last_unknown_action_log[action] = now
+    _last_unknown_action_log[key] = now
     append_log("MIDI", f"{action}: {detail}")
 
 
@@ -2993,6 +2997,25 @@ def _exec_regen_selected(params: dict[str, Any], value: int) -> None:
     regen_thumb_callback(None, None, selected)
 
 
+def _exec_seq_row_assign(params: dict[str, Any], value: int) -> None:
+    """e33s04: assign the SELECTED source to a sequencer row (slot binding).
+
+    The row is a stable slot (1..8), the source comes from the Mediagrid
+    selection at trigger time — never anchored to a volatile source.
+    """
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    row = int(params.get("row", -1))
+    if row < 0 or row >= NUM_TRACKS:
+        _log_stale_midi_target(MIDI_ACTION_SEQ_ROW_ASSIGN, f"no track {row}")
+        return
+    selected = state.viseq_selected_source
+    if selected is None:
+        _log_stale_midi_target(MIDI_ACTION_SEQ_ROW_ASSIGN, "no selection")
+        return
+    assign_target_to_track(row, selected)
+
+
 # e33s01: one dispatcher per registered action (viseqapp/actions.py owns the
 # metadata). Lambdas close over the module helpers, which resolve at call time.
 _MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
@@ -3019,6 +3042,7 @@ _MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
     MIDI_ACTION_SOURCE_PREV: _exec_source_prev,
     # e33s04: selection-relative actions — never anchored to a volatile source
     MIDI_ACTION_REGEN_SELECTED: _exec_regen_selected,
+    MIDI_ACTION_SEQ_ROW_ASSIGN: _exec_seq_row_assign,
 }
 
 _last_unknown_action_log: dict[str, float] = {}  # action id -> last log time (throttle)
@@ -3122,15 +3146,21 @@ def _refresh_learn_surfaces() -> None:
 
     Markers are rendered only while state.midi_learn_mode is on, so entering or
     leaving learn mode must rebuild the Mapper body (its refresh already guards
-    on the body existing) and create/drop the Mediagrid learn bar (e33s04).
+    on the body existing), create/drop the Mediagrid learn bar (e33s04) and the
+    sequencer transport learn strip.
     """
     if dpg.does_item_exist("mapper_mappings_group"):
         refresh_mapper_ui()
     _sync_media_learn_bar()
+    _sync_sequencer_learn_strip()
 
 
 def learn_marker(
-    action_id: str, params: dict[str, Any], parent: Any, tag: str | None = None
+    action_id: str,
+    params: dict[str, Any],
+    parent: Any,
+    tag: str | None = None,
+    tooltip: str | None = None,
 ) -> str:
     """Add ONE uniform learn marker button (e33s02): click captures the action.
 
@@ -3140,7 +3170,8 @@ def learn_marker(
     state.midi_learn_mode is on — the surfaces rebuild on learn transitions via
     _refresh_learn_surfaces, so markers never need show/hide juggling. The
     parent is EXPLICIT: a parentless add_button outside a with-block hangs the
-    render thread in real DearPyGui (reproduced 2026-09-05).
+    render thread in real DearPyGui (reproduced 2026-09-05). The tooltip may be
+    overridden when the params distinguish slots (e.g. 'Mapper line 3').
     """
     marker_kwargs: dict[str, Any] = {
         "label": "M",
@@ -3154,8 +3185,9 @@ def learn_marker(
         marker_kwargs["tag"] = tag  # tag=None would raise 'Must be int' in real DPG
     marker_tag = dpg.add_button(**marker_kwargs)
     dpg.bind_item_theme(marker_tag, theme_learn_marker)  # red 'M' (e33)
+    tooltip_text = tooltip or f"Map: {actions.action_label(action_id)}"
     with dpg.tooltip(parent=marker_tag):
-        dpg.add_text(f"Map: {actions.action_label(action_id)}")
+        dpg.add_text(tooltip_text)
     return marker_tag
 
 
@@ -3178,9 +3210,12 @@ def on_learn_marker_click(sender: Any = None, app_data: Any = None, user_data: A
 def _sync_media_learn_bar() -> None:
     """Create or drop the Mediagrid source-browsing learn bar (e33s04).
 
-    While MIDI Learn is on, the sources window shows two red-M markers above the
-    grid ("Next source" / "Previous source"); leaving learn mode removes the
-    bar. The bar is rebuilt from scratch every time so it can never go stale.
+    While MIDI Learn is on, the sources window shows ONE grouped marker bar
+    above the grid — the user asked for fixed slots with separators: three
+    generic markers (next/prev/regen), a dash, the 8 step-sequencer slots, a
+    dash, the 4 Mapper slots. Slot bindings are selection-relative and
+    pre-bindable even when fewer rows exist (a missing line is a logged
+    no-op). Leaving learn mode removes the bar; rebuilt from scratch each time.
     """
     bar_tag = "media_learn_bar"
     if dpg.does_item_exist(bar_tag):
@@ -3200,6 +3235,77 @@ def _sync_media_learn_bar() -> None:
         learn_marker(MIDI_ACTION_SOURCE_NEXT, {}, parent=bar, tag="media_mk_next")
         learn_marker(MIDI_ACTION_SOURCE_PREV, {}, parent=bar, tag="media_mk_prev")
         learn_marker(MIDI_ACTION_REGEN_SELECTED, {}, parent=bar, tag="media_mk_regen")
+        _bar_divider(bar)
+        for slot in range(1, NUM_TRACKS + 1):
+            learn_marker(
+                MIDI_ACTION_SEQ_ROW_ASSIGN,
+                {"row": slot - 1},
+                parent=bar,
+                tag=f"media_mk_seq_{slot}",
+                tooltip=f"Map: sequencer line {slot} (selected source)",
+            )
+        _bar_divider(bar)
+        for slot in range(1, MAPPER_LEARN_SLOTS + 1):
+            learn_marker(
+                MIDI_ACTION_MAPPER_LINE,
+                {"line": slot - 1},
+                parent=bar,
+                tag=f"media_mk_map_{slot}",
+                tooltip=f"Map: mapper line {slot} (selected source)",
+            )
+
+
+def _bar_divider(parent: Any) -> None:
+    """A thin separator inside a horizontal learn bar (group divider)."""
+    dpg.add_separator(parent=parent)
+
+
+def _sync_sequencer_learn_strip() -> None:
+    """Create or drop the sequencer transport learn strip (e33s04).
+
+    While MIDI Learn is on, a strip below the transport row offers one red-M
+    marker per transport/beat-source control (Play, Resync, nudges, Tap, the
+    four beat sources) — the uniform marker replacement for their old
+    capture-on-click learn. Leaving learn mode removes the strip.
+    """
+    strip_tag = "seq_transport_learn"
+    if dpg.does_item_exist(strip_tag):
+        dpg.delete_item(strip_tag)
+    if not state.midi_learn_mode:
+        return
+    if not dpg.does_item_exist("seq_table"):
+        return
+    with dpg.group(
+        parent="sequencer_window",
+        horizontal=True,
+        tag=strip_tag,
+        before="seq_table",
+    ) as strip:
+        _strip_marker(strip, MIDI_ACTION_TRANSPORT_PLAY, {}, "seq_mk_play")
+        _strip_marker(strip, MIDI_ACTION_TRANSPORT_RESYNC, {}, "seq_mk_resync")
+        _strip_marker(strip, MIDI_ACTION_NUDGE_BACK, {}, "seq_mk_nudge_back")
+        _strip_marker(strip, MIDI_ACTION_NUDGE_FORWARD, {}, "seq_mk_nudge_forward")
+        _strip_marker(strip, MIDI_ACTION_TRANSPORT_TAP, {}, "seq_mk_tap")
+        _bar_divider(strip)
+        for mode in (
+            BEAT_SOURCE_ANALYSIS,
+            BEAT_SOURCE_BAND1,
+            BEAT_SOURCE_MIDI,
+            BEAT_SOURCE_MANUAL,
+        ):
+            label = BEAT_SOURCE_LABELS.get(mode, mode)
+            learn_marker(
+                MIDI_ACTION_BEAT_SOURCE,
+                {"mode": mode},
+                parent=strip,
+                tag=f"seq_mk_beat_{mode}",
+                tooltip=f"Map: beat source ({label})",
+            )
+
+
+def _strip_marker(strip: Any, action_id: str, params: dict[str, Any], tag: str) -> None:
+    """One transport learn marker inside the sequencer strip."""
+    learn_marker(action_id, params, parent=strip, tag=tag)
 
 
 def midi_learn_complete(binding: dict[str, Any], port_name: str | None = None) -> None:
@@ -5523,25 +5629,25 @@ with dpg.window(
         dpg.add_button(
             label="PLAY",
             tag="btn_play",
-            callback=learnable(toggle_play, lambda ud: (MIDI_ACTION_TRANSPORT_PLAY, {})),
+            callback=toggle_play,  # e33s04: marker captures (uniform), the button executes
             width=60,
             height=26,
         )
         dpg.add_button(
             label="<",
-            callback=learnable(callback_nudge_backward, lambda ud: (MIDI_ACTION_NUDGE_BACK, {})),
+            callback=callback_nudge_backward,  # e33s04: plain callback (marker era)
             width=28,
             height=26,
         )
         dpg.add_button(
             label="RESYNC",
-            callback=learnable(callback_resync, lambda ud: (MIDI_ACTION_TRANSPORT_RESYNC, {})),
+            callback=callback_resync,  # e33s04: plain callback (marker era)
             width=50,
             height=26,
         )
         dpg.add_button(
             label=">",
-            callback=learnable(callback_nudge_forward, lambda ud: (MIDI_ACTION_NUDGE_FORWARD, {})),
+            callback=callback_nudge_forward,  # e33s04: plain callback (marker era)
             width=28,
             height=26,
         )
@@ -5550,7 +5656,7 @@ with dpg.window(
             label=BEAT_SOURCE_LABELS[BEAT_SOURCE_ANALYSIS],
             tag="cb_beat_bpm_analysis",
             default_value=True,
-            callback=learnable(on_beat_source, lambda ud: (MIDI_ACTION_BEAT_SOURCE, {"mode": ud})),
+            callback=on_beat_source,  # e33s04: plain callback (marker era)
             user_data=BEAT_SOURCE_ANALYSIS,
         )
         with dpg.drawlist(width=14, height=14):
@@ -5566,7 +5672,7 @@ with dpg.window(
         dpg.add_checkbox(
             label=BEAT_SOURCE_LABELS[BEAT_SOURCE_BAND1],
             tag=f"cb_beat_{BEAT_SOURCE_BAND1}",
-            callback=learnable(on_beat_source, lambda ud: (MIDI_ACTION_BEAT_SOURCE, {"mode": ud})),
+            callback=on_beat_source,  # e33s04: plain callback (marker era)
             user_data=BEAT_SOURCE_BAND1,
         )
         with dpg.drawlist(width=14, height=14):
@@ -5581,7 +5687,7 @@ with dpg.window(
         dpg.add_checkbox(
             label=BEAT_SOURCE_LABELS[BEAT_SOURCE_MIDI],
             tag=f"cb_beat_{BEAT_SOURCE_MIDI}",
-            callback=learnable(on_beat_source, lambda ud: (MIDI_ACTION_BEAT_SOURCE, {"mode": ud})),
+            callback=on_beat_source,  # e33s04: plain callback (marker era)
             user_data=BEAT_SOURCE_MIDI,
         )
         with dpg.drawlist(width=14, height=14):
@@ -5596,7 +5702,7 @@ with dpg.window(
         dpg.add_checkbox(
             label=BEAT_SOURCE_LABELS[BEAT_SOURCE_MANUAL],
             tag="cb_beat_manual_bpm",
-            callback=learnable(on_beat_source, lambda ud: (MIDI_ACTION_BEAT_SOURCE, {"mode": ud})),
+            callback=on_beat_source,  # e33s04: plain callback (marker era)
             user_data=BEAT_SOURCE_MANUAL,
         )
         with dpg.drawlist(width=14, height=14):
@@ -5620,7 +5726,7 @@ with dpg.window(
         dpg.add_button(
             label="TAP",
             tag="btn_tap",
-            callback=learnable(tap_bpm, lambda ud: (MIDI_ACTION_TRANSPORT_TAP, {})),
+            callback=tap_bpm,  # e33s04: plain callback (marker era)
             width=32,
             height=22,
             show=False,

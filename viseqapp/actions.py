@@ -22,6 +22,7 @@ from viseqapp.constants import (
     MIDI_ACTION_NUDGE_BACK,
     MIDI_ACTION_NUDGE_FORWARD,
     MIDI_ACTION_REGEN_SELECTED,
+    MIDI_ACTION_SEQ_ROW_ASSIGN,
     MIDI_ACTION_SEQ_TOGGLE,
     MIDI_ACTION_SOURCE_NEXT,
     MIDI_ACTION_SOURCE_PREV,
@@ -107,6 +108,12 @@ ACTION_SPECS: dict[str, ActionSpec] = {
         MIDI_ACTION_REGEN_SELECTED,
         "Regenerate selected source thumbnails",
         CATEGORY_MEDIAGRID,
+        KIND_MOMENTARY,
+    ),
+    MIDI_ACTION_SEQ_ROW_ASSIGN: ActionSpec(
+        MIDI_ACTION_SEQ_ROW_ASSIGN,
+        "Assign selected source to sequencer line",
+        CATEGORY_SEQUENCER,
         KIND_MOMENTARY,
     ),
 }

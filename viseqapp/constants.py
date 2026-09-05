@@ -225,6 +225,10 @@ MAPPER_CB_W = 16  # px width of the enable checkbox on a caption row (measured, 
 
 MAPPER_DRAG_W = 40  # px width of the from/to drag boxes on the output/input lines
 
+# e33s04: fixed slot count of the Mapper in the learn bar (user rule: 4 lines,
+# pre-bindable even when fewer rows exist — a missing line is a logged no-op).
+MAPPER_LEARN_SLOTS = 4
+
 # e33s02: learn-marker button on a card caption / row lead (compact, tooltip-only)
 MAPPER_MARKER_W = 15
 MAPPER_MARKER_H = 15
@@ -401,6 +405,7 @@ MIDI_ACTION_MAPPER_BAND = "mapper_band"  # bind the mapping to an audio band (2/
 MIDI_ACTION_SOURCE_NEXT = "source_next"  # select the next source in the grid order (wrap)
 MIDI_ACTION_SOURCE_PREV = "source_prev"  # select the previous source in the grid order (wrap)
 MIDI_ACTION_REGEN_SELECTED = "regen_selected_thumb"  # regen the selected source's thumbs
+MIDI_ACTION_SEQ_ROW_ASSIGN = "seq_row_assign"  # selected source -> a sequencer row (slot)
 
 
 # e33s02: momentary learn actions trigger at CC value >= this threshold (MIDI's
