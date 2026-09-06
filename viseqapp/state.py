@@ -326,6 +326,15 @@ mapper_counter: int = 0
 mapper_pending_target: str | None = None  # source the New-mapping dialog targets
 
 
+# e35s02: active cue runs — written by the cue engine (viseqapp/cue.py) from
+# the scheduler thread, read by the UI for running indicators (e35s03). Each
+# entry: {mapping_id, target_id, plan, cursor} with plan entries of the shape
+# (time_ms, action, payload) built by cue.build_cue_plan. Main thread only
+# mutates through the queues; the engine mutates this list directly (it is
+# dpg-free by construction).
+cue_runs: list[dict[str, Any]] = []
+
+
 # e17 / BUG-2026-09-01T194500: last focused workspace window. DPG's
 # get_active_window() returns None while the viewport menu bar has focus, so
 # the Windows-menu mark and the Ctrl+Tab anchor come from this tracking instead.
