@@ -3778,6 +3778,10 @@ def _mapper_row_height(mappings: list[dict[str, Any]]) -> int:
     height = MAPPER_ROW_THUMB_H + 2  # the row always fits the 70 px thumbnail
     if any(m["control"] in ("knob", "button", "cue list") for m in mappings):
         height = max(height, pad + x_h + gap + MAPPER_KNOB_H)  # compact band
+    if any(m["control"] == "cue list" for m in mappings):
+        # UAT e35: the cue readout column also hosts the 'N of Total' progress
+        # text UNDER the 'Cue list...' button — the card needs one extra line.
+        height = max(height, pad + x_h + gap + MAPPER_KNOB_H + text)
     if any(m["control"] == "slider" for m in mappings):
         slider_h = pad + x_h + gap + MAPPER_CTRL_H + gap + text
         if any_source:
@@ -4056,15 +4060,23 @@ def _mapper_band_control(mapping: dict[str, Any], mid: int) -> None:
             # UAT e35: the trigger shows its state — accent fill when ON/RUN
             _style_trigger_theme(f"mapper_{kind}_{mid}", _trigger_is_on(mapping))
         if control == "cue list":
-            # e34s04: the right area hosts ONE button opening the cue-list window
-            dpg.add_button(
-                label="Cue list...",
-                width=MAPPER_MINI_W - 8 - MAPPER_KNOB_H - 2,
-                callback=open_cue_list_window,
-                user_data=mid,
-                tag=f"mapper_cue_open_{mid}",
-            )
+            # e34s04/e35 UAT: the right readout column hosts the window opener
+            # and, UNDER it, the 'N of Total' progress readout of the cue.
+            with dpg.group():
+                dpg.add_button(
+                    label="Cue list...",
+                    width=MAPPER_MINI_W - 8 - MAPPER_KNOB_H - 2,
+                    callback=open_cue_list_window,
+                    user_data=mid,
+                    tag=f"mapper_cue_open_{mid}",
+                )
+                themed_text(
+                    _cue_progress_label(mapping),
+                    slot="text_dim",
+                    tag=f"mapper_cue_prog_{mid}",
+                )
             _bind_mapper_font(f"mapper_cue_open_{mid}")
+            _bind_mapper_font(f"mapper_cue_prog_{mid}")
         else:
             with dpg.group():
                 _mapper_readout_line("Out", mid, "out", out_from, out_to, MAPPER_BAND_DRAG_W)
@@ -4116,15 +4128,18 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
             themed_text(caption, slot="text_dim", tag=f"mapper_prop_{mid}")
             dpg.add_spacer(width=_mapper_caption_spacer(caption, spec))
             # e27s01: the reset button sits LEFT of the enable checkbox — it
-            # returns the control to its neutral default (mapper.reset_mapping_value)
-            dpg.add_button(
-                label="R",
-                width=MAPPER_RESET_W,
-                height=MAPPER_RESET_H,
-                callback=reset_mapping,
-                user_data=mid,
-                tag=f"mapper_reset_{mid}",
-            )
+            # returns the control to its neutral default (mapper.reset_mapping_value).
+            # UAT e35: a cue-list trigger has no value to reset (it RUNS the cue,
+            # stopped by the window 'Stop') — no R on cue-list cards.
+            if mapping["control"] != "cue list":
+                dpg.add_button(
+                    label="R",
+                    width=MAPPER_RESET_W,
+                    height=MAPPER_RESET_H,
+                    callback=reset_mapping,
+                    user_data=mid,
+                    tag=f"mapper_reset_{mid}",
+                )
             dpg.add_checkbox(
                 default_value=mapping.get("enabled", False),
                 callback=on_mapper_enable,
@@ -4612,9 +4627,10 @@ def refresh_mapper_ui() -> None:
             line = dpg.add_group(horizontal=True, parent=block)
             dpg.add_spacer(width=_mapper_row_lead_px(), parent=line)
             _mapper_row_add(target_id, parent=line, height=row_height)
-    # e35s03: rebuilt cards relabel their running triggers (the cache is stale
-    # after the body rebuild — re-seed it in one pass)
+    # e35s03/UAT: rebuilt cards relabel their running triggers and progress
+    # readouts (the caches are stale after the body rebuild — re-seed in one pass)
     state.cue_trigger_label_cache.clear()
+    state.cue_progress_cache.clear()
     tick_cue_triggers()
 
 
@@ -4729,30 +4745,46 @@ def _style_trigger_theme(tag: str, on: bool) -> None:
         dpg.bind_item_theme(tag, theme_tag)
 
 
-def tick_cue_triggers() -> None:
-    """Relabel every cue-list card trigger whose running state changed (main thread).
+def _cue_progress_label(mapping: dict[str, Any]) -> str:
+    """The card readout under 'Cue list...': '3 of 10' — executed actions over
+    the cue total (waits are pacing, not actions). Empty cue -> blank (UAT e35)."""
+    executed, total = cue.cue_progress(int(mapping["id"]))
+    if total <= 0:
+        return ""
+    return f"{executed} of {total}"
 
-    e35s03: cheap per-frame call — it only relabels cue-list triggers whose
-    label left the cache (run started/finished) or after a Mapper rebuild
-    cleared the cache. Reads state.cue_runs; touches dpg only when a label
-    actually changed, so an idle frame costs one dict loop.
+
+def tick_cue_triggers() -> None:
+    """Refresh every cue-list card trigger + progress readout (main thread).
+
+    e35s03/UAT: cheap per-frame call — it only relabels triggers whose label
+    left the cache (run started/finished), updates the 'N of Total' progress
+    text while actions dispatch, or after a Mapper rebuild cleared the caches.
+    Idle frames cost one dict loop over the cue-list mappings.
     """
-    changed: dict[int, str] = {}
+    changed_labels: dict[int, str] = {}
+    changed_progress: dict[int, str] = {}
     for mapping in state.mapper_mappings:
         if mapping.get("control") != "cue list":
             continue
         mid = int(mapping["id"])
         label = _trigger_label(mapping)
         if state.cue_trigger_label_cache.get(mid) != label:
-            changed[mid] = label
-    if not changed:
-        return
-    for mid, label in changed.items():
+            changed_labels[mid] = label
+        progress = _cue_progress_label(mapping)
+        if state.cue_progress_cache.get(mid) != progress:
+            changed_progress[mid] = progress
+    for mid, label in changed_labels.items():
         tag = f"mapper_cue_{mid}"
         if dpg.does_item_exist(tag):
             dpg.configure_item(tag, label=label)
             _style_trigger_theme(tag, label == "ON")
-    state.cue_trigger_label_cache.update(changed)
+    for mid, progress in changed_progress.items():
+        tag = f"mapper_cue_prog_{mid}"
+        if dpg.does_item_exist(tag):
+            dpg.set_value(tag, progress)
+    state.cue_trigger_label_cache.update(changed_labels)
+    state.cue_progress_cache.update(changed_progress)
 
 
 def cue_tick_loop() -> None:
@@ -5311,13 +5343,24 @@ def _drop_mapping_editor_and_runs(mapping_id: int) -> None:
         cue_editor_close(None, None, mapping_id)
 
 
+def _mapper_line_of(mapping: dict[str, Any]) -> int:
+    """1-based Mapper line of a mapping's source (UAT e35): the window title
+    names the line the cue belongs to, like the other mappings of that row."""
+    targets = mapper.row_targets()
+    try:
+        return targets.index(str(mapping["target_id"])) + 1
+    except ValueError:
+        return 1
+
+
 def open_cue_list_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     """'Cue list...' on a cue-list card: open the mapping's cue-list editor (e35s04).
 
-    The window edits the mapping's own cue (per-mapping, answer 2): a level-gap
-    box, Run/Stop, and the row table with +/←/→/X per row plus double-click
-    editing. Created on demand like the mapper dialogs; non-modal so the Mapper
-    stays usable. Unknown mapping ids are a no-op.
+    The window edits the mapping's own cue (per-mapping, answer 2). UAT e35: it
+    is titled 'Cue list mapper <N>' after the Mapper LINE the mapping belongs to
+    — the cue always applies to that line's current source, so no Source/context
+    header is shown: the level-gap box and the Run/Stop/Add-row buttons come
+    first. Created on demand, non-modal. Unknown mapping ids are a no-op.
     """
     mid = int(user_data)
     mapping = mapper.find_mapping(mid)
@@ -5326,24 +5369,16 @@ def open_cue_list_window(sender: Any = None, app_data: Any = None, user_data: An
     if dpg.does_item_exist("cue_list_window"):
         dpg.delete_item("cue_list_window")
     state.cue_editor_mapping_id = mid  # e35s05: which mapping this editor edits
+    line_no = _mapper_line_of(mapping)
+    cue = mapping.get("cue") or mapper.fresh_cue()
     with dpg.window(
-        label="Cue list",
+        label=f"Cue list mapper {line_no}",
         tag="cue_list_window",
         width=520,
         height=420,
     ):
-        themed_text("Cue list", slot="text")
-        dpg.add_separator()
-        themed_text(f"Source: {mapping['target_id']}", slot="text")
-        if mapping["control"] == "cue list":
-            header_line = f"Mapping #{mid} · cue list"
-        else:
-            header_line = f"Property: {mapping['property']} · mapping #{mid}"
-        themed_text(header_line, slot="text_dim")
-        dpg.add_separator()
         with dpg.group(horizontal=True):
             themed_text("Level gap (ms)", slot="text_dim")
-            cue = mapping.get("cue") or mapper.fresh_cue()
             dpg.add_drag_float(
                 default_value=float(cue.get("gap_ms") or 0.0),
                 width=90,

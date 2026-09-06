@@ -146,6 +146,26 @@ def cue_stop(mapping_id: int) -> None:
     state.cue_runs[:] = [run for run in state.cue_runs if run["mapping_id"] != mapping_id]
 
 
+def cue_progress(mapping_id: int) -> tuple[int, int]:
+    """(executed, total) cue actions of a mapping (UAT e35).
+
+    Wait rows are PACING, not actions: only property/mapper rows count toward
+    the total and toward the executed counter (the run's cursor). Idle or
+    finished runs read 0 executed, so the card shows '0 of N' at rest.
+    """
+    mapping = mapper.find_mapping(mapping_id)
+    total = 0
+    if mapping is not None:
+        cue = mapping.get("cue")
+        if isinstance(cue, dict):
+            total = sum(1 for r in cue.get("rows", []) if r.get("kind") in ("property", "mapper"))
+    executed = 0
+    for run in state.cue_runs:
+        if run["mapping_id"] == mapping_id:
+            executed = min(int(run["cursor"]), total)
+    return executed, total
+
+
 def tick(now_ms: float) -> None:
     """Drive every active run on the monotonic clock (e35s02).
 

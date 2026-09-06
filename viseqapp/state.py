@@ -347,6 +347,11 @@ cue_editor_mapping_id: int | None = None
 cue_trigger_label_cache: dict[int, str] = {}
 
 
+# e35 UAT: last rendered progress text per cue-list card ('3 of 10'); written
+# only by tick_cue_triggers on the main thread. The engine never touches it.
+cue_progress_cache: dict[int, str] = {}
+
+
 # e35 UAT: TWO shared button/trigger themes (OFF then ON) bound by tag. They are
 # root-level theme items created once and rebuilt ONLY when the active palette
 # changes — per-trigger theme churn caused DPG alias collisions (1000).
