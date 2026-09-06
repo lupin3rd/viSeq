@@ -20,7 +20,7 @@ from PIL import Image
 from pythonosc import dispatcher, udp_client
 
 import viseqapp  # noqa: F401  scaffold hook (REFACTOR_LATEST.md commit 1): proves the package import path works at boot
-from viseqapp import actions, leap, mapper, state
+from viseqapp import actions, cue, leap, mapper, state
 from viseqapp.audio import (
     _set_band_variable,
     apply_spectrum_agc,
@@ -4455,8 +4455,15 @@ def midi_mapping_value(mapping_id: int, midi_value: int) -> None:
 
     The raw 0..127 value is remapped through the mapping's input range
     (default 0..127), then through its output range, and the control widget
-    follows.
+    follows. Cue list (e35s03): the value marker IS the trigger — a value >= 64
+    runs/restarts the cue, anything below is ignored.
     """
+    mapping = mapper.find_mapping(mapping_id)
+    if mapping is not None and mapping.get("control") == "cue list":
+        if midi_value >= 64:
+            cue.cue_start(mapping_id, allow_restart=True)
+            tick_cue_triggers()
+        return
     value = mapper.apply_input_value(mapping_id, midi_value)
     _set_mapper_control_value(mapping_id, value)
 
@@ -4596,6 +4603,10 @@ def refresh_mapper_ui() -> None:
             line = dpg.add_group(horizontal=True, parent=block)
             dpg.add_spacer(width=_mapper_row_lead_px(), parent=line)
             _mapper_row_add(target_id, parent=line, height=row_height)
+    # e35s03: rebuilt cards relabel their running triggers (the cache is stale
+    # after the body rebuild — re-seed it in one pass)
+    state.cue_trigger_label_cache.clear()
+    tick_cue_triggers()
 
 
 def show_mapper_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -4617,22 +4628,70 @@ def on_mapper_control(sender: Any, app_data: Any, user_data: Any) -> None:
 
 
 def on_mapper_button(sender: Any, app_data: Any, user_data: Any) -> None:
-    """Button/cue-list press: toggle output_from (OFF) / output_to (ON), send OSC,
-    refresh the label.
+    """Button/cue-list press.
 
-    e34s02/e34s04: the trigger is a 44 px square labelled with the value only
-    (the property name lives in the caption row above the control); the tag
-    comes from the shared control->kind map (mapper_btn_N / mapper_cue_N).
+    Button: toggle output_from (OFF) / output_to (ON), send OSC, refresh the
+    label. Cue list (e35s03): the trigger RUNS the mapping's cue — a press
+    while the cue runs RESTARTS it, an empty/disabled cue is an engine no-op;
+    the trigger label shows RUN while the cue is running.
     """
     mid = int(user_data)
-    value = mapper.send_button_mapping(mid)
     mapping = mapper.find_mapping(mid)
     if mapping is None:
         return
+    if mapping["control"] == "cue list":
+        cue.cue_start(mid, allow_restart=True)
+        tick_cue_triggers()
+        return
+    value = mapper.send_button_mapping(mid)
     kind = mapper.control_tag_kind(mapping["control"])
     tag = f"mapper_{kind}_{mid}"
     if dpg.does_item_exist(tag):
         dpg.configure_item(tag, label=f"{value:.2f}")
+
+
+def _cue_trigger_label(mapping: dict[str, Any]) -> str:
+    """The cue-list trigger label: RUN while the cue runs, else the value label (e35s03)."""
+    if cue.cue_is_running(int(mapping["id"])):
+        return "RUN"
+    return f"{float(mapping['value']):.2f}"
+
+
+def tick_cue_triggers() -> None:
+    """Relabel every cue-list card trigger whose running state changed (main thread).
+
+    e35s03: cheap per-frame call — it only relabels cue-list triggers whose
+    label left the cache (run started/finished) or after a Mapper rebuild
+    cleared the cache. Reads state.cue_runs; touches dpg only when a label
+    actually changed, so an idle frame costs one dict loop.
+    """
+    changed: dict[int, str] = {}
+    for mapping in state.mapper_mappings:
+        if mapping.get("control") != "cue list":
+            continue
+        mid = int(mapping["id"])
+        label = _cue_trigger_label(mapping)
+        if state.cue_trigger_label_cache.get(mid) != label:
+            changed[mid] = label
+    if not changed:
+        return
+    for mid, label in changed.items():
+        tag = f"mapper_cue_{mid}"
+        if dpg.does_item_exist(tag):
+            dpg.configure_item(tag, label=label)
+    state.cue_trigger_label_cache.update(changed)
+
+
+def cue_tick_loop() -> None:
+    """e35s03: drive the cue engine on the monotonic clock (fade_tick_loop pattern).
+
+    The thread only works while a cue is running; UI reflection happens on the
+    main thread (tick_cue_triggers), never here (HIGH-1).
+    """
+    while True:
+        if state.cue_runs:
+            cue.tick(time.monotonic() * 1000.0)
+        time.sleep(0.01)  # 100 FPS cap, same cadence as the fade loop
 
 
 def _sync_mapper_control(mid: int) -> None:
@@ -4694,6 +4753,13 @@ def reset_mapping(sender: Any = None, app_data: Any = None, user_data: Any = Non
     — no body rebuild, so a live band/MIDI drive is never interrupted.
     """
     mid = int(user_data)
+    mapping = mapper.find_mapping(mid)
+    if mapping is not None and mapping.get("control") == "cue list":
+        # e35s03: reset STOPS a running cue — no OSC, no value toggle (the cue
+        # owns the trigger now, not the single property value)
+        cue.cue_stop(mid)
+        tick_cue_triggers()
+        return
     mapper.reset_mapping_value(mid)
     _sync_mapper_control(mid)
 
@@ -6398,6 +6464,7 @@ dpg.bind_item_handler_registry("mapper_window", "mapper_resize_reg")
 
 # NEW THREAD FOR HIGH-FREQUENCY FADES
 threading.Thread(target=fade_tick_loop, daemon=True).start()
+threading.Thread(target=cue_tick_loop, daemon=True).start()  # e35s03: cue engine clock
 threading.Thread(target=spectrum_analyzer_loop, daemon=True).start()
 threading.Thread(target=midi_clock_loop, daemon=True).start()
 threading.Thread(target=midi_control_loop, daemon=True).start()  # e09: control worker
@@ -6489,6 +6556,8 @@ try:
         tick_thumb_cycle(time.time())
 
         tick_window_menu()  # e17: keep the Windows-menu list + active mark fresh
+
+        tick_cue_triggers()  # e35s03: cue-list card running labels (idle-cheap)
 
         tick_midi_learn_timeout()  # e18: expire stale MIDI Learn sessions (incl. mapper)
 

@@ -335,6 +335,13 @@ mapper_pending_target: str | None = None  # source the New-mapping dialog target
 cue_runs: list[dict[str, Any]] = []
 
 
+# e35s03: main-thread cache of the last relabel per cue-list card trigger
+# (mapping id -> label). Written ONLY by tick_cue_triggers on the main thread;
+# cleared by refresh_mapper_ui after a body rebuild. Worker threads never touch
+# it (HIGH-1) — the engine reflects running state through cue_runs alone.
+cue_trigger_label_cache: dict[int, str] = {}
+
+
 # e17 / BUG-2026-09-01T194500: last focused workspace window. DPG's
 # get_active_window() returns None while the viewport menu bar has focus, so
 # the Windows-menu mark and the Ctrl+Tab anchor come from this tracking instead.
