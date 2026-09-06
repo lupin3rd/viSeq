@@ -98,6 +98,12 @@ _media_cell_cache: dict[str, str | float] = {}
 global_vimix_state: dict[str, Any] = {"current_source": None, "sources": {}}
 
 
+# e36s01: per-target full-component vectors for anchored OSC sends
+# (target_id -> property -> [component values]). Written by full-vector sends;
+# nil-capable properties never consult it. Fed by live vimix state in e36s06.
+source_anchors: dict[str, dict[str, list[float]]] = {}
+
+
 viseq_selected_source: str | None = None
 
 
