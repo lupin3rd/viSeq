@@ -1418,6 +1418,9 @@ def update_step_ui(row: int, col: int) -> None:
         _text_color_bindings[f"seq_type_{row}_{col}"] = "text"
 
         with dpg.popup(cb, mousebutton=dpg.mvMouseButton_Right):
+            # 2026-09-06 (user): arm/cancel MIDI Learn from any right-click menu
+            _add_context_learn_item(tag=f"ctx_learn_cell_{row}_{col}")
+            dpg.add_separator()
             dpg.add_menu_item(label="Empty", callback=set_step_type, user_data=(row, col, "NONE"))
             dpg.add_separator()
             dpg.add_menu_item(
@@ -2403,6 +2406,9 @@ def new_monitor_player(sender: Any = None, app_data: Any = None, user_data: Any 
             wrap=250,
         )
         with dpg.popup(head_tag, mousebutton=dpg.mvMouseButton_Right):
+            # 2026-09-06 (user): arm/cancel MIDI Learn from any right-click menu
+            _add_context_learn_item(tag=f"ctx_learn_mon_{player_id}")
+            dpg.add_separator()
             dpg.add_menu_item(
                 label="Monitor Properties...",
                 callback=lambda s, a, u: open_monitor_props(player_id),
@@ -3216,6 +3222,7 @@ def _exit_midi_learn() -> None:
     if dpg.does_item_exist("midi_learn_status"):
         dpg.set_value("midi_learn_status", "MIDI Learn off")
     _refresh_learn_surfaces()
+    _sync_context_learn_labels()  # static menus (step cell, monitor) follow the mode
 
 
 def _refresh_learn_surfaces() -> None:
@@ -3462,6 +3469,7 @@ def toggle_midi_learn(sender: Any = None, app_data: Any = None, user_data: Any =
     if dpg.does_item_exist("midi_learn_status"):
         dpg.set_value("midi_learn_status", "MIDI Learn: click a viseq control")
     _refresh_learn_surfaces()  # e33s02: show the learn markers on the Mapper body
+    _sync_context_learn_labels()  # static menus (step cell, monitor) follow the mode
 
 
 def on_midi_enable(sender: Any, app_data: Any, user_data: Any) -> None:
@@ -3471,7 +3479,26 @@ def on_midi_enable(sender: Any, app_data: Any, user_data: Any) -> None:
         _exit_midi_learn()
 
 
-def _add_context_learn_item() -> None:
+# 2026-09-06 (user): context-menu arm items on STATIC menus (step cell, monitor
+# player head) need their label synced with the mode — their popups are not
+# rebuilt per open, so toggle tracks their tags and re-labels them in place.
+_context_learn_item_tags: set[str] = set()
+
+
+def _sync_context_learn_labels() -> None:
+    """Re-label the registered static context learn items to follow the mode.
+
+    Menus rebuilt per open (Mapper card menu, Mediagrid tile popup) read the
+    mode at build time and never register; the static step-cell and monitor
+    menus register a stable tag here so arm/cancel stays correct everywhere.
+    """
+    label = "Cancel MIDI Learn" if state.midi_learn_mode else "MIDI Learn..."
+    for tag in _context_learn_item_tags:
+        if dpg.does_item_exist(tag):
+            dpg.configure_item(tag, label=label)
+
+
+def _add_context_learn_item(tag: str | None = None) -> None:
     """One context-menu item that arms/cancels MIDI Learn mode (user, 2026-09-06).
 
     The right-click surfaces (Mapper card menu, Mediagrid tile popup) reuse the
@@ -3480,11 +3507,18 @@ def _add_context_learn_item() -> None:
     time: 'MIDI Learn...' arms; 'Cancel MIDI Learn' exits. It is a MODE item —
     it never anchors a binding to the right-clicked entity (the e33s04 rule on
     volatile sources stands: capture happens on the markers that then appear).
+    Static menus (step cell, monitor head) pass a stable tag: the label is then
+    kept current by _sync_context_learn_labels on every mode transition.
     """
-    dpg.add_menu_item(
-        label="Cancel MIDI Learn" if state.midi_learn_mode else "MIDI Learn...",
-        callback=toggle_midi_learn,
-    )
+    if tag is not None:
+        _context_learn_item_tags.add(tag)
+    item_kwargs: dict[str, Any] = {
+        "label": "Cancel MIDI Learn" if state.midi_learn_mode else "MIDI Learn...",
+        "callback": toggle_midi_learn,
+    }
+    if tag is not None:
+        item_kwargs["tag"] = tag  # tag=None would raise 'Must be int' in real DPG
+    dpg.add_menu_item(**item_kwargs)
 
 
 def _midi_binding_label(binding: dict[str, Any]) -> str:
