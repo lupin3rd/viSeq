@@ -119,6 +119,7 @@ def _cue_start(mapping_id: int, *, ancestry: list[int], restart_allowed: bool) -
             if run["mapping_id"] == mapping_id:
                 run["plan"] = plan
                 run["cursor"] = 0
+                run["start_ms"] = None  # a restart re-anchors at its next tick
                 run["chain"] = [mapping_id]
                 append_log("CUE", f"restart cue of mapping {mapping_id}")
                 return True
@@ -132,6 +133,7 @@ def _cue_start(mapping_id: int, *, ancestry: list[int], restart_allowed: bool) -
             "target_id": str(target_id),
             "plan": plan,
             "cursor": 0,
+            "start_ms": None,  # anchored at the run's first tick (absolute clock)
             "chain": [*ancestry, mapping_id],
         }
     )
@@ -163,7 +165,14 @@ def tick(now_ms: float) -> None:
 def _advance_run(run: dict[str, Any], now_ms: float) -> None:
     plan = run["plan"]
     cursor = int(run["cursor"])
-    while cursor < len(plan) and plan[cursor][0] <= now_ms:
+    # e35 UAT: plan times are RELATIVE to the run start; the real clock is
+    # absolute (monotonic ms since boot), so the first tick anchors the run's
+    # baseline and every later entry fires at baseline + its offset. Without
+    # this a wait row sent everything at once (offset 0/1000 both <= now).
+    if run.get("start_ms") is None:
+        run["start_ms"] = now_ms
+    base = float(run["start_ms"])
+    while cursor < len(plan) and plan[cursor][0] + base <= now_ms:
         _, action, payload = plan[cursor]
         if action == _PLAN_SEND:
             _send_property(run, str(payload["property"]), float(payload["value"]))

@@ -4098,6 +4098,9 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
     """
     mid = mapping["id"]
     spec = mapper.MAPPER_PROPERTIES[mapping["property"]]
+    # UAT e35: a cue-list card is titled by its TYPE — the stored property is
+    # inert (the trigger runs an OSC macro), so no property name shows on it.
+    caption = "cue list" if mapping["control"] == "cue list" else spec["label"]
     out_from = mapping["output_from"]
     out_to = mapping["output_to"]
     content_w = MAPPER_MINI_W - 8  # 4 px card padding each side
@@ -4110,8 +4113,8 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
         tag=f"mapper_card_{mid}",
     ):
         with dpg.group(horizontal=True):
-            themed_text(spec["label"], slot="text_dim", tag=f"mapper_prop_{mid}")
-            dpg.add_spacer(width=_mapper_caption_spacer(spec["label"], spec))
+            themed_text(caption, slot="text_dim", tag=f"mapper_prop_{mid}")
+            dpg.add_spacer(width=_mapper_caption_spacer(caption, spec))
             # e27s01: the reset button sits LEFT of the enable checkbox — it
             # returns the control to its neutral default (mapper.reset_mapping_value)
             dpg.add_button(
@@ -4637,9 +4640,9 @@ def on_mapper_button(sender: Any, app_data: Any, user_data: Any) -> None:
     """Button/cue-list press.
 
     Button: toggle output_from (OFF) / output_to (ON), send OSC, refresh the
-    label. Cue list (e35s03): the trigger RUNS the mapping's cue — a press
+    label. Cue list (e35s03/UAT): the trigger RUNS the mapping's cue — a press
     while the cue runs RESTARTS it, an empty/disabled cue is an engine no-op;
-    the trigger label shows RUN while the cue is running.
+    the trigger reads ON while the cue runs and OFF when it finishes.
     """
     mid = int(user_data)
     mapping = mapper.find_mapping(mid)
@@ -4660,24 +4663,18 @@ def on_mapper_button(sender: Any, app_data: Any, user_data: Any) -> None:
     _style_trigger_theme(tag, _trigger_is_on(mapping))
 
 
-def _cue_trigger_label(mapping: dict[str, Any]) -> str:
-    """The cue-list trigger label: RUN while the cue runs, else the value label (e35s03)."""
-    if cue.cue_is_running(int(mapping["id"])):
-        return "RUN"
-    return f"{float(mapping['value']):.2f}"
-
-
 def _trigger_is_on(mapping: dict[str, Any]) -> bool:
     """A button-like trigger is visually ON when its value sits at the output_to end."""
     return float(mapping["value"]) == float(mapping["output_to"])
 
 
 def _trigger_label(mapping: dict[str, Any]) -> str:
-    """Square trigger text: a mapper button reads ON/OFF; a cue-list trigger
-    keeps the value label while idle (RUN replaces it while running, e35s03)."""
+    """Square trigger text: a mapper button and a cue-list trigger read ON/OFF
+    (UAT e35): the cue square is a momentary RUN trigger — ON while the cue is
+    executing, OFF again when it finishes. No raw value ever shows inside."""
     if mapping["control"] == "button":
         return "ON" if _trigger_is_on(mapping) else "OFF"
-    return f"{float(mapping['value']):.2f}"
+    return "ON" if cue.cue_is_running(int(mapping["id"])) else "OFF"
 
 
 def _trigger_theme_signature() -> tuple[tuple[int, ...], ...]:
@@ -4745,7 +4742,7 @@ def tick_cue_triggers() -> None:
         if mapping.get("control") != "cue list":
             continue
         mid = int(mapping["id"])
-        label = _cue_trigger_label(mapping)
+        label = _trigger_label(mapping)
         if state.cue_trigger_label_cache.get(mid) != label:
             changed[mid] = label
     if not changed:
@@ -4754,7 +4751,7 @@ def tick_cue_triggers() -> None:
         tag = f"mapper_cue_{mid}"
         if dpg.does_item_exist(tag):
             dpg.configure_item(tag, label=label)
-            _style_trigger_theme(tag, label == "RUN")
+            _style_trigger_theme(tag, label == "ON")
     state.cue_trigger_label_cache.update(changed)
 
 
@@ -4957,13 +4954,25 @@ def _cue_mapper_option(mapping_id: int) -> str:
     return f"{mapping_id}: {target['target_id']} {target['property']}"
 
 
+# e35 UAT: horizontal pixels per indent level in the cue editor row list — a
+# level-1 row starts visibly to the right of a level-0 row (like code indent).
+CUE_ROW_INDENT_PX = 22
+
+
 def _render_cue_row(mid: int, index: int, row: dict[str, Any]) -> None:
-    """One row band: wave level, action label and the +/←/→/X commands (e35s04)."""
+    """One row band: wave level, action label and the +/←/→/X commands (e35s04).
+
+    UAT e35: the whole band is indented by ``level * CUE_ROW_INDENT_PX`` so the
+    wave structure reads visually, not just through the level number.
+    """
     mapping = mapper.find_mapping(mid)
     if mapping is None:
         return
+    level = int(row["level"])
     with dpg.group(horizontal=True, tag=f"cue_row_{mid}_{index}"):
-        themed_text(str(row["level"]), slot="text_dim", tag=f"cue_lvl_{mid}_{index}")
+        if level:
+            dpg.add_spacer(width=level * CUE_ROW_INDENT_PX)
+        themed_text(str(level), slot="text_dim", tag=f"cue_lvl_{mid}_{index}")
         text_tag = f"cue_txt_{mid}_{index}"
         themed_text(_cue_row_label(mapping, row), slot="text", tag=text_tag)
         dpg.add_button(
@@ -5326,7 +5335,11 @@ def open_cue_list_window(sender: Any = None, app_data: Any = None, user_data: An
         themed_text("Cue list", slot="text")
         dpg.add_separator()
         themed_text(f"Source: {mapping['target_id']}", slot="text")
-        themed_text(f"Property: {mapping['property']} · mapping #{mid}", slot="text_dim")
+        if mapping["control"] == "cue list":
+            header_line = f"Mapping #{mid} · cue list"
+        else:
+            header_line = f"Property: {mapping['property']} · mapping #{mid}"
+        themed_text(header_line, slot="text_dim")
         dpg.add_separator()
         with dpg.group(horizontal=True):
             themed_text("Level gap (ms)", slot="text_dim")
