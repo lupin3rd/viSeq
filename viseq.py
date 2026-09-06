@@ -2082,7 +2082,10 @@ def update_vimix_sources_ui(json_string: str) -> None:
         for target_id in list(thumb_fail_count):
             if target_id not in live_ids:
                 thumb_fail_count.pop(target_id)
-        if mapper.prune_mappings(live_ids):
+        removed_mappings = mapper.prune_mappings(live_ids)
+        if removed_mappings:
+            for removed in removed_mappings:
+                _drop_mapping_editor_and_runs(int(removed["id"]))  # e35s05
             refresh_mapper_ui()  # a removed source takes its mappings with it (e16)
         if state.viseq_selected_source is not None and state.viseq_selected_source not in live_ids:
             state.viseq_selected_source = None  # a pruned source can't stay selected (e10s06)
@@ -4765,8 +4768,10 @@ def reset_mapping(sender: Any = None, app_data: Any = None, user_data: Any = Non
 
 
 def delete_mapping(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """X on a mapping card: remove the mapping and refresh the Mapper body."""
-    mapper.remove_mapping(int(user_data))
+    """X on a mapping card: remove the mapping, stop its cue, close its editor."""
+    mid = int(user_data)
+    mapper.remove_mapping(mid)
+    _drop_mapping_editor_and_runs(mid)
     refresh_mapper_ui()
 
 
@@ -5127,6 +5132,22 @@ def cue_dialog_cancel(sender: Any = None, app_data: Any = None, user_data: Any =
         dpg.delete_item("cue_dialog")
 
 
+def cue_editor_close(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Close the cue-list editor (Close button / mapping removal, e35s05)."""
+    mid = int(user_data or 0)
+    if dpg.does_item_exist("cue_list_window"):
+        dpg.delete_item("cue_list_window")
+    if state.cue_editor_mapping_id == mid:
+        state.cue_editor_mapping_id = None
+
+
+def _drop_mapping_editor_and_runs(mapping_id: int) -> None:
+    """e35s05: a removed mapping stops its cue run and closes its open editor."""
+    cue.cue_stop(mapping_id)
+    if state.cue_editor_mapping_id == mapping_id:
+        cue_editor_close(None, None, mapping_id)
+
+
 def open_cue_list_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     """'Cue list...' on a cue-list card: open the mapping's cue-list editor (e35s04).
 
@@ -5141,6 +5162,7 @@ def open_cue_list_window(sender: Any = None, app_data: Any = None, user_data: An
         return
     if dpg.does_item_exist("cue_list_window"):
         dpg.delete_item("cue_list_window")
+    state.cue_editor_mapping_id = mid  # e35s05: which mapping this editor edits
     with dpg.window(
         label="Cue list",
         tag="cue_list_window",
@@ -5181,7 +5203,8 @@ def open_cue_list_window(sender: Any = None, app_data: Any = None, user_data: An
             dpg.add_button(
                 label="Close",
                 width=90,
-                callback=lambda: dpg.delete_item("cue_list_window"),
+                callback=cue_editor_close,
+                user_data=mid,
             )
         dpg.add_separator()
         dpg.add_child_window(tag="cue_rows_group", width=0, height=180, border=True)

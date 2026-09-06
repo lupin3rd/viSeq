@@ -335,6 +335,11 @@ mapper_pending_target: str | None = None  # source the New-mapping dialog target
 cue_runs: list[dict[str, Any]] = []
 
 
+# e35s05: which mapping's cue editor is open (main-thread only; None = closed).
+# The window shows the mapping context, so a removed mapping must close it.
+cue_editor_mapping_id: int | None = None
+
+
 # e35s03: main-thread cache of the last relabel per cue-list card trigger
 # (mapping id -> label). Written ONLY by tick_cue_triggers on the main thread;
 # cleared by refresh_mapper_ui after a body rebuild. Worker threads never touch
