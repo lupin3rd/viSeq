@@ -494,6 +494,7 @@ MAPPER_PERSISTED_KEYS: tuple[str, ...] = (
     "input_from",
     "input_to",
     "enabled",
+    "cue",  # e35s01: the per-mapping cue macro (rows + gap_ms), inert for non-cue-list controls
 )
 
 

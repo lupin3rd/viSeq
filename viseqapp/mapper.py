@@ -47,6 +47,10 @@ MAPPER_CONTROLS: tuple[str, str, str, str] = (
     "cue list",  # e34s04: a button-like trigger whose card opens its cue-list window
 )
 
+# e35s01: the extensible cue row kinds — the window editor and the engine
+# iterate this tuple so new kinds stay additive (user: "wait", "mapper", ecc.).
+CUE_ROW_KINDS: tuple[str, str, str] = ("property", "wait", "mapper")
+
 # e34s04: control -> widget-tag kind — the tags the UI derives from a control
 # (mapper_slider_N / mapper_knob_N / mapper_btn_N / mapper_cue_N) come from ONE
 # map so the renderer, the right-click registry, the value relabel and the
@@ -85,6 +89,146 @@ def _midpoint(prop_min: float, prop_max: float) -> float:
     return (prop_min + prop_max) / 2.0
 
 
+def fresh_cue() -> dict[str, Any]:
+    """A pristine cue: no rows and the default 0 ms between levels (e35s01)."""
+    return {"rows": [], "gap_ms": 0.0}
+
+
+def cue_rows_empty(cue: dict[str, Any]) -> bool:
+    """True when a cue has no rows (e35s01)."""
+    return not cue.get("rows")
+
+
+def _cue_level(raw: Any) -> int:
+    """Coerce a stored level to int, clamped at 0 (never negative)."""
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _cue_property_payload(raw: Any) -> dict[str, Any] | None:
+    """Heal a property payload: catalog property + value clamped into its range."""
+    if not isinstance(raw, dict):
+        return None
+    prop = str(raw.get("property") or "")
+    if prop not in MAPPER_PROPERTIES:
+        return None
+    spec = MAPPER_PROPERTIES[prop]
+    value = raw.get("value")
+    if value is None:
+        value = _midpoint(spec["min"], spec["max"])
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        value = _midpoint(spec["min"], spec["max"])
+    return {"property": prop, "value": _clamp(value, spec["min"], spec["max"])}
+
+
+def _cue_wait_payload(raw: Any) -> dict[str, Any] | None:
+    """Heal a wait payload: non-negative ms."""
+    if not isinstance(raw, dict):
+        return None
+    ms = raw.get("ms")
+    if ms is None:
+        return None
+    try:
+        ms = float(ms)
+    except (TypeError, ValueError):
+        return None
+    return {"ms": max(0.0, ms)}
+
+
+def _cue_mapper_payload(raw: Any) -> dict[str, Any] | None:
+    """Heal a mapper payload: a positive target mapping id."""
+    if not isinstance(raw, dict):
+        return None
+    mapping_id = raw.get("mapping_id")
+    if mapping_id is None:
+        return None
+    try:
+        mapping_id = int(mapping_id)
+    except (TypeError, ValueError):
+        return None
+    if mapping_id < 1:
+        return None
+    return {"mapping_id": mapping_id}
+
+
+_CUE_PAYLOAD_HEALERS: dict[str, Any] = {
+    "property": _cue_property_payload,
+    "wait": _cue_wait_payload,
+    "mapper": _cue_mapper_payload,
+}
+
+
+def _sanitize_cue_row(raw: Any) -> dict[str, Any] | None:
+    """One row onto the canonical shape; None for an unknown kind or unusable
+    payload (the row drops, mirroring the mapping sanitizer philosophy)."""
+    if not isinstance(raw, dict):
+        return None
+    kind = str(raw.get("kind") or "")
+    healer = _CUE_PAYLOAD_HEALERS.get(kind)
+    if healer is None:
+        return None
+    payload = healer(raw.get("payload"))
+    if payload is None:
+        return None
+    return {"kind": kind, "level": _cue_level(raw.get("level")), "payload": payload}
+
+
+def sanitize_cue(raw: Any) -> dict[str, Any]:
+    """Heal a stored cue onto the runtime shape (e35s01).
+
+    Missing or garbage input yields fresh_cue(); rows with unknown kinds or
+    unusable payloads drop; levels coerce to int >= 0 and the gap clamps >= 0.
+    """
+    if not isinstance(raw, dict):
+        return fresh_cue()
+    rows_raw = raw.get("rows")
+    if isinstance(rows_raw, list):
+        rows = [row for r in rows_raw if (row := _sanitize_cue_row(r)) is not None]
+    else:
+        rows = []
+    gap_raw = raw.get("gap_ms")
+    try:
+        gap_ms = float(gap_raw) if gap_raw is not None else 0.0
+    except (TypeError, ValueError):
+        gap_ms = 0.0
+    return {"rows": rows, "gap_ms": max(0.0, gap_ms)}
+
+
+def add_cue_row(
+    cue: dict[str, Any], kind: str, payload: Any, level: int = 0
+) -> dict[str, Any] | None:
+    """Append one sanitized row to a cue; None for an unknown kind or unusable
+    payload leaves the cue unchanged. Worker-safe (e35s01)."""
+    row = _sanitize_cue_row({"kind": kind, "level": level, "payload": payload})
+    if row is None:
+        return None
+    cue["rows"].append(row)
+    return row
+
+
+def remove_cue_row(cue: dict[str, Any], index: int) -> None:
+    """Drop the row at index; an out-of-range index is a no-op (e35s01)."""
+    rows = cue.get("rows", [])
+    if 0 <= index < len(rows):
+        del rows[index]
+
+
+def shift_cue_row_level(cue: dict[str, Any], index: int, delta: int) -> int | None:
+    """Move a row's level by delta, clamped at 0; returns the new level, or
+    None for an out-of-range index (e35s01)."""
+    rows = cue.get("rows", [])
+    if not 0 <= index < len(rows):
+        return None
+    row = rows[index]
+    level = max(0, int(row["level"]) + int(delta))
+    row["level"] = level
+    return level
+
+
 def _build_mapping(
     mapping_id: int, target_id: str | None, prop: str, control: str
 ) -> dict[str, Any]:
@@ -115,6 +259,7 @@ def _build_mapping(
         "input_from": None,
         "input_to": None,
         "enabled": False,
+        "cue": fresh_cue(),  # e35s01: uniform key set — inert for non-cue-list controls
     }
 
 
@@ -192,7 +337,30 @@ def sanitize_mapping(raw: Any) -> dict[str, Any] | None:
     neutral = _midpoint(spec["min"], spec["max"])
     mapping["value"] = _clamp(_to_float_or(raw.get("value"), neutral), lo, hi)
     mapping["enabled"] = bool(raw.get("enabled", False))
+    mapping["cue"] = sanitize_cue(raw.get("cue"))  # e35s01: heal the per-mapping cue
     return mapping
+
+
+def _drop_dangling_cue_rows(mappings: list[dict[str, Any]]) -> None:
+    """Drop mapper rows whose target mapping vanished after a restore (e35s01).
+
+    A cue row of kind 'mapper' references ANOTHER mapping by id; that mapping
+    may legitimately appear later in the saved file, so the pass runs over the
+    full restored list — never per row while restoring.
+    """
+    known = {int(m["id"]) for m in mappings}
+    for mapping in mappings:
+        cue = mapping.get("cue")
+        if not isinstance(cue, dict):
+            continue
+        cue["rows"] = [
+            row
+            for row in cue.get("rows", [])
+            if not (
+                row.get("kind") == "mapper"
+                and int(row.get("payload", {}).get("mapping_id") or 0) not in known
+            )
+        ]
 
 
 def restore_mappings(rows: Any) -> list[dict[str, Any]]:
@@ -201,7 +369,9 @@ def restore_mappings(rows: Any) -> list[dict[str, Any]]:
     Order is preserved (render order), invalid rows drop, the list is capped at
     MAPPER_MAX_MAPPINGS, and the id counter resumes above the max restored id
     so add_mapping never collides. Worker-safe: no dpg. A non-list (or None)
-    empties the mapper and keeps the current counter.
+    empties the mapper and keeps the current counter. e35s01: after the whole
+    restore a cue 'mapper' row referencing a mapping id that no longer exists
+    is dropped (dangling references).
     """
     restored: list[dict[str, Any]] = []
     max_id = state.mapper_counter
@@ -213,6 +383,7 @@ def restore_mappings(rows: Any) -> list[dict[str, Any]]:
             restored.append(mapping)
             if mapping["id"] > max_id:
                 max_id = mapping["id"]
+    _drop_dangling_cue_rows(restored)  # e35s01: post-restore pass
     state.mapper_mappings[:] = restored
     state.mapper_counter = max_id
     return restored
