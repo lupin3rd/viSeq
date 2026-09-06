@@ -322,6 +322,8 @@ def compose_send_args(
         scalar = value
         if scalar is None and values:
             scalar = values[0]
+        if family == FAMILY_ENUM and scalar is not None:
+            scalar = float(round(scalar))  # index semantics: integer step at the boundary
         args = [scalar if scalar is not None else neutral]
 
     if (

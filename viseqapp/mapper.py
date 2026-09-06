@@ -11,7 +11,7 @@ sequencer pattern.
 import copy
 from typing import Any
 
-from viseqapp import leap, state
+from viseqapp import catalog, leap, state
 from viseqapp.constants import MAPPER_MAX_MAPPINGS, MAPPER_PERSISTED_KEYS
 from viseqapp.osc import osc_client
 from viseqapp.queues import append_log
@@ -74,9 +74,24 @@ def button_like(control: str) -> bool:
     return control in ("button", "cue list")
 
 
-def _spec_of(prop: str) -> dict[str, Any]:
-    """The catalog entry for a property (KeyError = catalog bug, not a user path)."""
-    return MAPPER_PROPERTIES[prop]
+def _component_spec(prop: str, component: str | None) -> dict[str, Any]:
+    """The catalog spec of one mapping component (KeyError = catalog bug).
+
+    e36s02: multi-value properties (position/size/color/corner, the rate
+    vectors grab/resize) resolve the component key; scalar/toggle/trigger/
+    enum properties always resolve their single component.
+    """
+    entry = catalog.PROPERTY_CATALOG[prop]
+    key = component if component is not None else entry["components"][0]["key"]
+    for c in entry["components"]:
+        if c["key"] == key:
+            return dict(c)
+    raise KeyError(f"component {key!r} of {prop!r}")
+
+
+def _mapping_component_spec(mapping: dict[str, Any]) -> dict[str, Any]:
+    """The component spec a mapping controls (vector rows store their key)."""
+    return _component_spec(str(mapping["property"]), mapping.get("component"))
 
 
 def _clamp(value: float, prop_min: float, prop_max: float) -> float:
@@ -230,21 +245,39 @@ def shift_cue_row_level(cue: dict[str, Any], index: int, delta: int) -> int | No
 
 
 def _build_mapping(
-    mapping_id: int, target_id: str | None, prop: str, control: str
+    mapping_id: int,
+    target_id: str | None,
+    prop: str,
+    control: str,
+    component: str | None = None,
 ) -> dict[str, Any]:
     """A fresh mapping dict with the catalog defaults, no side effects (e28s01).
 
-    Shared by add_mapping (which assigns the id + appends) and sanitize_mapping
-    (which heals a stored row onto the exact runtime shape) so the persistence
-    schema can never drift from the live model.
+    e36s02: ``component`` selects the controlled component of a multi-value
+    property (position X/Y, color R/G/B, corner A.x..D.y); scalar/toggle/
+    trigger/enum properties store None. A vector property with no component
+    given defaults to its FIRST component (whole-vector preset mappings are
+    out of e36 scope). The default value and output range come from the
+    component's catalog neutral and min/max — no-effect neutrals (speed 1.0,
+    hue 0.0, posterize 0), not arithmetic midpoints. Shared by add_mapping
+    and sanitize_mapping so the persistence schema never drifts.
     """
-    spec = _spec_of(prop)
+    entry = catalog.PROPERTY_CATALOG[prop]
+    if len(entry["components"]) > 1:
+        keys = {c["key"] for c in entry["components"]}
+        component = component if component is not None else entry["components"][0]["key"]
+        if component not in keys:
+            raise KeyError(f"component {component!r} of {prop!r}")
+    else:
+        component = None
+    spec = _component_spec(prop, component)
     return {
         "id": mapping_id,
         "target_id": target_id,
         "property": prop,
+        "component": component,
         "control": control,
-        "value": _midpoint(spec["min"], spec["max"]),
+        "value": float(spec["neutral"]),
         "band": None,  # e18: audio-band source (2 or 3), exclusive with midi/leap
         "midi": None,  # e18: learned MIDI source {device, type, number}
         "leap": None,  # e26s03: leap signal '<hand>.<field>' (e.g. 'left.pinch')
@@ -263,10 +296,16 @@ def _build_mapping(
     }
 
 
-def add_mapping(target_id: str, prop: str, control: str) -> dict[str, Any]:
-    """Create a mapping entry and append it to the mapper state (e16s01)."""
+def add_mapping(
+    target_id: str, prop: str, control: str, component: str | None = None
+) -> dict[str, Any]:
+    """Create a mapping entry and append it to the mapper state (e16s01).
+
+    e36s02: ``component`` selects the axis/channel of a multi-value property
+    (None = scalar property, or the FIRST component for a vector property).
+    """
     state.mapper_counter += 1
-    mapping = _build_mapping(state.mapper_counter, target_id, prop, control)
+    mapping = _build_mapping(state.mapper_counter, target_id, prop, control, component=component)
     state.mapper_mappings.append(mapping)
     return mapping
 
@@ -303,11 +342,22 @@ def sanitize_mapping(raw: Any) -> dict[str, Any] | None:
         return None
     prop = str(raw.get("property") or "")
     control = str(raw.get("control") or "")
-    if prop not in MAPPER_PROPERTIES or control not in MAPPER_CONTROLS:
+    if prop not in catalog.PROPERTY_CATALOG or control not in MAPPER_CONTROLS:
         return None
-    spec = MAPPER_PROPERTIES[prop]
+    entry = catalog.PROPERTY_CATALOG[prop]
     target_id = str(raw.get("target_id") or "") or None
-    mapping = _build_mapping(int(raw.get("id") or 0), target_id, prop, control)
+    if len(entry["components"]) > 1:
+        component = raw.get("component")
+        keys = {c["key"] for c in entry["components"]}
+        if not (isinstance(component, str) and component in keys):
+            return None  # e36s02: a vector row without a usable component is unusable
+    else:
+        component = raw.get("component")
+        if component not in (None, "v"):
+            return None  # e36s02: scalar rows carry no component key
+        component = None
+    spec = _component_spec(prop, component)
+    mapping = _build_mapping(int(raw.get("id") or 0), target_id, prop, control, component=component)
     if raw.get("band") in (2, 3):
         mapping["band"] = int(raw["band"])
     elif isinstance(raw.get("midi"), dict):
@@ -334,7 +384,7 @@ def sanitize_mapping(raw: Any) -> dict[str, Any] | None:
     mapping["output_from"] = _to_float_or(raw.get("output_from"), spec["min"])
     mapping["output_to"] = _to_float_or(raw.get("output_to"), spec["max"])
     lo, hi = _output_bounds(mapping)
-    neutral = _midpoint(spec["min"], spec["max"])
+    neutral = float(spec["neutral"])  # e36s02: catalog no-effect neutral
     mapping["value"] = _clamp(_to_float_or(raw.get("value"), neutral), lo, hi)
     mapping["enabled"] = bool(raw.get("enabled", False))
     mapping["cue"] = sanitize_cue(raw.get("cue"))  # e35s01: heal the per-mapping cue
@@ -559,10 +609,11 @@ def reset_mapping_value(mapping_id: int) -> float:
     """Reset a mapping to its neutral default and send it (e27s01).
 
     The neutral default is the value the mapping was CREATED at: the catalog
-    midpoint of the property (brightness/alpha 0.0, hue 0.5, transparency
-    1.0, gamma 0.0, ...). A button-like control (button, cue list — e34s04)
-    returns to the OFF end (output_from) instead — the un-pressed state,
-    consistent with toggle_mapping_value. A remapped output range (e23) clamps the neutral
+    no-effect neutral of its component (brightness/alpha/hue/gamma 0.0, speed
+    1.0, posterize 0.0, transparency 1.0, color channels 1.0, ...). A
+    button-like control (button, cue list — e34s04) returns to the OFF end
+    (output_from) instead — the un-pressed state, consistent with
+    toggle_mapping_value. A remapped output range (e23) clamps the neutral
     into the mapping's own interval, exactly like set_mapping_output
     re-clamps. Returns the effective stored value (0.0 for an unknown id);
     the e24 gate applies: a disabled mapping stores + moves but sends no OSC.
@@ -573,8 +624,7 @@ def reset_mapping_value(mapping_id: int) -> float:
     if button_like(mapping["control"]):  # e34s04: button + cue list reset to OFF
         neutral = mapping["output_from"]
     else:
-        spec = _spec_of(mapping["property"])
-        neutral = _midpoint(spec["min"], spec["max"])
+        neutral = float(_mapping_component_spec(mapping)["neutral"])
     lo, hi = _output_bounds(mapping)
     mapping["value"] = _clamp(neutral, lo, hi)
     _send(mapping)
@@ -590,9 +640,38 @@ def _send(mapping: dict[str, Any]) -> None:
     """
     if not mapping.get("enabled", False):
         return
-    addr = f"/vimix/{mapping['target_id']}/{mapping['property']}"
-    osc_client.send_message(addr, float(mapping["value"]))
-    append_log("OUT", f"{addr} [{mapping['value']:.2f}]")
+    target_id = str(mapping["target_id"])
+    prop = str(mapping["property"])
+    entry = catalog.PROPERTY_CATALOG[prop]
+    anchors = (
+        catalog.anchor_get(state.source_anchors, target_id, prop)
+        if entry["partial"] == catalog.PARTIAL_ANCHOR
+        else None
+    )
+    args = catalog.compose_send_args(
+        prop,
+        component=mapping.get("component"),
+        value=float(mapping["value"]),
+        anchors=anchors,
+    )
+    if entry["partial"] == catalog.PARTIAL_ANCHOR and args and args[0] is not None:
+        # remember the full vector we just sent so sibling component mappings
+        # anchor their other channels on it (e36s02)
+        catalog.anchor_update(state.source_anchors, target_id, prop, [float(a) for a in args])
+    addr = f"/vimix/{target_id}/{prop}"
+    if len(args) == 1 and args[0] is not None:
+        osc_client.send_message(addr, float(args[0]))  # legacy scalar send shape
+    else:
+        osc_client.send_message(addr, list(args))
+    append_log("OUT", f"{addr} {_format_args(args)}")
+
+
+def _format_args(args: list[Any]) -> str:
+    """Human log form: '[0.42]' scalar; '[N, 0.25]' nil-masked/anchor lists."""
+    parts = []
+    for a in args:
+        parts.append("N" if a is None else f"{float(a):.2f}")
+    return "[" + ", ".join(parts) + "]"
 
 
 def send_mapping_value(mapping_id: int, value: float) -> float:
@@ -606,11 +685,19 @@ def send_mapping_value(mapping_id: int, value: float) -> float:
 
 
 def send_button_mapping(mapping_id: int) -> float:
-    """Toggle + send a button mapping; returns the new value (0.0 when unknown)."""
+    """Press a button mapping; returns the stored value (0.0 when unknown).
+
+    e36s02: a TRIGGER-family property (replay/reset/reload/flag) fires its
+    message once without flipping the stored value; every other family keeps
+    the toggle behaviour (flip output_from/OFF <-> output_to/ON).
+    """
     mapping = find_mapping(mapping_id)
     if mapping is None:
         return 0.0
-    new_value = toggle_mapping_value(mapping_id)
+    if catalog.family_of(str(mapping["property"])) == catalog.FAMILY_TRIGGER:
+        new_value = float(mapping["value"])
+    else:
+        new_value = toggle_mapping_value(mapping_id)
     _send(mapping)
     return new_value
 

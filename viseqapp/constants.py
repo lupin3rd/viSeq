@@ -495,6 +495,7 @@ MAPPER_PERSISTED_KEYS: tuple[str, ...] = (
     "id",
     "target_id",
     "property",
+    "component",  # e36s02: controlled axis/channel of a multi-value property (None for scalar)
     "control",
     "value",
     "band",
