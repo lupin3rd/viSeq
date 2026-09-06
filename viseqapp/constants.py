@@ -437,6 +437,17 @@ MIDI_ACTION_ENABLE_CORRECTION = "enable_correction"  # arm the SELECTED source's
 MIDI_CC_TRIGGER_THRESHOLD = 64
 
 
+# BUG-2026-09-06T124150: pitch-bend levers (DJ pitch faders) send mido
+# `pitchwheel`, a 14-bit signed message (-8192..8191, centre 0), not CC. viseq
+# normalizes it onto the app-wide 0..127 value scale so every consumer (Mapper
+# input-range seed, trigger thresholds) is unchanged. A pitch wheel has no
+# number — the channel is its only discriminator.
+MIDI_PITCH_MIN = -8192
+MIDI_PITCH_MAX = 8191
+MIDI_PITCH_NUMBER = 0
+MIDI_PITCH_VALUE_STEPS = 127  # target scale, matching CC/note velocities
+
+
 DEFAULT_CONFIG: dict[str, Any] = {
     # e11s02: the window layout moved into project files; the config keeps the
     # fallback theme, MIDI and the recent-projects list + restore flag.

@@ -298,7 +298,7 @@ _mapper_line_no_font: Any = None
 
 
 # MIDI control runtime mirrors of cfg["midi"] (e09). The worker thread reads these; the
-# main thread writes them. Bindings: [{device, channel, type("note"/"cc"), number,
+# main thread writes them. Bindings: [{device, channel, type("note"/"cc"/"pitch"), number,
 # action, params}]. Learn flow state (e09s02): pending = (action, params) captured by a
 # learnable widget click, awaiting the next incoming MIDI message.
 

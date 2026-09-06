@@ -19,6 +19,10 @@ from viseqapp.constants import (
     GRID_LED_OFF,
     GRID_LED_WHITE,
     MIDI_ACTION_SEQ_TOGGLE,
+    MIDI_PITCH_MAX,
+    MIDI_PITCH_MIN,
+    MIDI_PITCH_NUMBER,
+    MIDI_PITCH_VALUE_STEPS,
 )
 from viseqapp.profiles import (
     _DEFAULT_GRID_NOTE_FORMULA,
@@ -56,6 +60,10 @@ def _parse_midi_msg(msg: Any) -> tuple[str | None, int, int]:
 
     note_on velocity>0 is the trigger edge (velocity 0 and note_off are releases and must
     never fire a binding — Launchpad sends note_on with velocity 0 on release).
+    BUG-2026-09-06T124150: pitchwheel (DJ pitch levers) is 14-bit signed -8192..8191
+    with the channel as its only discriminator; it normalizes onto the app-wide
+    0..127 value scale (centre of travel ~64) so executors and trigger thresholds
+    are unchanged.
     """
     if msg.type == "note_on":
         if msg.velocity > 0:
@@ -65,6 +73,12 @@ def _parse_midi_msg(msg: Any) -> tuple[str | None, int, int]:
         return (None, 0, 0)
     if msg.type == "control_change":
         return ("cc", int(msg.control), int(msg.value))
+    if msg.type == "pitchwheel":
+        pitch = int(msg.pitch)
+        value = round(
+            (pitch - MIDI_PITCH_MIN) * MIDI_PITCH_VALUE_STEPS / (MIDI_PITCH_MAX - MIDI_PITCH_MIN)
+        )
+        return ("pitch", MIDI_PITCH_NUMBER, int(value))
     return (None, 0, 0)
 
 
