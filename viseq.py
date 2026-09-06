@@ -4778,7 +4778,12 @@ def delete_mapping(sender: Any = None, app_data: Any = None, user_data: Any = No
 def open_new_mapping_dialog(
     sender: Any = None, app_data: Any = None, user_data: Any = None
 ) -> None:
-    """Mediagrid tile right-click > Add to Mapper: modal asking property + control."""
+    """Mediagrid tile right-click > Add to Mapper: modal asking TYPE first (e35s04).
+
+    The type is the mapper control; the property only matters for the value
+    controls (slider/knob/button), so it is hidden for 'cue list' — its
+    trigger runs an editable OSC macro and no single property applies.
+    """
     state.mapper_pending_target = str(user_data)
     if dpg.does_item_exist("mapper_new_dialog"):
         dpg.delete_item("mapper_new_dialog")
@@ -4786,31 +4791,52 @@ def open_new_mapping_dialog(
         label="New Mapping",
         tag="mapper_new_dialog",
         modal=True,
-        width=320,
-        height=250,
+        width=340,
+        height=260,
         no_resize=True,
     ):
         themed_text(f"Source: {state.mapper_pending_target}", slot="text")
         dpg.add_separator()
-        themed_text("Property", slot="text_dim")
-        dpg.add_combo(
-            items=list(mapper.MAPPER_PROPERTIES),
-            default_value="brightness",
-            width=260,
-            tag="mapper_prop_combo",
-        )
-        themed_text("Control", slot="text_dim")
+        themed_text("Type", slot="text_dim")
         dpg.add_combo(
             items=list(mapper.MAPPER_CONTROLS),
             default_value="slider",
             width=260,
             tag="mapper_control_combo",
+            callback=on_mapper_control_type_change,
         )
+        with dpg.group(tag="mapper_prop_group", show=True):
+            themed_text("Property", slot="text_dim")
+            dpg.add_combo(
+                items=list(mapper.MAPPER_PROPERTIES),
+                default_value="brightness",
+                width=260,
+                tag="mapper_prop_combo",
+            )
+        themed_text(
+            "The trigger runs the mapping's OSC macro (cue list) — no property needed.",
+            slot="text_dim",
+            tag="mapper_cue_hint",
+            wrap=300,
+        )
+        dpg.configure_item("mapper_cue_hint", show=False)
         dpg.add_separator()
         with dpg.group(horizontal=True):
             dpg.add_button(label="Create", callback=mapper_dialog_confirm, width=120)
             dpg.add_button(label="Cancel", callback=mapper_dialog_cancel, width=120)
     dpg.show_item("mapper_new_dialog")
+
+
+def on_mapper_control_type_change(sender: Any, app_data: Any, user_data: Any = None) -> None:
+    """New-Mapping type combo: a 'cue list' needs no property — hide the
+    property row and pin it to 'play' (inert; the card caption only); the
+    value controls show the property picker (e35s04)."""
+    control = str(app_data)
+    is_cue = control == "cue list"
+    if is_cue:
+        dpg.set_value("mapper_prop_combo", "play")
+    dpg.configure_item("mapper_prop_group", show=not is_cue)
+    dpg.configure_item("mapper_cue_hint", show=is_cue)
 
 
 def mapper_dialog_confirm(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -4928,6 +4954,14 @@ def _refresh_cue_rows(mid: int) -> None:
     _render_cue_rows(mid)
 
 
+def _safe_refresh_cue_rows(mid: int) -> None:
+    """Rebuild with errors surfaced in the Logs window (never a silent no-op)."""
+    try:
+        _refresh_cue_rows(mid)
+    except Exception as e:  # worker/UI defensive posture: log, keep the app alive
+        log_error("cue window", f"row refresh failed: {e}")
+
+
 def on_cue_gap_change(sender: Any, app_data: Any, user_data: Any) -> None:
     """Level-gap drag box: store the cue's ms between levels (clamped >= 0, e35s04)."""
     mapping = mapper.find_mapping(int(user_data))
@@ -4974,7 +5008,7 @@ def cue_row_shift(sender: Any = None, app_data: Any = None, user_data: Any = Non
         return
     cue = mapping.get("cue") or mapper.fresh_cue()
     if mapper.shift_cue_row_level(cue, index, delta) is not None:
-        _refresh_cue_rows(mid)
+        _safe_refresh_cue_rows(mid)
 
 
 def cue_row_delete(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -4985,7 +5019,23 @@ def cue_row_delete(sender: Any = None, app_data: Any = None, user_data: Any = No
         return
     cue = mapping.get("cue") or mapper.fresh_cue()
     mapper.remove_cue_row(cue, index)
-    _refresh_cue_rows(mid)
+    _safe_refresh_cue_rows(mid)
+
+
+def on_cue_kind_change(sender: Any, app_data: Any, user_data: Any = None) -> None:
+    """Row-dialog kind combo: reveal ONLY the fields of the chosen kind (e35s04)."""
+    kind = str(app_data)
+    dpg.configure_item("cue_prop_fields", show=kind == "property")
+    dpg.configure_item("cue_wait_fields", show=kind == "wait")
+    dpg.configure_item("cue_mapper_fields", show=kind == "mapper")
+
+
+def _dlg_float(tag: str, default: float) -> float:
+    """Robust float read from a dialog widget (falls back on garbage, e35s04)."""
+    try:
+        return float(dpg.get_value(tag))
+    except (TypeError, ValueError):
+        return default
 
 
 def _open_cue_row_dialog(mid: int, insert_after: int = -1, edit_index: int | None = None) -> None:
@@ -4993,7 +5043,8 @@ def _open_cue_row_dialog(mid: int, insert_after: int = -1, edit_index: int | Non
 
     Add mode: ``insert_after`` is the row index the new row lands below
     (-1 appends at the end). Edit mode: ``edit_index`` prefills the fields and
-    the confirm replaces that row in place, keeping its level.
+    the confirm replaces that row in place, keeping its level. The dialog is
+    kind-first: choosing a kind reveals only its fields.
     """
     mapping = mapper.find_mapping(mid)
     if mapping is None:
@@ -5013,7 +5064,7 @@ def _open_cue_row_dialog(mid: int, insert_after: int = -1, edit_index: int | Non
         tag="cue_dialog",
         modal=True,
         width=360,
-        height=280,
+        height=330,
         no_resize=True,
     ):
         themed_text("Kind", slot="text_dim")
@@ -5022,51 +5073,61 @@ def _open_cue_row_dialog(mid: int, insert_after: int = -1, edit_index: int | Non
             default_value=kind,
             width=220,
             tag="cue_dlg_kind_combo",
+            callback=on_cue_kind_change,
         )
-        themed_text("Property", slot="text_dim")
-        dpg.add_combo(
-            items=list(mapper.MAPPER_PROPERTIES),
-            default_value=prop if prop in mapper.MAPPER_PROPERTIES else "alpha",
-            width=220,
-            tag="cue_dlg_prop_combo",
-        )
-        themed_text("Value", slot="text_dim")
-        dpg.add_drag_float(
-            default_value=value,
-            width=120,
-            format="%.2f",
-            speed=0.01,
-            tag="cue_dlg_value",
-        )
-        themed_text("Wait ms", slot="text_dim")
-        dpg.add_drag_float(
-            default_value=wait_ms,
-            width=120,
-            format="%.0f",
-            speed=10.0,
-            min_value=0.0,
-            max_value=60_000.0,
-            tag="cue_dlg_wait",
-        )
-        themed_text("Mapper (button / cue list)", slot="text_dim")
-        options = [
-            _cue_mapper_option(int(m["id"]))
-            for m in state.mapper_mappings
-            if m.get("control") in ("button", "cue list")
-        ]
-        default_option = ""
-        if options:
-            if ref:
-                wanted = _cue_mapper_option(ref)
-                default_option = wanted if wanted in options else options[0]
-            else:
-                default_option = options[0]
-        dpg.add_combo(
-            items=options,
-            default_value=default_option,
-            width=260,
-            tag="cue_dlg_mapper_combo",
-        )
+        with dpg.group(tag="cue_prop_fields", show=kind == "property"):
+            themed_text("Property", slot="text_dim")
+            dpg.add_combo(
+                items=list(mapper.MAPPER_PROPERTIES),
+                default_value=prop if prop in mapper.MAPPER_PROPERTIES else "alpha",
+                width=260,
+                tag="cue_dlg_prop_combo",
+            )
+            themed_text("Value", slot="text_dim")
+            dpg.add_drag_float(
+                default_value=value,
+                width=140,
+                format="%.2f",
+                speed=0.01,
+                tag="cue_dlg_value",
+            )
+        with dpg.group(tag="cue_wait_fields", show=kind == "wait"):
+            themed_text("Wait ms", slot="text_dim")
+            dpg.add_drag_float(
+                default_value=wait_ms,
+                width=140,
+                format="%.0f",
+                speed=10.0,
+                min_value=0.0,
+                max_value=60_000.0,
+                tag="cue_dlg_wait",
+            )
+        with dpg.group(tag="cue_mapper_fields", show=kind == "mapper"):
+            themed_text("Mapper (button / cue list)", slot="text_dim")
+            options = [
+                _cue_mapper_option(int(m["id"]))
+                for m in state.mapper_mappings
+                if m.get("control") in ("button", "cue list")
+            ]
+            default_option = ""
+            if options:
+                if ref:
+                    wanted = _cue_mapper_option(ref)
+                    default_option = wanted if wanted in options else options[0]
+                else:
+                    default_option = options[0]
+            dpg.add_combo(
+                items=options,
+                default_value=default_option,
+                width=280,
+                tag="cue_dlg_mapper_combo",
+            )
+            if not options:
+                themed_text(
+                    "No button / cue list mapping exists yet — add one in the Mapper first.",
+                    slot="text_dim",
+                    wrap=280,
+                )
         dpg.add_separator()
         with dpg.group(horizontal=True):
             dpg.add_button(
@@ -5086,44 +5147,54 @@ def _open_cue_row_dialog(mid: int, insert_after: int = -1, edit_index: int | Non
 def cue_dialog_confirm(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     """Dialog OK: add a row below / replace the edited row through the model.
 
-    Reads the dialog widgets (kind + the payload fields of that kind), keeps
-    the level on edit, clamps through the model helpers and rebuilds the list.
+    Reads the widgets of the chosen kind (the dialog reveals only that kind's
+    fields), keeps the level on edit, clamps through the model helpers and
+    rebuilds the list. On invalid input the dialog STAYS open and the problem
+    is logged to the Logs window — never a silent no-op.
     """
     mid, insert_after, edit_index = user_data
     mapping = mapper.find_mapping(mid)
     if mapping is None:
         return
     cue = mapping.get("cue") or mapper.fresh_cue()
-    kind = str(dpg.get_value("cue_dlg_kind_combo"))
     try:
+        kind = str(dpg.get_value("cue_dlg_kind_combo"))
         if kind == "property":
-            payload = {
-                "property": str(dpg.get_value("cue_dlg_prop_combo")),
-                "value": float(dpg.get_value("cue_dlg_value")),
-            }
+            prop = str(dpg.get_value("cue_dlg_prop_combo"))
+            if prop not in mapper.MAPPER_PROPERTIES:
+                raise ValueError(f"unknown property {prop!r}")
+            payload = {"property": prop, "value": _dlg_float("cue_dlg_value", 0.0)}
         elif kind == "wait":
-            payload = {"ms": max(0.0, float(dpg.get_value("cue_dlg_wait")))}
-        else:
+            payload = {"ms": max(0.0, _dlg_float("cue_dlg_wait", 0.0))}
+        elif kind == "mapper":
             option = str(dpg.get_value("cue_dlg_mapper_combo"))
-            payload = {"mapping_id": int(option.split(":", 1)[0])}
-    except (TypeError, ValueError):
-        payload = None  # a widget the user never touched/emptied: abort silently
-    if dpg.does_item_exist("cue_dialog"):
-        dpg.delete_item("cue_dialog")
-    if payload is None:
-        return
+            mapping_id = int(option.split(":", 1)[0])
+            if mapping_id < 1:
+                raise ValueError(f"bad mapper reference {option!r}")
+            payload = {"mapping_id": mapping_id}
+        else:
+            raise ValueError(f"unknown kind {kind!r}")
+    except (TypeError, ValueError) as e:
+        log_error("cue row dialog", f"nothing added: {e}")
+        return  # keep the dialog open so the user can fix the input
     if edit_index is not None and 0 <= edit_index < len(cue["rows"]):
         level = int(cue["rows"][edit_index]["level"])
         row = mapper.add_cue_row(mapper.fresh_cue(), kind, payload, level=level)
-        if row is not None:
-            cue["rows"][edit_index] = row
+        if row is None:
+            log_error("cue row dialog", f"row rejected: {kind} {payload}")
+            return
+        cue["rows"][edit_index] = row
     else:
         position = insert_after if insert_after is not None else -1
         row = mapper.add_cue_row(mapper.fresh_cue(), kind, payload, level=0)
-        if row is not None:
-            at = position + 1 if position >= 0 else len(cue["rows"])
-            cue["rows"].insert(at, row)
-    _refresh_cue_rows(mid)
+        if row is None:
+            log_error("cue row dialog", f"row rejected: {kind} {payload}")
+            return
+        at = position + 1 if position >= 0 else len(cue["rows"])
+        cue["rows"].insert(at, row)
+    if dpg.does_item_exist("cue_dialog"):
+        dpg.delete_item("cue_dialog")
+    _safe_refresh_cue_rows(mid)
 
 
 def cue_dialog_cancel(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
