@@ -347,6 +347,13 @@ cue_editor_mapping_id: int | None = None
 cue_trigger_label_cache: dict[int, str] = {}
 
 
+# e35 UAT: TWO shared button/trigger themes (OFF then ON) bound by tag. They are
+# root-level theme items created once and rebuilt ONLY when the active palette
+# changes — per-trigger theme churn caused DPG alias collisions (1000).
+trigger_theme_tags: list[str | None] = [None, None]  # [0]=off, [1]=on
+trigger_theme_signature: tuple[tuple[int, ...], ...] | None = None
+
+
 # e17 / BUG-2026-09-01T194500: last focused workspace window. DPG's
 # get_active_window() returns None while the viewport menu bar has focus, so
 # the Windows-menu mark and the Ctrl+Tab anchor come from this tracking instead.

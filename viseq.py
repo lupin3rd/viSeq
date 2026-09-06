@@ -4680,26 +4680,55 @@ def _trigger_label(mapping: dict[str, Any]) -> str:
     return f"{float(mapping['value']):.2f}"
 
 
-def _style_trigger_theme(tag: str, on: bool) -> None:
-    """Bind a per-trigger theme so a mapper button visibly shows its state
-    (UAT e35): ON fills the square with the accent, OFF keeps the muted badge.
-    Rebuilding the theme on every state change keeps the palette live.
+def _trigger_theme_signature() -> tuple[tuple[int, ...], ...]:
+    """The palette colors the trigger themes depend on (rebuild trigger)."""
+    pal = state.active_palette
+    return tuple(tuple(pal[slot]) for slot in ("play_on_bg", "badge_bg", "text_bright", "text_dim"))
+
+
+def _ensure_trigger_themes() -> None:
+    """Create (or rebuild on palette change) the two SHARED trigger themes.
+
+    e35 UAT (errors 1000/1005): per-trigger themes recreated on every refresh
+    collided — DPG aliases must be unique. Two root themes (OFF index 0, ON
+    index 1) are bound by many triggers; they are deleted and rebuilt only when
+    the palette colors change.
     """
-    theme_tag = f"th_trig_{tag}"
-    if dpg.does_item_exist(theme_tag):
-        dpg.delete_item(theme_tag)
-    if on:
-        bg = state.active_palette["play_on_bg"]
-        label_color = state.active_palette["text_bright"]
-    else:
-        bg = state.active_palette["badge_bg"]
-        label_color = state.active_palette["text_dim"]
-    with dpg.theme(tag=theme_tag), dpg.theme_component(dpg.mvThemeCat_Core):
-        dpg.add_theme_color(dpg.mvThemeCol_Button, palette_rgba(bg))
-        dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, palette_rgba(bg))
-        dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, palette_rgba(bg))
-        dpg.add_theme_color(dpg.mvThemeCol_Text, palette_rgba(label_color))
-    if dpg.does_item_exist(tag):
+    signature = _trigger_theme_signature()
+    tags = state.trigger_theme_tags
+    if signature == state.trigger_theme_signature and all(
+        t is not None and dpg.does_item_exist(t) for t in tags
+    ):
+        return
+    for old in tags:
+        if old is not None and dpg.does_item_exist(old):
+            dpg.delete_item(old)
+    rebuilt: list[str | None] = []
+    for on in (False, True):
+        if on:
+            bg = state.active_palette["play_on_bg"]
+            label_color = state.active_palette["text_bright"]
+        else:
+            bg = state.active_palette["badge_bg"]
+            label_color = state.active_palette["text_dim"]
+        theme_tag = f"th_trig_{'on' if on else 'off'}"
+        with dpg.theme(tag=theme_tag), dpg.theme_component(dpg.mvThemeCat_Core):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, palette_rgba(bg))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, palette_rgba(bg))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, palette_rgba(bg))
+            dpg.add_theme_color(dpg.mvThemeCol_Text, palette_rgba(label_color))
+        rebuilt.append(theme_tag)
+    state.trigger_theme_tags = rebuilt
+    state.trigger_theme_signature = signature
+
+
+def _style_trigger_theme(tag: str, on: bool) -> None:
+    """Point a square trigger at the shared ON/OFF theme (UAT e35)."""
+    if not dpg.does_item_exist(tag):
+        return
+    _ensure_trigger_themes()
+    theme_tag = state.trigger_theme_tags[1 if on else 0]
+    if theme_tag is not None:
         dpg.bind_item_theme(tag, theme_tag)
 
 
