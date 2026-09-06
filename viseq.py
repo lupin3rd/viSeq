@@ -4044,7 +4044,7 @@ def _mapper_band_control(mapping: dict[str, Any], mid: int) -> None:
             )
         else:  # button / cue list: a 44 px square trigger labelled with the value
             dpg.add_button(
-                label=f"{mapping['value']:.2f}",
+                label=_trigger_label(mapping),
                 width=MAPPER_KNOB_H,
                 height=MAPPER_KNOB_H,
                 callback=on_mapper_button,
@@ -4052,6 +4052,9 @@ def _mapper_band_control(mapping: dict[str, Any], mid: int) -> None:
                 tag=f"mapper_{kind}_{mid}",
             )
         _bind_mapper_font(f"mapper_{kind}_{mid}")
+        if control in ("button", "cue list"):
+            # UAT e35: the trigger shows its state — accent fill when ON/RUN
+            _style_trigger_theme(f"mapper_{kind}_{mid}", _trigger_is_on(mapping))
         if control == "cue list":
             # e34s04: the right area hosts ONE button opening the cue-list window
             dpg.add_button(
@@ -4646,11 +4649,15 @@ def on_mapper_button(sender: Any, app_data: Any, user_data: Any) -> None:
         cue.cue_start(mid, allow_restart=True)
         tick_cue_triggers()
         return
-    value = mapper.send_button_mapping(mid)
+    mapper.send_button_mapping(mid)
+    mapping = mapper.find_mapping(mid)
+    if mapping is None:
+        return
     kind = mapper.control_tag_kind(mapping["control"])
     tag = f"mapper_{kind}_{mid}"
     if dpg.does_item_exist(tag):
-        dpg.configure_item(tag, label=f"{value:.2f}")
+        dpg.configure_item(tag, label=_trigger_label(mapping))
+    _style_trigger_theme(tag, _trigger_is_on(mapping))
 
 
 def _cue_trigger_label(mapping: dict[str, Any]) -> str:
@@ -4658,6 +4665,42 @@ def _cue_trigger_label(mapping: dict[str, Any]) -> str:
     if cue.cue_is_running(int(mapping["id"])):
         return "RUN"
     return f"{float(mapping['value']):.2f}"
+
+
+def _trigger_is_on(mapping: dict[str, Any]) -> bool:
+    """A button-like trigger is visually ON when its value sits at the output_to end."""
+    return float(mapping["value"]) == float(mapping["output_to"])
+
+
+def _trigger_label(mapping: dict[str, Any]) -> str:
+    """Square trigger text: a mapper button reads ON/OFF; a cue-list trigger
+    keeps the value label while idle (RUN replaces it while running, e35s03)."""
+    if mapping["control"] == "button":
+        return "ON" if _trigger_is_on(mapping) else "OFF"
+    return f"{float(mapping['value']):.2f}"
+
+
+def _style_trigger_theme(tag: str, on: bool) -> None:
+    """Bind a per-trigger theme so a mapper button visibly shows its state
+    (UAT e35): ON fills the square with the accent, OFF keeps the muted badge.
+    Rebuilding the theme on every state change keeps the palette live.
+    """
+    theme_tag = f"th_trig_{tag}"
+    if dpg.does_item_exist(theme_tag):
+        dpg.delete_item(theme_tag)
+    if on:
+        bg = state.active_palette["play_on_bg"]
+        label_color = state.active_palette["text_bright"]
+    else:
+        bg = state.active_palette["badge_bg"]
+        label_color = state.active_palette["text_dim"]
+    with dpg.theme(tag=theme_tag), dpg.theme_component(dpg.mvThemeCat_Core):
+        dpg.add_theme_color(dpg.mvThemeCol_Button, palette_rgba(bg))
+        dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, palette_rgba(bg))
+        dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, palette_rgba(bg))
+        dpg.add_theme_color(dpg.mvThemeCol_Text, palette_rgba(label_color))
+    if dpg.does_item_exist(tag):
+        dpg.bind_item_theme(tag, theme_tag)
 
 
 def tick_cue_triggers() -> None:
@@ -4682,6 +4725,7 @@ def tick_cue_triggers() -> None:
         tag = f"mapper_cue_{mid}"
         if dpg.does_item_exist(tag):
             dpg.configure_item(tag, label=label)
+            _style_trigger_theme(tag, label == "RUN")
     state.cue_trigger_label_cache.update(changed)
 
 
@@ -4715,8 +4759,9 @@ def _sync_mapper_control(mid: int) -> None:
     if kind in ("slider", "knob"):
         dpg.configure_item(tag, min_value=out_from, max_value=out_to)
         dpg.set_value(tag, mapping["value"])
-    else:  # button-like trigger: its label shows the current output value
-        dpg.configure_item(tag, label=f"{mapping['value']:.2f}")
+    else:  # button-like trigger: ON/OFF (button) or the value label (cue list)
+        dpg.configure_item(tag, label=_trigger_label(mapping))
+        _style_trigger_theme(tag, _trigger_is_on(mapping))
 
 
 def on_mapper_output(sender: Any, app_data: Any, user_data: Any) -> None:
@@ -4947,11 +4992,20 @@ def _render_cue_rows(mid: int) -> None:
 
 
 def _refresh_cue_rows(mid: int) -> None:
-    """Rebuild the row list of the open cue window after a model change (e35s04)."""
+    """Rebuild the row list of the open cue window after a model change (e35s04).
+
+    The rows live inside the ``cue_rows_group`` child, so the child must be
+    PUSHED onto the container stack while rendering (a callback runs with an
+    empty stack — parentless items would raise 1011/1009, the UAT bug).
+    """
     if not dpg.does_item_exist("cue_rows_group"):
         return
     dpg.delete_item("cue_rows_group", children_only=True)
-    _render_cue_rows(mid)
+    dpg.push_container_stack("cue_rows_group")
+    try:
+        _render_cue_rows(mid)
+    finally:
+        dpg.pop_container_stack()
 
 
 def _safe_refresh_cue_rows(mid: int) -> None:
@@ -5278,8 +5332,8 @@ def open_cue_list_window(sender: Any = None, app_data: Any = None, user_data: An
                 user_data=mid,
             )
         dpg.add_separator()
-        dpg.add_child_window(tag="cue_rows_group", width=0, height=180, border=True)
-        _render_cue_rows(mid)
+        with dpg.child_window(tag="cue_rows_group", width=0, height=180, border=True):
+            _render_cue_rows(mid)
     dpg.show_item("cue_list_window")
 
 
