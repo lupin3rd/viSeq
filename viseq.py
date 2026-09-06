@@ -3733,20 +3733,22 @@ def _bind_mapper_font(tag: str) -> None:
         dpg.bind_item_font(tag, font)
 
 
-def _mapper_caption_spacer(label: str, spec: dict[str, Any]) -> int:
+def _mapper_caption_spacer(label: str, spec: dict[str, Any], has_reset: bool = True) -> int:
     """Spacer width that right-aligns the enable checkbox + X on a caption (e24).
 
     The caption is ONE row: label + spacer + enable checkbox + X. Labels render
     in the 10 px ProggyTiny mapper font (MAPPER_SMALL_CHAR_PX = 6 px/char), so
     the budget uses that advance and subtracts the checkbox + X blocks + item
-    gaps: every catalog property label fits on a single caption row.
+    gaps: every catalog property label fits on a single caption row. A
+    cue-list card drops the R button (UAT e35) — the spacer must not reserve
+    its width, or its enable + X would sit left of the right edge.
     """
     return max(
         2,
         MAPPER_MINI_W
         - 24
         - MAPPER_SMALL_CHAR_PX * len(label)
-        - MAPPER_RESET_W
+        - (MAPPER_RESET_W if has_reset else 0)
         - MAPPER_CB_W
         - MAPPER_X_W,
     )
@@ -4126,7 +4128,11 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
     ):
         with dpg.group(horizontal=True):
             themed_text(caption, slot="text_dim", tag=f"mapper_prop_{mid}")
-            dpg.add_spacer(width=_mapper_caption_spacer(caption, spec))
+            dpg.add_spacer(
+                width=_mapper_caption_spacer(
+                    caption, spec, has_reset=mapping["control"] != "cue list"
+                )
+            )
             # e27s01: the reset button sits LEFT of the enable checkbox — it
             # returns the control to its neutral default (mapper.reset_mapping_value).
             # UAT e35: a cue-list trigger has no value to reset (it RUNS the cue,
