@@ -1611,7 +1611,10 @@ def _add_tile_context_items(target_id: str) -> None:
     e33s04 (user rule): the popup carries NO learn markers — a binding must
     never anchor to a volatile source. The selection-relative actions live on
     the stable surfaces instead: mapper line markers on the Mapper rows and
-    the regen marker in the sources-window learn bar.
+    the regen marker in the sources-window learn bar. 2026-09-06 (user): the
+    popup DOES carry one trailing MODE item (_add_context_learn_item) that
+    arms/cancels MIDI Learn — a mode toggle is not a binding target, so the
+    no-marker rule above stands.
     """
     dpg.add_menu_item(
         label="Regenerate Thumbnails",
@@ -1645,6 +1648,10 @@ def _add_tile_context_items(target_id: str) -> None:
         callback=on_tile_enable_color_correction,
         user_data=target_id,
     )
+    # 2026-09-06 (user): arm/cancel MIDI Learn from the popup. A MODE item, not
+    # a binding target — the e33s04 no-marker rule above stands unchanged.
+    dpg.add_separator()
+    _add_context_learn_item()
 
 
 def on_tile_enable_color_correction(
@@ -3464,6 +3471,22 @@ def on_midi_enable(sender: Any, app_data: Any, user_data: Any) -> None:
         _exit_midi_learn()
 
 
+def _add_context_learn_item() -> None:
+    """One context-menu item that arms/cancels MIDI Learn mode (user, 2026-09-06).
+
+    The right-click surfaces (Mapper card menu, Mediagrid tile popup) reuse the
+    one toggle_midi_learn path of the MIDI window button, so arming the mode
+    never requires opening that window. The label reflects the state at build
+    time: 'MIDI Learn...' arms; 'Cancel MIDI Learn' exits. It is a MODE item —
+    it never anchors a binding to the right-clicked entity (the e33s04 rule on
+    volatile sources stands: capture happens on the markers that then appear).
+    """
+    dpg.add_menu_item(
+        label="Cancel MIDI Learn" if state.midi_learn_mode else "MIDI Learn...",
+        callback=toggle_midi_learn,
+    )
+
+
 def _midi_binding_label(binding: dict[str, Any]) -> str:
     """Human-readable row label for one mapping (e09s02)."""
     params = binding.get("params") or {}
@@ -4211,7 +4234,9 @@ def _render_mapper_source_menu(mapping: dict[str, Any]) -> None:
     marker captures mapper_band); the Leap picker row and Clear source are
     never marker targets (picker/destructive exclusion). The e18 'MIDI
     Learn...' modal item is gone — the card control marker captures the
-    value binding instead.
+    value binding instead; 2026-09-06 the slot returns as a MODE-arm item
+    (_add_context_learn_item) so learning starts without opening the MIDI
+    window.
     """
     mid = mapping["id"]
     # the control tag comes from the shared control->kind map (e34s04):
@@ -4226,6 +4251,10 @@ def _render_mapper_source_menu(mapping: dict[str, Any]) -> None:
             dpg.delete_item(stale)
     with dpg.window(popup=True, show=False, no_title_bar=True, autosize=True, tag=menu_tag):
         if state.midi_learn_mode:
+            # 2026-09-06 (user): the menu that armed the mode can cancel it
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="Cancel MIDI Learn", callback=toggle_midi_learn)
+            dpg.add_separator()
             # e33s03: uniform label + learn-marker rows while learning — the
             # marker captures the band action, the label keeps its click behavior
             for band_id in (2, 3):
@@ -4268,6 +4297,9 @@ def _render_mapper_source_menu(mapping: dict[str, Any]) -> None:
                 callback=set_mapping_band,
                 user_data=(mid, 3),
             )
+            # 2026-09-06 (user): the e18 slot returns as a MODE arm — capture
+            # still happens on the uniform markers that appear once armed.
+            _add_context_learn_item()
             dpg.add_menu_item(
                 label="Leap Motion...",
                 check=True,
