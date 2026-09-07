@@ -6678,9 +6678,17 @@ def show_settings_window(sender: Any = None, app_data: Any = None, user_data: An
 
 
 def show_logs_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Open the OSC logs window from the top menubar (Show > Logs)."""
+    """Open the OSC logs window from the top menubar (Show > Logs).
+
+    The multiline log follows the window size when shown (e38 UAT request:
+    selectable/copyable log).
+    """
     dpg.show_item("logs_window")
     dpg.focus_item("logs_window")  # e17: a shown window must come to the front
+    if dpg.does_item_exist("osc_log_text"):
+        w = max(300, dpg.get_item_width("logs_window") - 20)
+        h = max(100, dpg.get_item_height("logs_window") - 42)
+        dpg.configure_item("osc_log_text", width=w, height=h)
 
 
 def centered_window_pos(
@@ -7749,7 +7757,17 @@ with dpg.window(
 
 # WINDOW 5: OSC LOGS (hidden; opened from the menubar "Show" > "Logs")
 with dpg.window(label="Logs", width=950, height=150, pos=(720, 820), tag="logs_window", show=False):
-    dpg.add_text("Waiting for OSC traffic...", tag="osc_log_text")
+    # e38 UAT (user, 2026-09-07): the log must be selectable/copyable — a
+    # readonly multiline input (ImGui readonly still allows mouse selection
+    # and Ctrl+C); a plain text item cannot be copied.
+    dpg.add_input_text(
+        default_value="Waiting for OSC traffic...",
+        multiline=True,
+        readonly=True,
+        width=930,
+        height=112,
+        tag="osc_log_text",
+    )
 
 # WINDOW 6: HELP / ABOUT (hidden; opened from the menubar "Help", re-centered on open, e08)
 with dpg.window(
