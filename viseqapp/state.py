@@ -87,6 +87,16 @@ blob_queue: queue.Queue[Any] = queue.Queue()
 texture_queue: queue.Queue[Any] = queue.Queue()
 
 
+# e38: source video preview transport (viseqapp/preview.py) — the worker
+# pushes decoded RGBA float32 frames as (source_name, frame) tuples here;
+# the main loop drains them into the preview texture (worker never imports
+# dpg). preview_active names the source shown right now (UI-owned);
+# preview_error carries the last fatal message for the panel.
+preview_frames: queue.Queue[Any] = queue.Queue()
+preview_active: str | None = None
+preview_error: str | None = None
+
+
 log_queue: queue.Queue[str] = queue.Queue()
 
 

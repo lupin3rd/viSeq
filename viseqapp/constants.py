@@ -263,6 +263,19 @@ VIOSC_PORT = 6666
 VIOSC_LISTEN_PORT = 6667  # the port viOSC sends replies to; viseq's own server listens here
 
 
+# e38: source video preview (SOURCE_PREVIEW_LATEST.md) — the HTTP file
+# transport on machine A (viOSC, VIOSC_PREVIEW_PORT default) and the local
+# decode/display caps on machine B. Frames are decoded at <= the texture cap
+# (DPG stretches the small texture to the panel) and pushed at most
+# PREVIEW_MAX_FPS — one raw-texture set_value per frame on the main thread.
+PREVIEW_PORT = 8686  # matches the viOSC HTTP preview server default
+PREVIEW_PATH_PREFIX = "/preview/"  # served as /preview/<source-name>/file|meta
+PREVIEW_CAP_WIDTH = 640  # px texture-cap width (measured budget, SPIKE-source-preview)
+PREVIEW_CAP_HEIGHT = 360  # px texture-cap height
+PREVIEW_MAX_FPS = 30.0  # decoded/pushed frame ceiling
+PREVIEW_HTTP_TIMEOUT = 10.0  # s: av.open + meta request timeout
+
+
 # Palette slots drive every chrome color: the global theme, the per-item themes, explicit
 # text colors and the main draw items. The five primaries are user-editable in the Settings
 # window; the rest derive from them (derive_palette). The "Dark" preset reproduces the
@@ -466,6 +479,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "listen_ip": VIOSC_IP,
         "listen_port": VIOSC_LISTEN_PORT,
     },
+    # e38: source video preview — the viOSC HTTP file-server port (same host as
+    # the OSC client, machine A). Only the port is tunable; the host always
+    # follows the configured osc client_ip.
+    "preview": {"port": PREVIEW_PORT},
 }
 
 
