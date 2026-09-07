@@ -3409,6 +3409,9 @@ def _exit_midi_learn() -> None:
     """Turn MIDI Learn off and restore the button/status (cancel, complete, disable)."""
     state.midi_learn_mode = False
     state.midi_learn_pending = None
+    if state.midi_learn_armed_tag:  # an armed M returns to red before the surfaces drop it
+        _style_learn_marker(state.midi_learn_armed_tag, False)
+    state.midi_learn_armed_tag = None
     if dpg.does_item_exist("midi_learn_btn"):
         dpg.set_item_label("midi_learn_btn", "Learn mapping...")
     if dpg.does_item_exist("midi_learn_status"):
@@ -3467,6 +3470,13 @@ def learn_marker(
     return marker_tag
 
 
+def _style_learn_marker(tag: str | None, armed: bool) -> None:
+    """Point one learn marker at the red (idle) or amber (armed) theme (2026-09-07)."""
+    if not tag or not dpg.does_item_exist(tag):
+        return
+    dpg.bind_item_theme(tag, theme_learn_marker_armed if armed else theme_learn_marker)
+
+
 def on_learn_marker_click(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     """A learn marker was clicked: capture its (action_id, params) as the pending binding.
 
@@ -3479,6 +3489,12 @@ def on_learn_marker_click(sender: Any = None, app_data: Any = None, user_data: A
     action_id, params = user_data
     state.midi_learn_pending = (action_id, params)
     state.midi_learn_started_at = time.time()
+    # The clicked M turns AMBER so the user sees which control the next MIDI
+    # message binds; the previously armed M returns to red (user, 2026-09-07).
+    if state.midi_learn_armed_tag and state.midi_learn_armed_tag != sender:
+        _style_learn_marker(state.midi_learn_armed_tag, False)
+    state.midi_learn_armed_tag = sender
+    _style_learn_marker(sender, True)
     if dpg.does_item_exist("midi_learn_status"):
         dpg.set_value("midi_learn_status", "Now press your MIDI button")
 
@@ -6937,6 +6953,15 @@ with dpg.theme() as theme_learn_marker, dpg.theme_component(dpg.mvButton):
     # and stands out from the dim card captions (fixed accent red on every
     # palette; the markers only appear during a MIDI Learn session).
     dpg.add_theme_color(dpg.mvThemeCol_Text, (225, 60, 60, 255))
+    dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 0, 0)
+
+with dpg.theme() as theme_learn_marker_armed, dpg.theme_component(dpg.mvButton):
+    # ARMED 'M' (user 2026-09-07): the marker clicked last turns amber while it
+    # waits for its MIDI message, so the user sees exactly which control the
+    # next binding lands on. Palette-driven via theme_color (warning slot), so
+    # it re-themes with the active palette like the other semantic colors.
+    theme_color(dpg.mvThemeCol_Text, "warning")
+    theme_color(dpg.mvThemeCol_ButtonHovered, "accent_bg")
     dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 0, 0)
 
 with dpg.theme() as theme_seq_row_compact, dpg.theme_component(dpg.mvAll):

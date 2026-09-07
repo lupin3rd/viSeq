@@ -54,6 +54,9 @@ midi_learn_pending: tuple[str, dict[str, Any]] | None = None
 midi_learn_started_at: float = 0.0  # e14: learn-session start, for the safety timeout
 
 
+midi_learn_armed_tag: str | None = None  # learn marker armed by the last click (its M turns amber)
+
+
 midi_selected_port: str | None = None  # e14s03: port whose bindings the Bindings section shows
 
 
