@@ -19,6 +19,7 @@ from viseqapp.constants import (
     GRID_LED_OFF,
     GRID_LED_WHITE,
     MIDI_ACTION_SEQ_TOGGLE,
+    MIDI_OPEN_RETRY_COOLDOWN_SECONDS,
     MIDI_PITCH_MAX,
     MIDI_PITCH_MIN,
     MIDI_PITCH_NUMBER,
@@ -113,14 +114,39 @@ def binding_source_from_message(msg: Any, port_name: str) -> dict[str, Any] | No
     return {"device": port_name, "channel": int(msg.channel), "type": msg_type, "number": number}
 
 
-def available_controller_ports() -> list[str]:
-    """MIDI input ports not yet added as controllers (e14s03)."""
+def scan_midi_inputs() -> tuple[list[str], str | None]:
+    """Live MIDI input scan that NEVER raises (BUG-2026-09-07T152802).
+
+    Returns (port names, error). A healthy scan yields the names with error None.
+    When mido/ALSA cannot create a sequencer client (kernel table exhausted by
+    leaked rtmidi clients — mido #256), the call raises inside rtmidi; the error
+    is captured and returned so the UI can show why the controller is not
+    detected instead of silently presenting an empty device list.
+    """
     try:
         import mido
 
         names = list(mido.get_input_names())
-    except Exception:
-        names = []
+    except Exception as e:
+        return [], str(e)
+    return names, None
+
+
+def midi_open_retry_due(last_fail_at: float | None, now: float) -> bool:
+    """True when an input open may be attempted: first try or cooldown elapsed.
+
+    Gates the worker retry (BUG-2026-09-07T152802): a failing open can leak an
+    ALSA sequencer client upstream, so a dead ALSA must be re-attempted at the
+    cooldown cadence, never on every 2-second worker tick.
+    """
+    if last_fail_at is None:
+        return True
+    return now - last_fail_at >= MIDI_OPEN_RETRY_COOLDOWN_SECONDS
+
+
+def available_controller_ports() -> list[str]:
+    """MIDI input ports not yet added as controllers (e14s03)."""
+    names, _error = scan_midi_inputs()
     used = {controller["port"] for controller in midi_controllers}
     return [name for name in names if name not in used]
 
@@ -332,15 +358,20 @@ def _register_grid_bindings(controller: dict[str, Any], profile: dict[str, Any])
 
 
 def controller_connect(controller: dict[str, Any], mido: Any) -> None:
-    """Open the controller's LED output, send setup SysEx, register grid bindings (e14s02)."""
+    """Open the controller's LED output, send setup SysEx, register grid bindings (e14s02).
+
+    BUG-2026-09-07T152802: the output-port lookup is INSIDE the guard — with ALSA
+    refusing sequencer clients the lookup raises and must log + disconnect, never
+    escape into the MIDI re-enable UI callback.
+    """
     controller_disconnect(controller)
     profile = controller_profile_of(controller)
     if profile is None or not profile.get("features", {}).get("leds"):
         return
-    out_name = _find_output_port(controller["port"], mido)
-    if out_name is None:
-        return
     try:
+        out_name = _find_output_port(controller["port"], mido)
+        if out_name is None:
+            return
         with _controller_lock:
             controller["output"] = mido.open_output(out_name)
         if profile.get("setup_sysex"):
@@ -349,7 +380,7 @@ def controller_connect(controller: dict[str, Any], mido: Any) -> None:
             _register_grid_bindings(controller, profile)
         append_log("MIDI", f"{profile.get('name', controller['port'])} output on {out_name}")
     except Exception as e:
-        log_error("MIDI", f"output {out_name}: {e}")
+        log_error("MIDI", f"output {controller['port']}: {e}")
         controller_disconnect(controller)
 
 
@@ -426,13 +457,8 @@ def _grid_restore_playhead() -> None:
 
 
 def _clock_port_name() -> str | None:
-    """The MIDI input the clock listens on: clock_source, else the first input (e14s04)."""
+    """The MIDI input the clock listens on: clock_source, else the first input."""
     if state.midi_clock_source:
         return state.midi_clock_source
-    try:
-        import mido
-
-        names = mido.get_input_names()
-        return names[0] if names else None
-    except Exception:
-        return None
+    names, _error = scan_midi_inputs()
+    return names[0] if names else None

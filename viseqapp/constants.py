@@ -474,6 +474,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
 MIDI_LEARN_TIMEOUT_SECONDS = 30.0
 
 
+# BUG-2026-09-07: after a failed input open (or clock reconnect) the worker waits
+# this long before trying again. Every failing mido/rtmidi open can leak an ALSA
+# sequencer client (mido #256, fixed only in 1.3.4.dev+), so a dead ALSA must
+# never be hammered — the 2 s retry loop saturated the 192-client kernel table
+# on the live rig and silently killed controller detection.
+MIDI_OPEN_RETRY_COOLDOWN_SECONDS = 15.0
+
+
 PROJECT_FORMAT = "viseq-project"
 
 

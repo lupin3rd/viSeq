@@ -115,6 +115,7 @@ from viseqapp.constants import (
     MIDI_CC_TRIGGER_THRESHOLD,
     MIDI_CLOCK_PULSES_PER_BEAT,
     MIDI_LEARN_TIMEOUT_SECONDS,
+    MIDI_OPEN_RETRY_COOLDOWN_SECONDS,
     MONITOR_ALPHA_W,
     MONITOR_DISC_R,
     MONITOR_DISC_RPM,
@@ -176,8 +177,10 @@ from viseqapp.midi import (
     grid_flash_playhead,
     grid_mirror_step,
     midi_init_from_config,
+    midi_open_retry_due,
     resolve_midi_message,
     save_midi_controllers,
+    scan_midi_inputs,
     selected_bindings,
     set_midi_enabled,
 )
@@ -3743,9 +3746,21 @@ def delete_midi_binding(sender: Any = None, app_data: Any = None, user_data: Any
 
 
 def refresh_midi_devices(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Re-scan MIDI inputs and update the Controllers Add combo (e14s03)."""
+    """Re-scan MIDI inputs, update the Controllers Add combo and the port-status
+    line (e14s03; BUG-2026-09-07 — a failed scan is shown, never silently empty)."""
+    names, error = scan_midi_inputs()
     if dpg.does_item_exist("midi_add_combo"):
-        dpg.configure_item("midi_add_combo", items=available_controller_ports())
+        used = {c["port"] for c in midi_controllers}
+        dpg.configure_item("midi_add_combo", items=[n for n in names if n not in used])
+    _update_midi_ports_status(names, error)
+
+
+def _update_midi_ports_status(names: list[str], error: str | None) -> None:
+    """Write the input-scan outcome to the MIDI window status line (BUG-2026-09-07)."""
+    if not dpg.does_item_exist("midi_ports_status"):
+        return
+    text = f"Port scan failed: {error}" if error else f"{len(names)} MIDI input(s) available"
+    dpg.set_value("midi_ports_status", text)
 
 
 def add_controller_from_port(port_name: str) -> None:
@@ -3813,8 +3828,8 @@ def render_controllers_ui() -> None:
                 callback=lambda s, a, p=port: remove_controller(p),
                 user_data=port,
             )
-    if dpg.does_item_exist("midi_add_combo"):
-        dpg.configure_item("midi_add_combo", items=available_controller_ports())
+    # BUG-2026-09-07: combo + port-status line follow the scan
+    refresh_midi_devices()
     refresh_midi_mappings_ui()
 
 
@@ -5881,6 +5896,10 @@ def midi_control_loop() -> None:
     except ImportError:
         return
     open_ports: dict[str, Any] = {}
+    # BUG-2026-09-07: last-failure timestamps per port gate the open retry — a
+    # failing open can leak an ALSA sequencer client, so a dead ALSA is never
+    # hammered every tick (that saturation silently killed controller detection).
+    open_fail_at: dict[str, float] = {}
     while True:
         if not state.midi_enabled:
             time.sleep(0.2)
@@ -5891,18 +5910,22 @@ def midi_control_loop() -> None:
         for controller in midi_controllers:
             port_name = controller["port"]
             if port_name not in open_ports:
+                if not midi_open_retry_due(open_fail_at.get(port_name), time.monotonic()):
+                    continue  # cooldown: stay quiet on a failing port
                 try:
                     open_ports[port_name] = mido.open_input(port_name)
+                    open_fail_at.pop(port_name, None)
                     controller_connect(controller, mido)  # e14s02: LED output + grid bindings
                     append_log("MIDI", f"Control listening on {port_name}")
                 except Exception as e:
+                    open_fail_at[port_name] = time.monotonic()
                     log_error("MIDI", str(e))
-                    time.sleep(2.0)
                     continue
             try:
                 for msg in open_ports[port_name].iter_pending():
                     handle_midi_message(msg, port_name)
             except Exception as e:
+                open_fail_at[port_name] = time.monotonic()
                 log_error("MIDI", str(e))
                 _close_midi_input(open_ports.pop(port_name, None))
         time.sleep(0.002)
@@ -5930,7 +5953,9 @@ def midi_clock_loop() -> None:
     while True:
         port_name = _clock_port_name()
         if not port_name:
-            time.sleep(10)
+            # BUG-2026-09-07: a no-input idle loop must not re-enumerate every few
+            # seconds — each scan on a failing ALSA can leak a sequencer client.
+            time.sleep(MIDI_OPEN_RETRY_COOLDOWN_SECONDS)
             continue
         try:
             with mido.open_input(port_name) as port:
@@ -5947,7 +5972,7 @@ def midi_clock_loop() -> None:
                     time.sleep(0.001)
         except Exception as e:
             log_error("MIDI", str(e))
-            time.sleep(10)
+            time.sleep(MIDI_OPEN_RETRY_COOLDOWN_SECONDS)
 
 
 # ---------- e26: Leap Motion worker ----------
@@ -7304,6 +7329,9 @@ with dpg.window(label="MIDI", width=520, height=520, pos=(560, 320), tag="midi_w
     # e14s03: Controllers section — add any available input port, list the connected
     # controllers (profile auto-detected, grid role, remove), bindings per controller.
     themed_text("Controllers", slot="text")
+    # BUG-2026-09-07: input-scan outcome line — shows the ALSA failure instead of
+    # presenting a silent empty device list when the sequencer is exhausted.
+    themed_text("", slot="text_dim", tag="midi_ports_status")
     with dpg.group(horizontal=True):
         dpg.add_combo(items=available_controller_ports(), tag="midi_add_combo", width=320)
         dpg.add_button(
