@@ -176,6 +176,7 @@ class PreviewPlayer:
             tb_base = stream.time_base
             tb = float(tb_base) if tb_base is not None else 1.0
             frames: Any = None  # decode generator — created lazily, fresh after every seek
+            last_push = 0.0  # wall time of the last pushed frame (fps gate)
 
             while self._running:
                 # 1) a pending seek is served before anything else: seek, then
