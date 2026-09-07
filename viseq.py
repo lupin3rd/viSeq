@@ -2226,6 +2226,10 @@ def update_vimix_sources_ui(json_string: str) -> None:
         state.global_vimix_state["current_source"] = payload.get("current_source")
         state.global_vimix_state["sources"] = sources
 
+        # e36s06: seed anchored vector caches (color/corner) from the live feed
+        # so component mappings start from real values instead of neutral ones.
+        mapper.seed_anchors_from_live_state(sources)
+
         # L-1: prune cached state for sources that no longer exist (main thread only),
         # so thumbnails_data / request_timestamps / registry textures do not grow across churn.
         live_ids = set()
@@ -2252,6 +2256,7 @@ def update_vimix_sources_ui(json_string: str) -> None:
         for target_id in list(thumb_fail_count):
             if target_id not in live_ids:
                 thumb_fail_count.pop(target_id)
+        mapper.prune_anchors(live_ids)  # e36s06: the anchor cache follows source churn
         removed_mappings = mapper.prune_mappings(live_ids)
         if removed_mappings:
             for removed in removed_mappings:

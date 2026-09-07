@@ -913,3 +913,53 @@ def apply_unit_value(mapping_id: int, unit: float) -> float:
     mapping["value"] = value
     _send(mapping)
     return value
+
+
+# e36s06: anchor seeding from the live vimix state feed.
+# The anchored vectors (color/corner) are seeded from the state viOSC pushes
+# (the same broadcast the monitor players poll) so sibling component mappings
+# start from real values instead of the neutral white/identity vector.
+
+_ANCHOR_SEED_PROPS: tuple[str, ...] = ("color", "corner")  # partial == anchor
+
+
+def seed_anchors_from_live_state(sources: dict[str, Any]) -> int:
+    """Seed missing (target, anchor-property) vectors from the live state.
+
+    Only fills an empty slot — a vector written by a mapping send is never
+    clobbered by the (older) feedback. Returns how many anchors were seeded.
+    Targets are keyed by the source NAME (the address target_id), falling back
+    to the grid index. Malformed/missing vectors are skipped.
+    """
+    seeded = 0
+    store = state.source_anchors
+    if not isinstance(sources, dict):
+        return 0
+    for idx, props in sources.items():
+        if not isinstance(props, dict):
+            continue
+        name = props.get("name")
+        target = str(name) if name else str(idx)
+        existing = store.get(str(target)) or {}
+        for prop in _ANCHOR_SEED_PROPS:
+            if prop in existing:
+                continue  # a mapping-sent vector is never clobbered by feedback
+            raw = props.get(prop)
+            if not isinstance(raw, (list, tuple)):
+                continue
+            try:
+                values = [float(v) for v in raw]
+            except (TypeError, ValueError):
+                continue
+            if len(values) == catalog.component_count(prop):
+                store.setdefault(str(target), {})[prop] = values
+                seeded += 1
+    return seeded
+
+
+def prune_anchors(live_ids: set[str]) -> int:
+    """Drop anchor slots whose source no longer exists (mirrors prune_mappings)."""
+    gone = [t for t in list(state.source_anchors) if t not in live_ids]
+    for target in gone:
+        del state.source_anchors[target]
+    return len(gone)
