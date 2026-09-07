@@ -20,7 +20,7 @@ from PIL import Image
 from pythonosc import dispatcher, udp_client
 
 import viseqapp  # noqa: F401  scaffold hook (REFACTOR_LATEST.md commit 1): proves the package import path works at boot
-from viseqapp import actions, cue, leap, mapper, state
+from viseqapp import actions, catalog, cue, leap, mapper, state
 from viseqapp.audio import (
     _set_band_variable,
     apply_spectrum_agc,
@@ -4168,10 +4168,7 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
     CARD (buttons cannot host DPG handler registries).
     """
     mid = mapping["id"]
-    spec = mapper.MAPPER_PROPERTIES[mapping["property"]]
-    # UAT e35: a cue-list card is titled by its TYPE — the stored property is
-    # inert (the trigger runs an OSC macro), so no property name shows on it.
-    caption = "cue list" if mapping["control"] == "cue list" else spec["label"]
+    caption = _mapper_card_caption(mapping)
     out_from = mapping["output_from"]
     out_to = mapping["output_to"]
     content_w = MAPPER_MINI_W - 8  # 4 px card padding each side
@@ -4187,7 +4184,7 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
             themed_text(caption, slot="text_dim", tag=f"mapper_prop_{mid}")
             dpg.add_spacer(
                 width=_mapper_caption_spacer(
-                    caption, spec, has_reset=mapping["control"] != "cue list"
+                    caption, {}, has_reset=mapping["control"] != "cue list"
                 )
             )
             # e27s01: the reset button sits LEFT of the enable checkbox — it
@@ -4250,6 +4247,30 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
             # knob / button: the compact band (e34s02)
             _mapper_band_control(mapping, mid)
         _render_mapper_source_menu(mapping)
+
+
+def _mapper_card_caption(mapping: dict[str, Any]) -> str:
+    """Caption of one mapping card (e36s03).
+
+    A multi-value property card shows the property + its component (Position X,
+    Color R, Corner B.y…); a trigger-family card shows the action name (its
+    value is meaningless); a cue-list card is titled by its TYPE — its stored
+    property is inert (UAT e35). Everything else shows the catalog label
+    (unchanged for the legacy scalar properties).
+    """
+    control = str(mapping.get("control") or "")
+    if control == "cue list":
+        return "cue list"
+    entry = catalog.PROPERTY_CATALOG[str(mapping["property"])]
+    if entry["family"] == catalog.FAMILY_TRIGGER:
+        return str(mapping["property"]).upper()
+    label = str(entry["label"])
+    component = mapping.get("component")
+    if component is not None:
+        for comp in entry["components"]:
+            if comp["key"] == component:
+                return f"{label} {comp['label']}"
+    return label
 
 
 def _render_mapper_source_menu(mapping: dict[str, Any]) -> None:
@@ -4759,8 +4780,12 @@ def _trigger_is_on(mapping: dict[str, Any]) -> bool:
 def _trigger_label(mapping: dict[str, Any]) -> str:
     """Square trigger text: a mapper button and a cue-list trigger read ON/OFF
     (UAT e35): the cue square is a momentary RUN trigger — ON while the cue is
-    executing, OFF again when it finishes. No raw value ever shows inside."""
+    executing, OFF again when it finishes. No raw value ever shows inside.
+    e36s03: a TRIGGER-family button (replay/reset/reload/flag) shows its action
+    name instead — its value has no ON/OFF meaning and every press fires."""
     if mapping["control"] == "button":
+        if catalog.family_of(str(mapping["property"])) == catalog.FAMILY_TRIGGER:
+            return str(mapping["property"]).upper()
         return "ON" if _trigger_is_on(mapping) else "OFF"
     return "ON" if cue.cue_is_running(int(mapping["id"])) else "OFF"
 
@@ -4983,10 +5008,20 @@ def open_new_mapping_dialog(
         with dpg.group(tag="mapper_prop_group", show=True):
             themed_text("Property", slot="text_dim")
             dpg.add_combo(
-                items=list(mapper.MAPPER_PROPERTIES),
+                items=mapper.mappable_properties(),  # e36s03: catalog minus the Cue-only rates
                 default_value="brightness",
                 width=260,
                 tag="mapper_prop_combo",
+                callback=on_mapper_prop_change,
+            )
+        with dpg.group(tag="mapper_comp_group", show=False):
+            # e36s03: multi-value properties pick the controlled component/axis
+            themed_text("Component", slot="text_dim")
+            dpg.add_combo(
+                items=[],
+                default_value="",
+                width=260,
+                tag="mapper_component_combo",
             )
         themed_text(
             "The trigger runs the mapping's OSC macro (cue list) — no property needed.",
@@ -5002,20 +5037,59 @@ def open_new_mapping_dialog(
     dpg.show_item("mapper_new_dialog")
 
 
+def _sync_mapper_component_picker(prop: str) -> None:
+    """Populate + reveal the dialog's component picker for a vector property
+    (e36s03); hide it for scalar/toggle/trigger/enum properties.
+    """
+    entry = catalog.PROPERTY_CATALOG.get(prop)
+    keys = (
+        [c["key"] for c in entry["components"]]
+        if entry is not None and len(entry["components"]) > 1
+        else []
+    )
+    if keys:
+        dpg.configure_item("mapper_component_combo", items=keys)
+        dpg.set_value("mapper_component_combo", keys[0])
+    dpg.configure_item("mapper_comp_group", show=bool(keys))
+
+
+def on_mapper_prop_change(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """New-Mapping property combo: reveal the component picker for a vector
+    property and suggest the right control type for toggle/trigger families
+    (e36s03)."""
+    prop = str(app_data)
+    if prop not in catalog.PROPERTY_CATALOG:
+        return
+    family = catalog.family_of(prop)
+    control = str(dpg.get_value("mapper_control_combo"))
+    if family in (catalog.FAMILY_TOGGLE, catalog.FAMILY_TRIGGER) and control != "cue list":
+        dpg.set_value("mapper_control_combo", "button")
+    _sync_mapper_component_picker(prop)
+
+
 def on_mapper_control_type_change(sender: Any, app_data: Any, user_data: Any = None) -> None:
     """New-Mapping type combo: a 'cue list' needs no property — hide the
-    property row and pin it to 'play' (inert; the card caption only); the
-    value controls show the property picker (e35s04)."""
+    property row (and the component picker) and pin it to 'play' (inert; the
+    card caption only); the value controls show the property picker (e35s04,
+    e36s03)."""
     control = str(app_data)
     is_cue = control == "cue list"
     if is_cue:
         dpg.set_value("mapper_prop_combo", "play")
     dpg.configure_item("mapper_prop_group", show=not is_cue)
+    dpg.configure_item("mapper_comp_group", show=False)
     dpg.configure_item("mapper_cue_hint", show=is_cue)
+    if not is_cue:
+        _sync_mapper_component_picker(str(dpg.get_value("mapper_prop_combo")))
 
 
 def mapper_dialog_confirm(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Dialog Create: add the mapping chosen in the combos and open the Mapper window."""
+    """Dialog Create: add the mapping chosen in the combos and open the Mapper window.
+
+    e36s03: a multi-value property reads the component picker (defaulting to its
+    first component when the combo was never populated); cue-list controls skip
+    it (their property is inert).
+    """
     if not dpg.does_item_exist("mapper_new_dialog"):
         return
     prop = str(dpg.get_value("mapper_prop_combo"))
@@ -5024,7 +5098,14 @@ def mapper_dialog_confirm(sender: Any = None, app_data: Any = None, user_data: A
     dpg.delete_item("mapper_new_dialog")
     if target is None:
         return
-    mapper.add_mapping(target, prop, control)
+    component: str | None = None
+    if control != "cue list":
+        entry = catalog.PROPERTY_CATALOG.get(prop)
+        if entry is not None and len(entry["components"]) > 1:
+            keys = [c["key"] for c in entry["components"]]
+            candidate = str(dpg.get_value("mapper_component_combo"))
+            component = candidate if candidate in keys else keys[0]
+    mapper.add_mapping(target, prop, control, component=component)
     refresh_mapper_ui()
     dpg.show_item("mapper_window")
 

@@ -51,6 +51,7 @@ def _scalar(
 ) -> dict[str, Any]:
     return {
         "family": family,
+        "label": label,
         "components": [{"key": "v", "label": label, "min": lo, "max": hi, "neutral": neutral}],
         "partial": partial,
         "ms": ms,
@@ -72,6 +73,7 @@ def _vector(
 ) -> dict[str, Any]:
     return {
         "family": family,
+        "label": label,
         "components": components,
         "partial": partial,
         "ms": ms,

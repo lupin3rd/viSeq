@@ -63,6 +63,20 @@ MAPPER_CONTROL_TAG_KINDS: dict[str, str] = {
 }
 
 
+def mappable_properties() -> list[str]:
+    """Catalog properties a Mapper mapping may target (e36s03).
+
+    Everything except the RATE family — loom/turn/grab/resize/ffwd are
+    Cue-only (user decision 2). Order = catalog order (the New-Mapping dialog
+    lists exactly this).
+    """
+    return [
+        prop
+        for prop, entry in catalog.PROPERTY_CATALOG.items()
+        if entry["family"] != catalog.FAMILY_RATE
+    ]
+
+
 def control_tag_kind(control: str) -> str:
     """The widget-tag kind of a control (KeyError = catalog bug, not a user path)."""
     return MAPPER_CONTROL_TAG_KINDS[control]
