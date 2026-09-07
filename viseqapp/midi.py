@@ -166,6 +166,64 @@ def save_midi_controllers(sender: Any = None, app_data: Any = None, user_data: A
     save_config(cfg)
 
 
+def project_mapper_bindings() -> list[dict[str, Any]]:
+    """Project-scoped MIDI rows: bindings that drive a Mapper mapping, port-tagged.
+
+    A binding belongs to the project when its params carry a ``mapping_id`` — it
+    is the MIDI side of one of the project's Mapper mappings. These rows are
+    stored WITH the project (user 2026-09-07) so opening a project restores
+    exactly its routing; generic rows (transport/sequencer/beat) stay global in
+    the app config, because their meaning is not project-bound.
+    """
+    rows: list[dict[str, Any]] = []
+    for controller in midi_controllers:
+        for binding in controller.get("bindings") or []:
+            params = binding.get("params")
+            if isinstance(params, dict) and params.get("mapping_id") is not None:
+                rows.append({"port": controller["port"], **dict(binding)})
+    return rows
+
+
+def _binding_mapping_key(binding: dict[str, Any]) -> tuple[str, int]:
+    """Identity of a Mapper-binding row within one port: (action, mapping_id)."""
+    return (
+        str(binding.get("action") or ""),
+        int((binding.get("params") or {}).get("mapping_id") or 0),
+    )
+
+
+def apply_project_mapper_bindings(rows: Any, live_mapping_ids: set[int]) -> None:
+    """Merge the project's Mapper-binding rows onto the controllers (user 2026-09-07).
+
+    Each row targets the controller whose port matches. A row whose mapping_id
+    does not exist in the loaded project is dropped (stale); a row already
+    present for the same (action, mapping_id) on a port is replaced so re-
+    learning inside the project updates the routing instead of stacking rows.
+    """
+    if not isinstance(rows, list):
+        return
+    incoming_by_port: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        params = row.get("params")
+        if not (
+            isinstance(params, dict) and int(params.get("mapping_id") or 0) in live_mapping_ids
+        ):
+            continue
+        body = {k: v for k, v in row.items() if k != "port"}
+        incoming_by_port.setdefault(str(row.get("port") or ""), []).append(body)
+    for controller in midi_controllers:
+        incoming = incoming_by_port.get(controller["port"])
+        if not incoming:
+            continue
+        existing = controller.setdefault("bindings", [])
+        for row in incoming:
+            key = _binding_mapping_key(row)
+            existing[:] = [b for b in existing if _binding_mapping_key(b) != key]
+            existing.append(row)
+
+
 def selected_controller() -> dict[str, Any] | None:
     """The controller whose bindings the Bindings section edits (e14s03)."""
     if midi_selected_port is not None:
@@ -254,7 +312,9 @@ def set_midi_enabled(enabled: bool) -> None:
 
     Disabling closes every controller output so the device stops lighting up
     immediately (e14 bug fix); re-enabling reconnects the outputs and re-registers
-    the auto grid bindings (BUG-2026-08-29T102156).
+    the auto grid bindings (BUG-2026-08-29T102156). The controller list is
+    persisted on every toggle too — re-writing the config from a stale copy used
+    to silently discard bindings learned since the last save (user 2026-09-07).
     """
     state.midi_enabled = enabled
     if not enabled:
@@ -264,6 +324,7 @@ def set_midi_enabled(enabled: bool) -> None:
     cfg = load_config()
     cfg["midi"]["enabled"] = enabled
     save_config(cfg)
+    save_midi_controllers()
 
 
 def _close_midi_input(port: Any) -> None:

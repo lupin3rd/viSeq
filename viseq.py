@@ -166,6 +166,7 @@ from viseqapp.midi import (
     _clock_port_name,
     _close_midi_input,
     _parse_midi_msg,
+    apply_project_mapper_bindings,
     available_controller_ports,
     binding_source_from_message,
     controller_connect,
@@ -178,6 +179,7 @@ from viseqapp.midi import (
     grid_mirror_step,
     midi_init_from_config,
     midi_open_retry_due,
+    project_mapper_bindings,
     resolve_midi_message,
     save_midi_controllers,
     scan_midi_inputs,
@@ -518,6 +520,9 @@ def capture_project_state() -> dict[str, Any]:
             "audio": _capture_audio_state(),
         },
         "mapper": _capture_mapper_state(),
+        # 2026-09-07: the project also carries the MIDI rows that drive ITS
+        # Mapper mappings, so opening the project restores its MIDI routing.
+        "midi": {"mapper_bindings": project_mapper_bindings()},
     }
 
 
@@ -584,21 +589,25 @@ def _apply_sequencer_state(seq: dict[str, Any]) -> None:
         _apply_audio_state(audio)
 
 
-def apply_project_state(state: dict[str, Any]) -> None:
+def apply_project_state(doc: dict[str, Any]) -> None:
     """Re-apply a project dict onto the live app (mapper, layout, theme, sequencer) (e11s01/e28s01).
 
     e28s01: the mapper state is restored BEFORE the window layout applies, so
     the Mapper body exists by the time a saved layout may show the window.
     """
-    mapper_section = state.get("mapper")
+    mapper_section = doc.get("mapper")
     if isinstance(mapper_section, dict):
         mapper.restore_mappings(mapper_section.get("mappings"))
         refresh_mapper_ui()
-    apply_window_layout(state.get("layout", {}).get("windows", []))
-    theme = state.get("theme")
+    midi_section = doc.get("midi")
+    if isinstance(midi_section, dict):  # 2026-09-07: restore the project's MIDI routing
+        live_ids = {int(m["id"]) for m in state.mapper_mappings}
+        apply_project_mapper_bindings(midi_section.get("mapper_bindings"), live_ids)
+    apply_window_layout(doc.get("layout", {}).get("windows", []))
+    theme = doc.get("theme")
     if isinstance(theme, dict):
         _apply_theme_config(theme)
-    seq = state.get("sequencer")
+    seq = doc.get("sequencer")
     if isinstance(seq, dict):
         _apply_sequencer_state(seq)
 
@@ -818,6 +827,12 @@ def _sanitize_project_state(raw: dict[str, Any]) -> dict[str, Any]:
     raw_mapper = raw.get("mapper")
     if isinstance(raw_mapper, dict):
         clean["mapper"] = {"mappings": _sanitize_mapper_mappings(raw_mapper.get("mappings"))}
+    # 2026-09-07: project-scoped Midi rows pass through (bounded; missing/older
+    # projects simply carry none and leave the global routing untouched).
+    raw_midi = raw.get("midi")
+    if isinstance(raw_midi, dict) and isinstance(raw_midi.get("mapper_bindings"), list):
+        rows = [r for r in raw_midi["mapper_bindings"] if isinstance(r, dict)]
+        clean["midi"] = {"mapper_bindings": rows[: MAPPER_MAX_MAPPINGS * 8]}
     return clean
 
 
@@ -3616,6 +3631,7 @@ def midi_learn_complete(binding: dict[str, Any], port_name: str | None = None) -
     controller = find_controller_by_port(port_name) if port_name else None
     if controller is not None:
         controller.setdefault("bindings", []).append(binding)
+        save_midi_controllers()  # 2026-09-07: a learned mapping persists immediately
     else:
         midi_bindings.append(binding)
     state.midi_learn_pending = None
@@ -3758,6 +3774,7 @@ def delete_midi_binding(sender: Any = None, app_data: Any = None, user_data: Any
     bindings = selected_bindings()
     if 0 <= idx < len(bindings):
         del bindings[idx]
+        save_midi_controllers()  # 2026-09-07: deletions persist immediately
     refresh_midi_mappings_ui()
 
 
