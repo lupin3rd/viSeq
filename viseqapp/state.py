@@ -372,3 +372,12 @@ trigger_theme_signature: tuple[tuple[int, ...], ...] | None = None
 # get_active_window() returns None while the viewport menu bar has focus, so
 # the Windows-menu mark and the Ctrl+Tab anchor come from this tracking instead.
 current_window: str | None = None
+
+
+# e37 (project-save-as-titlebar): the session's project identity — which .viseq
+# document the live content belongs to and whether the next Save would write
+# something different. Main-thread only: the file flows and the title sync run
+# on the main thread; worker modules never touch these fields.
+current_project_path: str | None = None  # None = unnamed (new) project
+project_dirty: bool = False  # live content differs from the last-saved baseline
+saved_content_fingerprint: str = ""  # canonical JSON of the content at the last save/open/new

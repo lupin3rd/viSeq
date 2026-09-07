@@ -526,6 +526,74 @@ def capture_project_state() -> dict[str, Any]:
     }
 
 
+# --- e37: current-project identity + unsaved-changes marker (title bar) ---
+# The app tracks which .viseq document the live session belongs to and whether
+# the next Save would write something different. Window layout is deliberately
+# excluded from the content fingerprint: moving/resizing windows is workspace
+# preference, not document content (user agreement 2026-09-07). The mapping
+# 'value' fields are excluded too — band/MIDI/Leap drives rewrite them
+# constantly during playback, so like the last_rand_* step keys they are
+# runtime state, never a dirt source (they still ride along on every save).
+UNSAVED_PROJECT_LABEL = "Untitled"
+PROJECT_DIRTY_POLL_SECONDS = 0.5
+
+
+def _project_content_fingerprint() -> str:
+    """Canonical JSON of the live project CONTENT (layout + live values out, e37s03)."""
+    content = capture_project_state()
+    content.pop("layout", None)
+    for mapping in content.get("mapper", {}).get("mappings", []):
+        mapping.pop("value", None)
+    return json.dumps(content, sort_keys=True, separators=(",", ":"))
+
+
+def current_project_label() -> str:
+    """Title-bar name of the current project: file basename or Untitled (e37)."""
+    path = state.current_project_path
+    if path:
+        return os.path.basename(path)
+    return UNSAVED_PROJECT_LABEL
+
+
+def refresh_window_title() -> None:
+    """Rewrite the X11 viewport title with the project name + dirty marker (e37s03)."""
+    marker = " *" if state.project_dirty else ""
+    dpg.set_viewport_title(f"viSeq - {current_project_label()}{marker}")
+
+
+def _adopt_content_as_saved() -> None:
+    """Record the live content as the saved baseline (save/open/new/boot, e37s01).
+
+    The baseline is derived from the LIVE state after the flow ran — never by
+    re-reading the file — so it matches exactly what the next Save would write.
+    Does not touch dpg (boot calls it before the viewport exists).
+    """
+    state.project_dirty = False
+    state.saved_content_fingerprint = _project_content_fingerprint()
+
+
+def _sync_project_dirty() -> bool:
+    """Poll the live content vs the saved baseline; True when the flag flipped."""
+    dirty = _project_content_fingerprint() != state.saved_content_fingerprint
+    if dirty == state.project_dirty:
+        return False
+    state.project_dirty = dirty
+    refresh_window_title()
+    return True
+
+
+_last_project_dirty_poll = 0.0
+
+
+def tick_project_dirty(now: float) -> None:
+    """Main-loop cadence (~0.5 s): flip the dirty marker when content changed (e37s03)."""
+    global _last_project_dirty_poll
+    if now - _last_project_dirty_poll < PROJECT_DIRTY_POLL_SECONDS:
+        return
+    _last_project_dirty_poll = now
+    _sync_project_dirty()
+
+
 def _restore_step(row: int, col: int, step_data: dict[str, Any]) -> None:
     """Apply one persisted step onto the live cell and rebuild its UI (e11s01)."""
     step = tracks_data[row]["steps"][col]
@@ -874,10 +942,13 @@ def _ensure_project_extension(path: str) -> str:
 
 
 def save_project_file(path: str) -> bool:
-    """Capture + write a project, then remember it; False + logged on failure (e11s03)."""
+    """Capture + write a project, adopt it as current; False + logged on failure (e11s03/e37s01)."""
     path = _ensure_project_extension(path)
     if not save_project_to_file(path, capture_project_state()):
         return False
+    state.current_project_path = path
+    _adopt_content_as_saved()
+    refresh_window_title()
     cfg = load_config()
     remember_recent_project(cfg, path)
     save_config(cfg)
@@ -886,13 +957,16 @@ def save_project_file(path: str) -> bool:
 
 
 def open_project_file(path: str) -> bool:
-    """Load + apply a project, sync the fallback theme, remember it (e11s03)."""
-    state = load_project_file(path)
-    if state is None:
+    """Load + apply a project, adopt it as current, remember it (e11s03/e37s01)."""
+    doc = load_project_file(path)
+    if doc is None:
         return False
-    apply_project_state(state)
+    apply_project_state(doc)
+    state.current_project_path = path
+    _adopt_content_as_saved()
+    refresh_window_title()
     cfg = load_config()
-    cfg["theme"] = state["theme"]
+    cfg["theme"] = doc["theme"]
     remember_recent_project(cfg, path)
     save_config(cfg)
     rebuild_last_project_menu()
@@ -957,9 +1031,14 @@ def show_open_project_dialog() -> None:
 
 
 def show_save_project_dialog() -> None:
-    """Show the Save-project file dialog, defaulting to the projects folder (e11s03, e13s02)."""
+    """Show the Save-as file dialog, prefilled with the current project name (e11s03/e37s02)."""
     os.makedirs(PROJECTS_DIR, exist_ok=True)
-    _recreate_project_dialog("save_project_dialog", on_save_project_picked, "project.viseq")
+    default = (
+        os.path.basename(state.current_project_path)
+        if state.current_project_path
+        else "project.viseq"
+    )
+    _recreate_project_dialog("save_project_dialog", on_save_project_picked, default)
 
 
 def on_open_project_picked(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -976,23 +1055,43 @@ def on_save_project_picked(sender: Any = None, app_data: Any = None, user_data: 
         save_project_file(path)
 
 
+def save_current_project(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """viSeq > Save: write the current project; the first save opens Save as (e37s02)."""
+    if state.current_project_path:
+        save_project_file(state.current_project_path)
+    else:
+        show_save_project_dialog()
+
+
 def exit_app(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """viSeq > Exit: ask for confirmation before closing the app (e19)."""
-    show_exit_confirm()
+    """viSeq > Exit menu voice: the dirty-gated close request (e19/e37s04)."""
+    request_exit()
 
 
-# e19: exit confirmation — the modal is shared by viSeq > Exit and the OS
-# main-window X (set_exit_callback + disable_close). ``_exiting_app`` guards
-# the shutdown-time re-invocation of the exit callback (destroy_context queues
-# it again while tearing down, when no modal may be created).
+# e19/e37s04: exit confirmation — the modal is shared by viSeq > Exit and the
+# OS main-window X (set_exit_callback + disable_close), but it opens ONLY when
+# the project is dirty; a clean session quits immediately. ``_exiting_app``
+# guards the shutdown-time re-invocation of the exit callback (destroy_context
+# queues it again while tearing down, when no modal may be created).
 EXIT_CONFIRM_TAG = "exit_confirm_modal"
 
 
 _exiting_app = False
 
 
+def request_exit(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Close request (menu Exit or the OS window X): ask when dirty, else quit (e37s04)."""
+    if _exiting_app:
+        return  # already confirmed — destroy_context re-invokes the exit callback
+    _sync_project_dirty()  # fresh dirt: the ~0.5 s cadence may lag a just-made edit
+    if state.project_dirty:
+        show_exit_confirm()
+    else:
+        confirm_exit()
+
+
 def show_exit_confirm(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Close request (menu Exit or the OS window X): confirm before quitting (e19)."""
+    """Open the Exit-confirmation modal (called only when the project is dirty, e37s04)."""
     if _exiting_app:
         return  # already confirmed — destroy_context re-invokes the exit callback
     if dpg.does_item_exist(EXIT_CONFIRM_TAG):
@@ -1066,10 +1165,26 @@ def cancel_new_project(sender: Any = None, app_data: Any = None, user_data: Any 
 
 
 def confirm_new_project(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Modal New project: close the confirmation and reset the sequencer (e15s01)."""
+    """Modal New project: close the confirmation and reset the sequencer (e15s01).
+
+    e37s01: a new project is unnamed — the reset also clears the current-path
+    identity and records the pristine content as the saved baseline.
+    """
     if dpg.does_item_exist(NEW_PROJECT_CONFIRM_TAG):
         dpg.delete_item(NEW_PROJECT_CONFIRM_TAG)
     apply_new_project()
+    state.current_project_path = None
+    _adopt_content_as_saved()
+    refresh_window_title()
+
+
+def request_new_project(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """viSeq > New project: reset immediately when clean; ask when dirty (e37s04)."""
+    _sync_project_dirty()  # fresh dirt: the ~0.5 s cadence may lag a just-made edit
+    if state.project_dirty:
+        show_new_project_confirm()
+    else:
+        confirm_new_project()
 
 
 def apply_boot_config() -> None:
@@ -1111,6 +1226,8 @@ def apply_boot_config() -> None:
             project_state = load_project_file(recent[0])
             if project_state is not None:
                 apply_project_state(project_state)
+                state.current_project_path = recent[0]  # e37s01: boot-restored identity
+    _adopt_content_as_saved()  # e37: the boot session (restored or pristine) is the clean baseline
 
 
 def format_osc_log(history: list[str]) -> str:
@@ -6863,6 +6980,27 @@ for _mapper_line_no_font_path in _TILE_TITLE_FONT_PATHS:
             )
         break
 
+
+def _project_flow_ui_blocked() -> bool:
+    """True while a project dialog or a confirmation modal is shown (e37s02).
+
+    Save shortcuts must stay inert while the user types a filename in a file
+    dialog or answers the Exit / New-project prompt.
+    """
+    tags = ("open_project_dialog", "save_project_dialog", EXIT_CONFIRM_TAG, NEW_PROJECT_CONFIRM_TAG)
+    return any(dpg.does_item_exist(t) and dpg.is_item_shown(t) for t in tags)
+
+
+def _on_save_key(sender: Any, app_data: Any, user_data: Any) -> None:
+    """Key wrapper: DPG 2.3.1 handlers ignore modifiers — gate on Ctrl/Shift (e37s02)."""
+    if not dpg.is_key_down(dpg.mvKey_ModCtrl) or _project_flow_ui_blocked():
+        return
+    if dpg.is_key_down(dpg.mvKey_ModShift):
+        show_save_project_dialog()  # Ctrl+Shift+S = Save as...
+    else:
+        save_current_project()  # Ctrl+S = Save
+
+
 with dpg.handler_registry():
     # DPG 2.3.1 key handlers have no modifier support: the wrapper checks Ctrl itself
     dpg.add_key_press_handler(dpg.mvKey_C, callback=_on_copy_key)
@@ -6870,6 +7008,8 @@ with dpg.handler_registry():
     # e17: Ctrl+Tab / Ctrl+Shift+Tab cycle the workspace windows (the callback
     # checks the modifiers and the input-focus guard itself).
     dpg.add_key_press_handler(dpg.mvKey_Tab, callback=on_cycle_window)
+    # e37s02: Ctrl+S / Ctrl+Shift+S save / save-as (the wrapper checks modifiers).
+    dpg.add_key_press_handler(dpg.mvKey_S, callback=_on_save_key)
 
 
 # e10s06: one click-handler registry per Mediagrid tile. DPG 2.x item handlers
@@ -7520,20 +7660,21 @@ threading.Thread(target=essentia_analyzer_loop, daemon=True).start()
 threading.Thread(target=thumbnail_decoder_worker, daemon=True).start()
 
 dpg.create_viewport(title="viSeq - Audio-Reactive VJ Controller", width=1700, height=1080)
-# e19: closing the main window asks for confirmation — the viewport X routes to
-# the exit modal instead of stopping the app (disable_close keeps rendering on;
-# the modal's Exit button calls stop_dearpygui).
-dpg.set_exit_callback(show_exit_confirm)
+# e19/e37s04: closing the main window goes through the dirty-gated request — a
+# clean session quits immediately, a dirty one opens the exit modal
+# (disable_close keeps rendering on; the modal's Exit button stops the app).
+dpg.set_exit_callback(request_exit)
 dpg.configure_viewport("__viewport", disable_close=True)
 apply_boot_config()  # e06: apply the saved theme + (optionally) the saved window layout
 ensure_user_dirs()  # e21s01: eager XDG user dirs (config + projects) + legacy .viseq migration
 with dpg.viewport_menu_bar():
     with dpg.menu(label="viSeq"):  # e11s03: first menubar menu — project file flows
-        dpg.add_menu_item(label="New project", callback=show_new_project_confirm)  # e15s01
+        dpg.add_menu_item(label="New project", callback=request_new_project)  # e15s01/e37s04
         dpg.add_menu_item(label="Open project", callback=show_open_project_dialog)
         with dpg.menu(label="Last project", tag="menu_last_project"):
             pass  # children rebuilt by rebuild_last_project_menu() (boot + after every save/open)
-        dpg.add_menu_item(label="Save project", callback=show_save_project_dialog)
+        dpg.add_menu_item(label="Save", callback=save_current_project)  # e37s02: silent save
+        dpg.add_menu_item(label="Save as...", callback=show_save_project_dialog)  # e37s02
         dpg.add_separator()
         dpg.add_menu_item(label="Exit", callback=exit_app)
     with dpg.menu(label="Windows", tag="menu_windows"):  # e12s01 + e17 (window list)
@@ -7555,6 +7696,7 @@ with dpg.viewport_menu_bar():
 rebuild_last_project_menu()  # e11s03: populate the Last-project submenu for boot
 dpg.setup_dearpygui()
 dpg.show_viewport()
+refresh_window_title()  # e37s03: the title announces the boot project identity
 autostart_osc()  # boot: auto-connect OSC client + start listening server (no manual clicks)
 
 try:
@@ -7600,6 +7742,8 @@ try:
         tick_thumb_cycle(time.time())
 
         tick_window_menu()  # e17: keep the Windows-menu list + active mark fresh
+
+        tick_project_dirty(time.time())  # e37s03: unsaved-changes marker cadence
 
         tick_cue_triggers()  # e35s03: cue-list card running labels (idle-cheap)
 
