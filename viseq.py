@@ -1441,6 +1441,30 @@ def _apply_step_theme(cell_tag: str, is_active: bool, is_head: bool) -> None:
         dpg.bind_item_theme(cell_tag, theme_cell_on if is_active else theme_cell_off)
 
 
+def _clear_step_cell(row: int, col: int) -> None:
+    """Delete a step cell's content so a rebuild cannot collide.
+
+    DPG 2.3.1 quirk: ``delete_item(cell, children_only=True)`` does NOT release
+    the aliases of items nested inside a ``dpg.popup`` — a second rebuild of
+    the same cell then raises 'Alias already exists' (error 1000). Worse, the
+    popup survives the deletion of its anchor group as an orphan, so it must be
+    deleted EXPLICITLY by its own tag first; then every direct child item of
+    the cell is removed.
+    """
+    cell_tag = f"seq_cell_{row}_{col}"
+    popup_tag = f"seq_pop_{row}_{col}"
+    if dpg.does_item_exist(popup_tag):
+        dpg.delete_item(popup_tag)  # the orphaned popup keeps its aliases alive
+    try:
+        children = dpg.get_item_children(cell_tag, 1) or []
+    except Exception:  # defensive: fall back to the container delete
+        dpg.delete_item(cell_tag, children_only=True)
+        return
+    for child in children:
+        if child is not None:
+            dpg.delete_item(child)
+
+
 def update_step_ui(row: int, col: int) -> None:
     cell_tag = f"seq_cell_{row}_{col}"
     step_data = tracks_data[row]["steps"][col]
@@ -1448,7 +1472,7 @@ def update_step_ui(row: int, col: int) -> None:
     if not dpg.does_item_exist(cell_tag):
         return
 
-    dpg.delete_item(cell_tag, children_only=True)
+    _clear_step_cell(row, col)
 
     with dpg.group(horizontal=True, parent=cell_tag):
         cb = dpg.add_checkbox(
@@ -1467,7 +1491,7 @@ def update_step_ui(row: int, col: int) -> None:
         )
         _text_color_bindings[f"seq_type_{row}_{col}"] = "text"
 
-        with dpg.popup(cb, mousebutton=dpg.mvMouseButton_Right):
+        with dpg.popup(cb, mousebutton=dpg.mvMouseButton_Right, tag=f"seq_pop_{row}_{col}"):
             # 2026-09-06 (user): arm/cancel MIDI Learn from any right-click menu
             _add_context_learn_item(tag=f"ctx_learn_cell_{row}_{col}")
             dpg.add_separator()
