@@ -4787,6 +4787,9 @@ def midi_mapping_value(mapping_id: int, midi_value: int) -> None:
         return
     value = mapper.apply_input_value(mapping_id, midi_value)
     _set_mapper_control_value(mapping_id, value)
+    if mapping is not None and mapping.get("control") == "button":
+        # BUG-2026-09-07: the square trigger must follow the driven value too
+        _sync_mapper_button_state(mapping)
 
 
 def tick_midi_learn_timeout() -> None:
@@ -4949,6 +4952,21 @@ def on_mapper_control(sender: Any, app_data: Any, user_data: Any) -> None:
     mapper.send_mapping_value(mid, float(app_data))
 
 
+def _sync_mapper_button_state(mapping: dict[str, Any]) -> None:
+    """Restyle a square trigger (button) from the mapping's current value.
+
+    BUG-2026-09-07T154112: the mouse click AND the MIDI value drive are two
+    drivers of the same control — both must refresh label + theme, or a
+    MIDI-mapped button stays visually OFF while state and OSC change.
+    """
+    kind = mapper.control_tag_kind(mapping["control"])
+    tag = f"mapper_{kind}_{mapping['id']}"
+    if not dpg.does_item_exist(tag):
+        return
+    dpg.configure_item(tag, label=_trigger_label(mapping))
+    _style_trigger_theme(tag, _trigger_is_on(mapping))
+
+
 def on_mapper_button(sender: Any, app_data: Any, user_data: Any) -> None:
     """Button/cue-list press.
 
@@ -4969,11 +4987,7 @@ def on_mapper_button(sender: Any, app_data: Any, user_data: Any) -> None:
     mapping = mapper.find_mapping(mid)
     if mapping is None:
         return
-    kind = mapper.control_tag_kind(mapping["control"])
-    tag = f"mapper_{kind}_{mid}"
-    if dpg.does_item_exist(tag):
-        dpg.configure_item(tag, label=_trigger_label(mapping))
-    _style_trigger_theme(tag, _trigger_is_on(mapping))
+    _sync_mapper_button_state(mapping)
 
 
 def _trigger_is_on(mapping: dict[str, Any]) -> bool:
