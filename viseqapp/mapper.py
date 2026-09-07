@@ -49,7 +49,7 @@ MAPPER_CONTROLS: tuple[str, str, str, str] = (
 
 # e35s01: the extensible cue row kinds — the window editor and the engine
 # iterate this tuple so new kinds stay additive (user: "wait", "mapper", ecc.).
-CUE_ROW_KINDS: tuple[str, str, str] = ("property", "wait", "mapper")
+CUE_ROW_KINDS: tuple[str, str, str, str] = ("property", "wait", "mapper", "burst")
 
 # e34s04: control -> widget-tag kind — the tags the UI derives from a control
 # (mapper_slider_N / mapper_knob_N / mapper_btn_N / mapper_cue_N) come from ONE
@@ -137,21 +137,100 @@ def _cue_level(raw: Any) -> int:
 
 
 def _cue_property_payload(raw: Any) -> dict[str, Any] | None:
-    """Heal a property payload: catalog property + value clamped into its range."""
+    """Heal a property payload against the catalog (e36s05).
+
+    Any catalog property except the RATE family (rates belong to burst rows):
+    scalar/enum/toggle/trigger carry {property, value} clamped into the
+    component range; multi-value properties (position/size/color/corner)
+    carry the FULL {property, values} vector with every component clamped. An
+    optional {ms} > 0 rides ms-capable properties (the native animation
+    duration); toggle/trigger/enum/seek never animate so a stray ms drops.
+    """
     if not isinstance(raw, dict):
         return None
     prop = str(raw.get("property") or "")
-    if prop not in MAPPER_PROPERTIES:
+    entry = catalog.PROPERTY_CATALOG.get(prop)
+    if entry is None or entry["family"] == catalog.FAMILY_RATE:
         return None
-    spec = MAPPER_PROPERTIES[prop]
-    value = raw.get("value")
-    if value is None:
-        value = _midpoint(spec["min"], spec["max"])
+    comps = entry["components"]
+    out: dict[str, Any] = {"property": prop}
+    if len(comps) > 1:
+        values = raw.get("values")
+        if not isinstance(values, list) or len(values) != len(comps):
+            return None
+        healed: list[float] = []
+        for comp, value in zip(comps, values, strict=True):
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                return None
+            healed.append(_clamp(value, float(comp["min"]), float(comp["max"])))
+        out["values"] = healed
+    else:
+        comp = comps[0]
+        value = raw.get("value")
+        if value is None:
+            value = comp["neutral"]
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            value = comp["neutral"]
+        out["value"] = _clamp(value, float(comp["min"]), float(comp["max"]))
+    if entry["ms"]:
+        ms = raw.get("ms")
+        try:
+            ms = float(ms) if ms is not None else 0.0
+        except (TypeError, ValueError):
+            ms = 0.0
+        if ms > 0.0:
+            out["ms"] = ms
+    return out
+
+
+def _cue_burst_payload(raw: Any) -> dict[str, Any] | None:
+    """Heal a burst payload: a rate-family property + duration ms > 0.
+
+    A burst runs ONE bounded rate message (loom/turn/grab/resize/ffwd with
+    ms) — a duration is REQUIRED because a no-duration rate message is a
+    single-frame nudge (spike). Values: single float for scalar rates, the
+    full values list for the vector rates grab/resize.
+    """
+    if not isinstance(raw, dict):
+        return None
+    prop = str(raw.get("property") or "")
+    entry = catalog.PROPERTY_CATALOG.get(prop)
+    if entry is None or entry["family"] != catalog.FAMILY_RATE:
+        return None
+    ms = raw.get("ms")
     try:
-        value = float(value)
+        ms = float(ms) if ms is not None else 0.0
     except (TypeError, ValueError):
-        value = _midpoint(spec["min"], spec["max"])
-    return {"property": prop, "value": _clamp(value, spec["min"], spec["max"])}
+        return None
+    if ms <= 0.0:
+        return None
+    comps = entry["components"]
+    out: dict[str, Any] = {"property": prop, "ms": ms}
+    if len(comps) > 1:
+        values = raw.get("values")
+        if not isinstance(values, list) or len(values) != len(comps):
+            return None
+        healed: list[float] = []
+        for comp, value in zip(comps, values, strict=True):
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                return None
+            healed.append(_clamp(value, float(comp["min"]), float(comp["max"])))
+        out["values"] = healed
+    else:
+        comp = comps[0]
+        value = raw.get("value")
+        try:
+            value = float(value) if value is not None else comp["neutral"]
+        except (TypeError, ValueError):
+            value = comp["neutral"]
+        out["value"] = _clamp(value, float(comp["min"]), float(comp["max"]))
+    return out
 
 
 def _cue_wait_payload(raw: Any) -> dict[str, Any] | None:
@@ -188,6 +267,7 @@ _CUE_PAYLOAD_HEALERS: dict[str, Any] = {
     "property": _cue_property_payload,
     "wait": _cue_wait_payload,
     "mapper": _cue_mapper_payload,
+    "burst": _cue_burst_payload,  # e36s05
 }
 
 

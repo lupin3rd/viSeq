@@ -5277,11 +5277,23 @@ def mapper_dialog_cancel(sender: Any = None, app_data: Any = None, user_data: An
 
 
 def _cue_row_label(mapping: dict[str, Any], row: dict[str, Any]) -> str:
-    """Human row text: 'alpha = 0.80', 'wait 500 ms', 'mapper #7: clipA lock' (e35s04)."""
+    """Human row text: 'alpha = 0.80', 'color (0.20, 0.90, 0.70)',
+    'burst turn 0.50 for 500 ms', 'wait 500 ms', 'mapper #7: clipA lock'
+    (e35s04 + e36s05 typed payloads)."""
     kind = row.get("kind")
     payload = row.get("payload", {})
-    if kind == "property":
-        return f"{payload.get('property')} = {float(payload.get('value', 0.0)):.2f}"
+    if kind in ("property", "burst"):
+        prop = str(payload.get("property") or "")
+        if isinstance(payload.get("values"), list):
+            text = f"{prop} ({', '.join(f'{float(v):.2f}' for v in payload['values'])})"
+        else:
+            text = f"{prop} = {float(payload.get('value', 0.0)):.2f}"
+        ms = payload.get("ms")
+        if kind == "burst":
+            text = "burst " + text + f" for {float(ms or 0.0):.0f} ms"
+        elif ms:
+            text += f" over {float(ms):.0f} ms"
+        return text
     if kind == "wait":
         return f"wait {float(payload.get('ms', 0.0)):.0f} ms"
     ref = int(payload.get("mapping_id", 0))
@@ -5460,11 +5472,13 @@ def cue_row_delete(sender: Any = None, app_data: Any = None, user_data: Any = No
 
 
 def on_cue_kind_change(sender: Any, app_data: Any, user_data: Any = None) -> None:
-    """Row-dialog kind combo: reveal ONLY the fields of the chosen kind (e35s04)."""
+    """Row-dialog kind combo: reveal ONLY the fields of the chosen kind
+    (e35s04 + e36s05: a 'burst' kind runs one bounded rate message)."""
     kind = str(app_data)
     dpg.configure_item("cue_prop_fields", show=kind == "property")
     dpg.configure_item("cue_wait_fields", show=kind == "wait")
     dpg.configure_item("cue_mapper_fields", show=kind == "mapper")
+    dpg.configure_item("cue_burst_fields", show=kind == "burst")
 
 
 def _dlg_float(tag: str, default: float) -> float:
@@ -5473,6 +5487,86 @@ def _dlg_float(tag: str, default: float) -> float:
         return float(dpg.get_value(tag))
     except (TypeError, ValueError):
         return default
+
+
+def _cue_row_prop_candidates() -> list[str]:
+    """Property rows target every catalog property except the rate family."""
+    return list(mapper.mappable_properties())
+
+
+def _cue_row_rate_candidates() -> list[str]:
+    """Burst rows target the rate family only (loom/turn/grab/resize/ffwd)."""
+    return [p for p, e in catalog.PROPERTY_CATALOG.items() if e["family"] == catalog.FAMILY_RATE]
+
+
+def _cue_dlg_render_values(
+    container: str, prop: str, prefilled: list[float] | None = None, ms_value: float = 0.0
+) -> None:
+    """Render the value/component + optional ms editors of a row property into
+    the given container (e36s05): one drag for a single-value property (tag
+    cue_dlg_value), one labelled drag per component for multi-value properties
+    (tags cue_dlg_v0..), plus an 'Animate (ms)' drag on ms-capable properties."""
+    if dpg.does_item_exist(container):
+        dpg.delete_item(container, children_only=True)
+    entry = catalog.PROPERTY_CATALOG[prop]
+    comps = entry["components"]
+    pre = prefilled or [float(c["neutral"]) for c in comps]
+    if len(comps) == 1:
+        comp = comps[0]
+        dpg.add_text("Value", slot="text_dim", parent=container)
+        dpg.add_drag_float(
+            parent=container,
+            default_value=pre[0],
+            min_value=float(comp["min"]),
+            max_value=float(comp["max"]),
+            width=140,
+            format="%.2f",
+            speed=0.01,
+            tag="cue_dlg_value",
+        )
+    else:
+        for i, comp in enumerate(comps):
+            dpg.add_text(f"{comp['label']}", slot="text_dim", parent=container)
+            dpg.add_drag_float(
+                parent=container,
+                default_value=pre[i] if i < len(pre) else float(comp["neutral"]),
+                min_value=float(comp["min"]),
+                max_value=float(comp["max"]),
+                width=140,
+                format="%.2f",
+                speed=0.01,
+                tag=f"cue_dlg_v{i}",
+            )
+    if entry["ms"]:
+        dpg.add_text("Animate (ms)", slot="text_dim", parent=container)
+        dpg.add_drag_float(
+            parent=container,
+            default_value=ms_value if ms_value > 0 else 0.0,
+            width=140,
+            format="%.0f",
+            speed=10.0,
+            min_value=0.0,
+            max_value=60_000.0,
+            tag="cue_dlg_ms",
+        )
+
+
+def _cue_dlg_read_payload(prop: str) -> dict[str, Any]:
+    """Read the value/ms fields rendered by _cue_dlg_render_values into the
+    model payload shape {property, value|values, ms?} (e36s05)."""
+    entry = catalog.PROPERTY_CATALOG[prop]
+    payload: dict[str, Any] = {"property": prop}
+    if len(entry["components"]) > 1:
+        payload["values"] = [
+            _dlg_float(f"cue_dlg_v{i}", float(c["neutral"]))
+            for i, c in enumerate(entry["components"])
+        ]
+    else:
+        payload["value"] = _dlg_float("cue_dlg_value", 0.0)
+    ms = _dlg_float("cue_dlg_ms", 0.0)
+    if ms > 0 and entry["ms"]:
+        payload["ms"] = ms
+    return payload
 
 
 def _open_cue_row_dialog(mid: int, insert_after: int = -1, edit_index: int | None = None) -> None:
@@ -5490,10 +5584,13 @@ def _open_cue_row_dialog(mid: int, insert_after: int = -1, edit_index: int | Non
     editing = edit_index is not None and 0 <= edit_index < len(cue["rows"])
     row = cue["rows"][edit_index] if editing else None
     kind = str((row or {}).get("kind", "property"))
-    prop = str(((row or {}).get("payload") or {}).get("property", "alpha"))
-    value = float(((row or {}).get("payload") or {}).get("value", 0.0))
-    wait_ms = float(((row or {}).get("payload") or {}).get("ms", 500.0))
-    ref = int(((row or {}).get("payload") or {}).get("mapping_id", 0))
+    payload = (row or {}).get("payload") or {}
+    prop = str(payload.get("property", "alpha"))
+    value = float(payload.get("value", 0.0))
+    values = payload.get("values")
+    wait_ms = float(payload.get("ms", 500.0)) if kind == "wait" else 0.0
+    prop_ms = float(payload.get("ms", 0.0)) if kind == "property" else 0.0
+    ref = int(payload.get("mapping_id", 0))
     if dpg.does_item_exist("cue_dialog"):
         dpg.delete_item("cue_dialog")
     with dpg.window(
@@ -5501,7 +5598,7 @@ def _open_cue_row_dialog(mid: int, insert_after: int = -1, edit_index: int | Non
         tag="cue_dialog",
         modal=True,
         width=360,
-        height=330,
+        height=470,
         no_resize=True,
     ):
         themed_text("Kind", slot="text_dim")
@@ -5515,19 +5612,25 @@ def _open_cue_row_dialog(mid: int, insert_after: int = -1, edit_index: int | Non
         with dpg.group(tag="cue_prop_fields", show=kind == "property"):
             themed_text("Property", slot="text_dim")
             dpg.add_combo(
-                items=list(mapper.MAPPER_PROPERTIES),
-                default_value=prop if prop in mapper.MAPPER_PROPERTIES else "alpha",
+                items=_cue_row_prop_candidates(),
+                default_value=prop if prop in catalog.PROPERTY_CATALOG else "alpha",
                 width=260,
                 tag="cue_dlg_prop_combo",
+                callback=lambda s2, a2: _cue_dlg_render_values("cue_prop_values", str(a2)),
             )
-            themed_text("Value", slot="text_dim")
-            dpg.add_drag_float(
-                default_value=value,
-                width=140,
-                format="%.2f",
-                speed=0.01,
-                tag="cue_dlg_value",
+            dpg.add_group(tag="cue_prop_values")
+        with dpg.group(tag="cue_burst_fields", show=kind == "burst"):
+            themed_text("Rate burst", slot="text_dim")
+            dpg.add_combo(
+                items=_cue_row_rate_candidates(),
+                default_value=prop if prop in catalog.PROPERTY_CATALOG else "turn",
+                width=260,
+                tag="cue_dlg_burst_combo",
+                callback=lambda s2, a2: _cue_dlg_render_values(
+                    "cue_burst_values", str(a2), ms_value=_dlg_float("cue_dlg_ms", 0.0)
+                ),
             )
+            dpg.add_group(tag="cue_burst_values")
         with dpg.group(tag="cue_wait_fields", show=kind == "wait"):
             themed_text("Wait ms", slot="text_dim")
             dpg.add_drag_float(
@@ -5578,6 +5681,12 @@ def _open_cue_row_dialog(mid: int, insert_after: int = -1, edit_index: int | Non
                 width=120,
                 callback=cue_dialog_cancel,
             )
+    if kind == "property":
+        prefill = values if isinstance(values, list) else [value]
+        _cue_dlg_render_values("cue_prop_values", prop, prefill, ms_value=prop_ms)
+    elif kind == "burst":
+        prefill = values if isinstance(values, list) else [value]
+        _cue_dlg_render_values("cue_burst_values", prop, prefill, ms_value=prop_ms)
     dpg.show_item("cue_dialog")
 
 
@@ -5598,11 +5707,18 @@ def cue_dialog_confirm(sender: Any = None, app_data: Any = None, user_data: Any 
         kind = str(dpg.get_value("cue_dlg_kind_combo"))
         if kind == "property":
             prop = str(dpg.get_value("cue_dlg_prop_combo"))
-            if prop not in mapper.MAPPER_PROPERTIES:
+            if prop not in catalog.PROPERTY_CATALOG:
                 raise ValueError(f"unknown property {prop!r}")
-            payload = {"property": prop, "value": _dlg_float("cue_dlg_value", 0.0)}
+            payload = _cue_dlg_read_payload(prop)  # e36s05: scalar/vector + ms
         elif kind == "wait":
             payload = {"ms": max(0.0, _dlg_float("cue_dlg_wait", 0.0))}
+        elif kind == "burst":
+            prop = str(dpg.get_value("cue_dlg_burst_combo"))
+            if prop not in catalog.PROPERTY_CATALOG:
+                raise ValueError(f"unknown rate {prop!r}")
+            payload = _cue_dlg_read_payload(prop)
+            if float(payload.get("ms", 0.0)) <= 0.0:
+                raise ValueError("burst rows need a duration (ms)")
         elif kind == "mapper":
             option = str(dpg.get_value("cue_dlg_mapper_combo"))
             mapping_id = int(option.split(":", 1)[0])

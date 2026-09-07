@@ -20,7 +20,7 @@ running in the activation chain (including the running cue itself) is a no-op
 
 from typing import Any
 
-from viseqapp import mapper, state
+from viseqapp import catalog, mapper, state
 from viseqapp.osc import osc_client
 from viseqapp.queues import append_log
 
@@ -53,12 +53,17 @@ def build_cue_plan(cue: dict[str, Any], target_id: str) -> list[tuple[float, str
         last_level = level
         kind = row.get("kind")
         payload = row.get("payload", {})
-        if kind == "property":
+        if kind in ("property", "burst"):
             prop = str(payload.get("property") or "")
             if prop:
-                entries.append(
-                    (t, _PLAN_SEND, {"property": prop, "value": float(payload.get("value"))})
-                )
+                entry: dict[str, Any] = {"property": prop}
+                if isinstance(payload.get("values"), list):
+                    entry["values"] = list(payload["values"])
+                else:
+                    entry["value"] = float(payload.get("value", 0.0))
+                if payload.get("ms"):
+                    entry["ms"] = float(payload["ms"])
+                entries.append((t, _PLAN_SEND, entry))
         elif kind == "wait":
             t += float(payload.get("ms") or 0.0)
         elif kind == "mapper":
@@ -149,8 +154,8 @@ def cue_stop(mapping_id: int) -> None:
 def cue_progress(mapping_id: int) -> tuple[int, int]:
     """(executed, total) cue actions of a mapping (UAT e35).
 
-    Wait rows are PACING, not actions: only property/mapper rows count toward
-    the total and toward the executed counter (the run's cursor). Idle or
+    Wait rows are PACING, not actions: only property/mapper/burst rows count
+    toward the total and toward the executed counter (the run's cursor). Idle or
     finished runs read 0 executed, so the card shows '0 of N' at rest.
     """
     mapping = mapper.find_mapping(mapping_id)
@@ -158,7 +163,9 @@ def cue_progress(mapping_id: int) -> tuple[int, int]:
     if mapping is not None:
         cue = mapping.get("cue")
         if isinstance(cue, dict):
-            total = sum(1 for r in cue.get("rows", []) if r.get("kind") in ("property", "mapper"))
+            total = sum(
+                1 for r in cue.get("rows", []) if r.get("kind") in ("property", "mapper", "burst")
+            )
     executed = 0
     for run in state.cue_runs:
         if run["mapping_id"] == mapping_id:
@@ -195,7 +202,7 @@ def _advance_run(run: dict[str, Any], now_ms: float) -> None:
     while cursor < len(plan) and plan[cursor][0] + base <= now_ms:
         _, action, payload = plan[cursor]
         if action == _PLAN_SEND:
-            _send_property(run, str(payload["property"]), float(payload["value"]))
+            _send_property(run, payload)
         elif action == _PLAN_ACTIVATE:
             _cue_start(
                 int(payload["mapping_id"]), ancestry=list(run["chain"]), restart_allowed=False
@@ -206,11 +213,31 @@ def _advance_run(run: dict[str, Any], now_ms: float) -> None:
         state.cue_runs.remove(run)
 
 
-def _send_property(run: dict[str, Any], prop: str, value: float) -> None:
-    """Send one cue action to the run mapping's source and log it (worker-safe)."""
+def _send_property(run: dict[str, Any], payload: dict[str, Any]) -> None:
+    """Send one cue action to the run mapping's source and log it (worker-safe).
+
+    e36s05: property and burst rows carry the typed payload; the exact argument
+    list is composed through the shared catalog composer (scalar float / full
+    vector / rate burst + duration ms). Legacy scalar rows stay byte-identical
+    (single float payload).
+    """
+    prop = str(payload["property"])
     addr = f"/vimix/{run['target_id']}/{prop}"
-    osc_client.send_message(addr, float(value))
-    append_log("OUT", f"{addr} [{value:.2f}]")
+    ms = payload.get("ms")
+    if isinstance(payload.get("values"), list):
+        args: list[Any] = catalog.compose_send_args(
+            prop, values=[float(x) for x in payload["values"]], ms=ms
+        )
+    else:
+        args = catalog.compose_send_args(prop, value=float(payload.get("value", 0.0)), ms=ms)
+    if len(args) == 1 and args[0] is not None:
+        osc_client.send_message(addr, float(args[0]))
+    else:
+        osc_client.send_message(addr, list(args))
+    parts = []
+    for a in args:
+        parts.append("N" if a is None else f"{float(a):.2f}")
+    append_log("OUT", f"{addr} [{', '.join(parts)}]")
 
 
 __all__ = ["build_cue_plan", "cue_is_running", "cue_start", "cue_stop", "tick"]
