@@ -3,6 +3,7 @@ import copy
 import json
 import math
 import os
+import queue
 import random  # noqa: F401 — module attribute (test harness patches viseq.random)
 import shutil
 import threading
@@ -20,7 +21,7 @@ from PIL import Image
 from pythonosc import dispatcher, udp_client
 
 import viseqapp  # noqa: F401  scaffold hook (REFACTOR_LATEST.md commit 1): proves the package import path works at boot
-from viseqapp import actions, catalog, cue, leap, mapper, state
+from viseqapp import actions, catalog, cue, leap, mapper, preview, state
 from viseqapp.audio import (
     _set_band_variable,
     apply_spectrum_agc,
@@ -127,6 +128,7 @@ from viseqapp.constants import (
     MONITOR_THUMB_W,
     NUM_STEPS,
     NUM_TRACKS,
+    PREVIEW_PORT,
     PROJECT_FILE_EXTENSION,
     PROJECT_FORMAT,
     PROJECT_VERSION,
@@ -1312,6 +1314,8 @@ def frame_sleep() -> float:
     """Main-loop sleep: full rate while animating, throttled while idle (perf e07 P1)."""
     if state.is_playing or state.is_audio_analyzing:
         return FRAME_SLEEP_ANIMATED
+    if state.preview_active is not None and state.preview_playing:
+        return FRAME_SLEEP_ANIMATED  # e38: a playing preview keeps full rate
     for p in monitor_players:
         if not p.get("target_id"):
             continue
@@ -1937,7 +1941,14 @@ def _add_tile_context_items(target_id: str) -> None:
     popup DOES carry one trailing MODE item (_add_context_learn_item) that
     arms/cancels MIDI Learn — a mode toggle is not a binding target, so the
     no-marker rule above stands.
+    e38s03: the popup leads with "Preview..." for media sources that are not
+    known images — a tile-anchored action like the others (no learn marker).
     """
+    # e38s03: content preview of the source's file (video-only per user
+    # decision; unknown-kind media classify on activation)
+    if _preview_offered(_source_props(target_id)):
+        dpg.add_menu_item(label="Preview...", callback=start_source_preview, user_data=target_id)
+        dpg.add_separator()
     dpg.add_menu_item(
         label="Regenerate Thumbnails",
         callback=regen_thumb_callback,
@@ -2423,6 +2434,8 @@ def update_vimix_sources_ui(json_string: str) -> None:
             refresh_mapper_ui()  # a removed source takes its mappings with it (e16)
         if state.viseq_selected_source is not None and state.viseq_selected_source not in live_ids:
             state.viseq_selected_source = None  # a pruned source can't stay selected (e10s06)
+        if state.preview_active is not None and state.preview_active not in live_ids:
+            close_source_preview()  # a pruned source can't keep a preview stream (e38s03)
 
         current_source = state.global_vimix_state["current_source"]
         data_dict = state.global_vimix_state["sources"]
@@ -3044,6 +3057,263 @@ def remove_monitor_player(player_id: int) -> None:
     if dpg.does_item_exist(tag):
         dpg.delete_item(tag)
     del monitor_players[idx]
+
+
+# ==============================================================================
+# e38: SOURCE VIDEO PREVIEW — embedded panel in the "Vimix sources" window
+# ==============================================================================
+# The transport (viseqapp/preview.py) is dpg-free (HIGH-1); this block owns the
+# panel UI on the main thread: the "Preview..." tile action (media sources that
+# are not known images), the panel as a SIBLING of the tile grid, the per-frame
+# raw-texture apply and the clean-stop paths (Close / source switch / source
+# prune / worker error). The e33 rule is not triggered: the tile action is
+# tile-anchored like Regenerate Thumbnails — not a MIDI binding target.
+
+PREVIEW_PANEL_TAG = "preview_panel"
+PREVIEW_BODY_TAG = "preview_body"
+PREVIEW_VIDEO_SLOT_TAG = "preview_video_slot"
+PREVIEW_TEXTURE_TAG = "preview_tex"
+PREVIEW_IMAGE_TAG = "preview_img"
+PREVIEW_TITLE_TAG = "preview_title"
+PREVIEW_TIME_TAG = "preview_time"
+PREVIEW_SEEK_TAG = "preview_seek"
+PREVIEW_PLAYBTN_TAG = "preview_play_btn"
+PREVIEW_WAIT_TAG = "preview_wait_text"
+PREVIEW_STATUS_TAG = "preview_status_text"
+
+
+_preview_player: Any = None  # composition-root-owned PreviewPlayer instance
+_preview_tex_dims: tuple[int, int] | None = None
+_preview_error_shown = False
+
+
+def _preview_endpoints(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Effective preview endpoint: host follows the OSC client (the viOSC
+    machine, machine A), port from cfg['preview'] (default PREVIEW_PORT)."""
+    osc = _osc_endpoints_from_config(cfg)
+    raw = cfg.get("preview")
+    pcfg = raw if isinstance(raw, dict) else {}
+    return {"host": osc["client_ip"], "port": int(pcfg.get("port") or PREVIEW_PORT)}
+
+
+def _source_props(target_id: str) -> dict[str, Any] | None:
+    for props in state.global_vimix_state.get("sources", {}).values():
+        if str(props.get("name")) == str(target_id):
+            return props
+    return None
+
+
+def _preview_offered(props: dict[str, Any] | None) -> bool:
+    """Preview popup gating: offered for media sources (uri) that are not known
+    images — i.e. video, or still-unclassified media (classified on activation)."""
+    if not props or not props.get("uri"):
+        return False
+    return props.get("media_kind") != "image"
+
+
+def _preview_reason(target_id: str, props: dict[str, Any] | None, meta_provider: Any) -> str:
+    """Why a preview can start ('ok') or the explicit message for the panel.
+    Images and non-media never open a panel — the reason is surfaced instead."""
+    if not props or not props.get("uri"):
+        return f"'{target_id}' is not a media source"
+    kind = props.get("media_kind")
+    if kind == "image":
+        return f"'{target_id}' is an image source — preview is video-only"
+    if kind is None:
+        meta = meta_provider()
+        if meta is None:
+            return f"'{target_id}': preview unavailable (no video metadata)"
+        if meta.get("kind") != "video":
+            return f"'{target_id}' is not a video source"
+    return "ok"
+
+
+def _fmt_preview_time(secs: float) -> str:
+    s = max(0, int(secs))
+    return f"{s // 60}:{s % 60:02d}"
+
+
+def _preview_status(message: str) -> None:
+    """Surface a preview message (state + log + status line) — the explicit
+    error surface: never a silent no-op, never a fake panel."""
+    state.preview_error = message
+    append_log("PREVIEW", message)
+    if dpg.does_item_exist(PREVIEW_STATUS_TAG):
+        dpg.set_value(PREVIEW_STATUS_TAG, message)
+
+
+def _build_preview_body(target_id: str) -> None:
+    """(Re)build the panel children for one preview session (main thread)."""
+    with dpg.group(parent=PREVIEW_PANEL_TAG, tag=PREVIEW_BODY_TAG):
+        themed_text(target_id, slot="text_bright", tag=PREVIEW_TITLE_TAG, wrap=520)
+        with dpg.group(tag=PREVIEW_VIDEO_SLOT_TAG):
+            dpg.add_text("Connecting...", tag=PREVIEW_WAIT_TAG)
+        with dpg.group(horizontal=True):
+            dpg.add_button(
+                label="Pause", width=70, tag=PREVIEW_PLAYBTN_TAG, callback=on_preview_play_button
+            )
+            dpg.add_slider_float(
+                default_value=0.0,
+                min_value=0.0,
+                max_value=1.0,
+                width=250,
+                tag=PREVIEW_SEEK_TAG,
+                callback=on_preview_seek,
+            )
+            themed_text("0:00 / 0:00", slot="text", tag=PREVIEW_TIME_TAG)
+            dpg.add_button(label="Close", width=60, callback=close_source_preview)
+        themed_text("", slot="text_dim", tag=PREVIEW_STATUS_TAG, wrap=520)
+
+
+def _preview_apply_frame(rgba: Any) -> None:
+    """Apply one decoded frame (RGBA float32, h x w x 4) to the raw texture. The
+    texture is created once per (session, size); later frames set_value only."""
+    global _preview_tex_dims
+    height, width = rgba.shape[0], rgba.shape[1]
+    dims = (width, height)
+    tex_tag = PREVIEW_TEXTURE_TAG
+    if _preview_tex_dims != dims or not dpg.does_item_exist(tex_tag):
+        for stale in (PREVIEW_IMAGE_TAG, tex_tag):
+            if dpg.does_item_exist(stale):
+                dpg.delete_item(stale)
+        dpg.add_raw_texture(
+            width=width,
+            height=height,
+            default_value=rgba.reshape(-1),
+            tag=tex_tag,
+            parent="texture_registry",
+        )
+        win_w = dpg.get_item_width("vimix_media_window") or 550
+        disp_w = max(200, win_w - 24)
+        disp_h = max(120, int(disp_w * height / width))
+        dpg.add_image(
+            tex_tag,
+            tag=PREVIEW_IMAGE_TAG,
+            parent=PREVIEW_VIDEO_SLOT_TAG,
+            width=disp_w,
+            height=disp_h,
+        )
+        if dpg.does_item_exist(PREVIEW_WAIT_TAG):
+            dpg.delete_item(PREVIEW_WAIT_TAG)
+        _preview_tex_dims = dims
+    else:
+        dpg.set_value(tex_tag, rgba.reshape(-1))
+
+
+def close_source_preview(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Clean stop: close the worker, release the texture, hide the panel."""
+    global _preview_player, _preview_tex_dims
+    player = _preview_player
+    _preview_player = None
+    if player is not None:
+        player.close()
+    for tag in (PREVIEW_TEXTURE_TAG, PREVIEW_IMAGE_TAG):
+        if dpg.does_item_exist(tag):
+            dpg.delete_item(tag)
+    _preview_tex_dims = None
+    if dpg.does_item_exist(PREVIEW_BODY_TAG):
+        dpg.delete_item(PREVIEW_BODY_TAG)
+    if dpg.does_item_exist(PREVIEW_PANEL_TAG):
+        dpg.hide_item(PREVIEW_PANEL_TAG)
+    state.preview_active = None
+    state.preview_playing = False
+    state.preview_error = None
+    while True:  # drop frames still queued for the closed session
+        try:
+            state.preview_frames.get_nowait()
+        except queue.Empty:
+            break
+
+
+def start_source_preview(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Open the embedded preview for a source (tile 'Preview...' action). One
+    preview at a time; images/non-media show an explicit message, never a
+    panel; unknown-kind media are classified via the meta endpoint first."""
+    global _preview_player, _preview_error_shown
+    target_id = str(user_data)
+    props = _source_props(target_id)
+    endpoints = _preview_endpoints(load_config())
+
+    def classify() -> Any:
+        return preview.fetch_media_meta(endpoints["host"], endpoints["port"], target_id)
+
+    reason = _preview_reason(target_id, props, classify)
+    if reason != "ok":
+        _preview_status(reason)
+        return
+    close_source_preview()
+    _preview_error_shown = False
+    state.preview_error = None
+    state.preview_active = target_id
+    state.preview_playing = True
+    _build_preview_body(target_id)
+    if dpg.does_item_exist(PREVIEW_PANEL_TAG):
+        dpg.show_item(PREVIEW_PANEL_TAG)
+    player = preview.PreviewPlayer(target_id, host=endpoints["host"], port=endpoints["port"])
+    _preview_player = player
+    player.start()
+
+
+def on_preview_play_button(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Play/Pause toggle of the preview transport (main thread)."""
+    if _preview_player is None:
+        return
+    if state.preview_playing:
+        _preview_player.pause()
+        state.preview_playing = False
+        if dpg.does_item_exist(PREVIEW_PLAYBTN_TAG):
+            dpg.set_item_label(PREVIEW_PLAYBTN_TAG, "Play")
+    else:
+        _preview_player.resume()
+        state.preview_playing = True
+        if dpg.does_item_exist(PREVIEW_PLAYBTN_TAG):
+            dpg.set_item_label(PREVIEW_PLAYBTN_TAG, "Pause")
+
+
+def on_preview_seek(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Scrub: seek the transport to a fraction of the playable duration."""
+    if _preview_player is not None:
+        _preview_player.seek(float(app_data))
+
+
+def tick_source_preview(_now: float) -> None:
+    """Main-loop tick: drain preview frames onto the texture, keep the transport
+    in sync, surface worker errors once (main thread only, HIGH-1)."""
+    if state.preview_active is None:
+        while True:
+            try:
+                state.preview_frames.get_nowait()
+            except queue.Empty:
+                break
+        return
+    global _preview_error_shown
+    player = _preview_player
+    if player is None:
+        return
+    newest = None
+    while True:
+        try:
+            name, frame = state.preview_frames.get_nowait()
+        except queue.Empty:
+            break
+        if str(name) == str(state.preview_active):
+            newest = frame
+    if newest is not None:
+        _preview_apply_frame(newest)
+    if player.done and player.error and not _preview_error_shown:
+        _preview_error_shown = True
+        _preview_status(player.error)
+    if state.preview_playing and not dpg.is_item_active(PREVIEW_SEEK_TAG):
+        duration = player.duration
+        if duration > 0:
+            fraction = max(0.0, min(1.0, player.position() / duration))
+            if dpg.does_item_exist(PREVIEW_SEEK_TAG):
+                dpg.set_value(PREVIEW_SEEK_TAG, fraction)
+    if dpg.does_item_exist(PREVIEW_TIME_TAG):
+        dpg.set_value(
+            PREVIEW_TIME_TAG,
+            f"{_fmt_preview_time(player.position())} / {_fmt_preview_time(player.duration)}",
+        )
 
 
 def start_osc_server(ip: str, port: int) -> bool:
@@ -7462,18 +7732,20 @@ with dpg.window(
         )
 
 # WINDOW 4: VIMIX MEDIA
-with (
-    dpg.window(
-        label="Vimix sources",
-        width=550,
-        height=690,
-        pos=(1100, 10),
-        no_close=True,
-        tag="vimix_media_window",
-    ),
-    dpg.group(tag="vimix_media_group"),
+with dpg.window(
+    label="Vimix sources",
+    width=550,
+    height=690,
+    pos=(1100, 10),
+    no_close=True,
+    tag="vimix_media_window",
 ):
-    pass
+    # e38s03: the embedded preview panel is a SIBLING of the tile grid (hidden
+    # until a preview starts) — grid rebuilds never destroy a playing preview.
+    with dpg.group(tag=PREVIEW_PANEL_TAG, show=False):
+        pass
+    with dpg.group(tag="vimix_media_group"):
+        pass
 
 # WINDOW 5: OSC LOGS (hidden; opened from the menubar "Show" > "Logs")
 with dpg.window(label="Logs", width=950, height=150, pos=(720, 820), tag="logs_window", show=False):
@@ -7752,6 +8024,8 @@ try:
         tick_leap_monitor()  # e26s02: live two-hand values in the Leap Motion window
 
         tick_leap_visualizer()  # e26s04: embed the IR + skeleton frame (when shown)
+
+        tick_source_preview(time.time())  # e38s03: preview frames + transport sync
 
         request_missing_thumbnails(time.time())
 

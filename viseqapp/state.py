@@ -94,6 +94,7 @@ texture_queue: queue.Queue[Any] = queue.Queue()
 # preview_error carries the last fatal message for the panel.
 preview_frames: queue.Queue[Any] = queue.Queue()
 preview_active: str | None = None
+preview_playing: bool = False  # transport running (play) vs paused — UI-owned
 preview_error: str | None = None
 
 
