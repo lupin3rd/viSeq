@@ -877,14 +877,24 @@ def clear_mapping_source(mapping_id: int) -> None:
     mapping["leap"] = None
 
 
+def _input_window(in_from: float, in_to: float) -> tuple[float, float]:
+    """Sorted bounds of a mapping's input range (reversed ranges included)."""
+    return min(in_from, in_to), max(in_from, in_to)
+
+
 def apply_input_value(mapping_id: int, raw: float) -> float:
     """Drive a mapping from a raw source value (band level / MIDI value, e23s02).
 
     The raw value is remapped through the mapping's input range onto a clamped
     0..1 unit, then through the output range (apply_unit_value) and sent as
-    OSC. Sub-ranges restrict the travel, reversed ranges (from > to) invert
-    the response; a degenerate range yields unit 0 (output_from). Returns the
-    effective value (0.0 for an unknown id). Worker-safe, HIGH-1.
+    OSC. Reversed ranges (from > to) sweep the other way inside the window.
+    BUG-2026-09-07T160930 — ZONE OWNERSHIP: a raw value OUTSIDE the input
+    window HOLDS the mapping (returns its current value, sends nothing)
+    instead of pinning the nearest edge. Without the hold, two same-lever
+    mappings writing one OSC address clamp-sent their edge on every message
+    and overwrote each other — one slider looked dead. A degenerate range
+    yields unit 0 (output_from). Returns the effective value (0.0 for an
+    unknown id). Worker-safe, HIGH-1.
     """
     mapping = find_mapping(mapping_id)
     if mapping is None:
@@ -893,7 +903,10 @@ def apply_input_value(mapping_id: int, raw: float) -> float:
     if in_from is None or in_to is None or in_from == in_to:
         unit = 0.0
     else:
-        unit = _clamp((float(raw) - in_from) / (in_to - in_from), 0.0, 1.0)
+        lo, hi = _input_window(float(in_from), float(in_to))
+        if not (lo <= float(raw) <= hi):
+            return float(mapping["value"])  # outside my window: hold (zone ownership)
+        unit = _clamp((float(raw) - float(in_from)) / (float(in_to) - float(in_from)), 0.0, 1.0)
     return apply_unit_value(mapping_id, unit)
 
 
