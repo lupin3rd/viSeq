@@ -3,7 +3,7 @@ import copy
 import json
 import math
 import os
-import random
+import random  # noqa: F401 — module attribute (test harness patches viseq.random)
 import shutil
 import threading
 import time
@@ -211,9 +211,13 @@ from viseqapp.queues import append_log, enqueue_set_value, log_error, ui_task
 from viseqapp.sequencer import (
     _timed_bpm_live,
     beat_is_event_driven,
-    send_colorr_step,
-    send_colorv_step,
-    send_seekr_step,
+    execute_step,
+    more_step_offerings,
+    parse_step_token,
+    send_colorr_step,  # noqa: F401 — facade re-export (test harness drives these)
+    send_colorv_step,  # noqa: F401 — facade re-export (test harness drives these)
+    send_seekr_step,  # noqa: F401 — facade re-export (test harness drives these)
+    step_modes_covered_by_legacy,
 )
 from viseqapp.state import (
     _last_unmatched_log,
@@ -1271,6 +1275,52 @@ def set_step_type(sender: Any, app_data: Any, user_data: Any) -> None:
     update_step_ui(row, col)
 
 
+# e36s04: lazy 'More properties...' step picker (a modal built on demand, so
+# the per-cell popups stay flat and the import-time menubar capture stays clean)
+_STEP_PICKER_WIN = "step_picker_window"
+
+
+def open_step_picker(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Right-click a step cell > More properties...: pick any (property x mode)
+    step of the catalog in a scrollable modal."""
+    row, col = int(user_data[0]), int(user_data[1])
+    if dpg.does_item_exist(_STEP_PICKER_WIN):
+        dpg.delete_item(_STEP_PICKER_WIN)
+    with dpg.window(
+        label="Step picker",
+        tag=_STEP_PICKER_WIN,
+        modal=True,
+        width=320,
+        height=420,
+        no_resize=True,
+    ):
+        themed_text("More properties...", slot="text_dim")
+        with dpg.child_window(height=330, border=True):
+            for offering in more_step_offerings():
+                for _mode, token, menu_label in offering["modes"]:
+                    dpg.add_button(
+                        label=f"{offering['label']} \u00b7 {menu_label}",
+                        width=280,
+                        callback=_step_picker_apply,
+                        user_data=(row, col, token),
+                    )
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="Close", callback=_step_picker_close, width=280)
+    dpg.show_item(_STEP_PICKER_WIN)
+
+
+def _step_picker_apply(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Apply the picked step type and close the picker."""
+    set_step_type(None, None, user_data)
+    if dpg.does_item_exist(_STEP_PICKER_WIN):
+        dpg.delete_item(_STEP_PICKER_WIN)
+
+
+def _step_picker_close(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    if dpg.does_item_exist(_STEP_PICKER_WIN):
+        dpg.delete_item(_STEP_PICKER_WIN)
+
+
 def _highlight_copied_step(row: int, col: int) -> None:
     """Show the copied-step highlight and clear any previous one."""
     if state.copied_step_pos is not None:
@@ -1444,12 +1494,22 @@ def update_step_ui(row: int, col: int) -> None:
                 label="Seek Random", callback=set_step_type, user_data=(row, col, "SeekR")
             )
             dpg.add_separator()
+            # e36s04: the extended (property x mode) steps open in a lazy modal
+            # picker — built on demand so the import-time menubar capture stays
+            # clean (no nested menus inside the per-cell popups)
+            dpg.add_menu_item(
+                label="More properties...",
+                callback=open_step_picker,
+                user_data=(row, col),
+            )
+            dpg.add_separator()
             dpg.add_menu_item(label="Copy Step", callback=copy_step, user_data=(row, col))
             dpg.add_menu_item(label="Paste Step", callback=paste_step, user_data=(row, col))
             dpg.add_menu_item(
                 label="Paste to Row", callback=paste_step_to_row, user_data=(row, col)
             )
 
+    parsed_type = parse_step_token(step_data["type"])  # e36s04 (property, mode)
     if step_data["type"] == "AlphaV":
         dpg.add_spacer(parent=cell_tag, height=5)
         dpg.add_drag_float(
@@ -1566,6 +1626,106 @@ def update_step_ui(row: int, col: int) -> None:
             parent=cell_tag,
             indent=20,
         )
+
+    elif parsed_type is not None and not step_modes_covered_by_legacy(
+        parsed_type[0], parsed_type[1]
+    ):
+        # e36s04: generic editor for the new (property, mode) steps
+        prop, mode = parsed_type
+        entry = catalog.PROPERTY_CATALOG[prop]
+        comp0 = entry["components"][0]
+        lo, hi = float(comp0["min"]), float(comp0["max"])
+        if mode == "value" or (mode == "fire" and entry["family"] == catalog.FAMILY_TOGGLE):
+            dpg.add_spacer(parent=cell_tag, height=5)
+            dpg.add_drag_float(
+                parent=cell_tag,
+                width=70,
+                default_value=step_data["v1"],
+                min_value=lo if mode == "value" else 0.0,
+                max_value=hi if mode == "value" else 1.0,
+                speed=0.01,
+                format="%.2f",
+                callback=update_step_val,
+                user_data=(row, col, "v1"),
+            )
+        elif mode == "random":
+            dpg.add_spacer(parent=cell_tag, height=5)
+            dpg.add_text(
+                f"{step_data.get('last_rand_v1', 0.0):.2f}",
+                color=(150, 255, 150, 255),
+                tag=f"rand_v1_{row}_{col}",
+                parent=cell_tag,
+                indent=20,
+            )
+        elif mode == "fade":
+            dpg.add_spacer(parent=cell_tag, height=2)
+            with dpg.group(horizontal=True, parent=cell_tag):
+                dpg.add_drag_float(
+                    width=34,
+                    default_value=step_data["v1"],
+                    min_value=lo,
+                    max_value=hi,
+                    speed=0.01,
+                    format="%.1f",
+                    callback=update_step_val,
+                    user_data=(row, col, "v1"),
+                )
+                dpg.add_drag_float(
+                    width=34,
+                    default_value=step_data["v2"],
+                    min_value=lo,
+                    max_value=hi,
+                    speed=0.01,
+                    format="%.1f",
+                    callback=update_step_val,
+                    user_data=(row, col, "v2"),
+                )
+            with dpg.group(horizontal=True, parent=cell_tag):
+                dpg.add_drag_int(
+                    width=34,
+                    default_value=step_data["frames"],
+                    min_value=1,
+                    max_value=32,
+                    speed=1,
+                    format="%ds",
+                    callback=update_step_val,
+                    user_data=(row, col, "frames"),
+                )
+                dpg.add_drag_int(
+                    width=34,
+                    default_value=step_data["msgs"],
+                    min_value=1,
+                    max_value=32,
+                    speed=1,
+                    format="%dm",
+                    callback=update_step_val,
+                    user_data=(row, col, "msgs"),
+                )
+        elif mode == "cycle":
+            dpg.add_spacer(parent=cell_tag, height=5)
+            options = entry.get("options") or []
+            raw = step_data.get("last_idx")
+            text = "—"
+            if raw is not None and 0 <= int(raw) < len(options):
+                text = str(options[int(raw)])
+            elif raw is not None:
+                text = str(int(raw))
+            dpg.add_text(
+                text,
+                color=(150, 200, 255, 255),
+                tag=f"rand_v1_{row}_{col}",
+                parent=cell_tag,
+                indent=20,
+            )
+        else:  # mode == "fire" and trigger family: no value to edit
+            dpg.add_spacer(parent=cell_tag, height=5)
+            dpg.add_text(
+                "fire",
+                color=(200, 160, 120, 255),
+                tag=f"rand_v1_{row}_{col}",
+                parent=cell_tag,
+                indent=20,
+            )
 
     update_step_theme(row, col, is_head=(state.is_playing and state.current_step == col))
 
@@ -6313,11 +6473,13 @@ def sequencer_tick() -> None:
                     continue  # no beat this poll: re-evaluate mode/stop
                 sync_event_beat.clear()
                 state.phase_nudge = 0.0
+                beat_seconds: float | None = None  # e36s04: fades fall back to 60/BPM
             else:
                 if not _timed_bpm_live():
                     time.sleep(0.05)
                     continue  # no live tempo: never advance on a stale BPM (e10s08)
                 base_sleep = 60.0 / state.current_bpm if state.current_bpm > 0 else 0.5
+                beat_seconds = base_sleep
                 actual_sleep = max(0.0, base_sleep + state.phase_nudge)
                 state.phase_nudge = 0.0
                 sync_event_seq.wait(actual_sleep)
@@ -6338,58 +6500,12 @@ def sequencer_tick() -> None:
                 if step_data["active"]:
                     # A new step cancels any pending fade unless it starts its own (audit HIGH-2)
                     track["active_fade"]["active"] = False
-                    base_addr = track["base_address"]
-                    if base_addr and base_addr.strip():
-                        try:
-                            if step_data["type"] == "AlphaV":
-                                target_addr = f"{base_addr}/alpha"
-                                osc_client.send_message(target_addr, float(step_data["v1"]))
-                                append_log("OUT", f"{target_addr} [{step_data['v1']:.2f}]")
-
-                            elif step_data["type"] == "AlphaR":
-                                target_addr = f"{base_addr}/alpha"
-                                rand_val = random.uniform(0.0, 1.0)
-                                osc_client.send_message(target_addr, float(rand_val))
-                                append_log("OUT", f"{target_addr} [{rand_val:.2f}]")
-
-                                step_data["last_rand_v1"] = rand_val
-                                tag_v1 = f"rand_v1_{r}_{state.current_step}"
-                                enqueue_set_value(tag_v1, f"{rand_val:.2f}")
-
-                            elif step_data["type"] == "AlphaF":
-                                target_addr = f"{base_addr}/alpha"
-                                total_msgs = step_data["frames"] * step_data["msgs"]
-
-                                # Start the asynchronous state machine
-                                track["active_fade"] = {
-                                    "active": True,
-                                    "address": target_addr,
-                                    "start_val": step_data["v1"],
-                                    "end_val": step_data["v2"],
-                                    "total_msgs": total_msgs,
-                                    "msg_interval": base_sleep / step_data["msgs"]
-                                    if step_data["msgs"] > 0
-                                    else base_sleep,
-                                    "start_time": time.time(),
-                                    "last_msg_index": 0,
-                                }
-                                # The sequencer sends the FIRST value immediately
-                                osc_client.send_message(target_addr, float(step_data["v1"]))
-                                append_log(
-                                    "OUT", f"{target_addr} [FADE START: {step_data['v1']:.2f}]"
-                                )
-
-                            elif step_data["type"] == "ColorV":
-                                send_colorv_step(track, r, state.current_step)
-
-                            elif step_data["type"] == "ColorR":
-                                send_colorr_step(track, r, state.current_step)
-
-                            elif step_data["type"] == "SeekR":
-                                send_seekr_step(track, r, state.current_step)
-
-                        except Exception as e:
-                            print(f"[viseq OSC Error] {e}")
+                    try:
+                        # e36s04: the property+mode engine replaces the hard-coded
+                        # AlphaV/AlphaR/AlphaF/ColorV/ColorR/SeekR if/elif chain
+                        execute_step(track, r, state.current_step, beat_seconds)
+                    except Exception as e:
+                        print(f"[viseq OSC Error] {e}")
 
             led_tag = BEAT_LED_TAGS.get(state.beat_source)
             if led_tag:
