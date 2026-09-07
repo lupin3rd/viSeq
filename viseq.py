@@ -3059,31 +3059,40 @@ def remove_monitor_player(player_id: int) -> None:
     del monitor_players[idx]
 
 
+# e38: SOURCE VIDEO PREVIEW — dedicated, resizable "Preview" window
 # ==============================================================================
-# e38: SOURCE VIDEO PREVIEW — embedded panel in the "Vimix sources" window
-# ==============================================================================
-# The transport (viseqapp/preview.py) is dpg-free (HIGH-1); this block owns the
-# panel UI on the main thread: the "Preview..." tile action (media sources that
-# are not known images), the panel as a SIBLING of the tile grid, the per-frame
-# raw-texture apply and the clean-stop paths (Close / source switch / source
-# prune / worker error). The e33 rule is not triggered: the tile action is
-# tile-anchored like Regenerate Thumbnails — not a MIDI binding target.
+# 2026-09-07 (user, after rig UAT): the preview moved OUT of the "Vimix sources"
+# window into its own top-level "Preview" window the user can position freely;
+# resizing the window reflows the video + transport inside it. The transport
+# (viseqapp/preview.py) is dpg-free (HIGH-1); this block owns the window UI on
+# the main thread: the "Preview..." tile action (media sources that are not
+# known images), the per-frame raw-texture apply and the clean-stop paths
+# (Close / X / source switch / source prune / worker error). The e33 rule is
+# not triggered: the tile action is tile-anchored like Regenerate Thumbnails
+# — not a MIDI binding target.
 
-PREVIEW_PANEL_TAG = "preview_panel"
-PREVIEW_BODY_TAG = "preview_body"
+PREVIEW_WINDOW_TAG = "preview_window"
+PREVIEW_RESIZE_REG_TAG = "preview_resize_reg"
 PREVIEW_VIDEO_SLOT_TAG = "preview_video_slot"
 PREVIEW_TEXTURE_TAG = "preview_tex"
 PREVIEW_IMAGE_TAG = "preview_img"
-PREVIEW_TITLE_TAG = "preview_title"
 PREVIEW_TIME_TAG = "preview_time"
 PREVIEW_SEEK_TAG = "preview_seek"
 PREVIEW_PLAYBTN_TAG = "preview_play_btn"
 PREVIEW_WAIT_TAG = "preview_wait_text"
 PREVIEW_STATUS_TAG = "preview_status_text"
+PREVIEW_MSG_TEXT_TAG = "preview_msg_text"
 
+# Default window geometry when no remembered rect exists yet (a session rect
+# is remembered while the app runs and reused for the next preview).
+PREVIEW_WIN_W = 560
+PREVIEW_WIN_H = 440
+PREVIEW_WIN_X = 640
+PREVIEW_WIN_Y = 120
 
 _preview_player: Any = None  # composition-root-owned PreviewPlayer instance
 _preview_tex_dims: tuple[int, int] | None = None
+_preview_win_rect: tuple[int, int, int, int] | None = None
 _preview_error_shown = False
 
 
@@ -3112,8 +3121,8 @@ def _preview_offered(props: dict[str, Any] | None) -> bool:
 
 
 def _preview_reason(target_id: str, props: dict[str, Any] | None, meta_provider: Any) -> str:
-    """Why a preview can start ('ok') or the explicit message for the panel.
-    Images and non-media never open a panel — the reason is surfaced instead."""
+    """Why a preview can start ('ok') or the explicit message. Images and
+    non-media never start a transport — the reason is surfaced instead."""
     if not props or not props.get("uri"):
         return f"'{target_id}' is not a media source"
     kind = props.get("media_kind")
@@ -3135,34 +3144,107 @@ def _fmt_preview_time(secs: float) -> str:
 
 def _preview_status(message: str) -> None:
     """Surface a preview message (state + log + status line) — the explicit
-    error surface: never a silent no-op, never a fake panel."""
+    error surface: never a silent no-op, never a fake transport."""
     state.preview_error = message
     append_log("PREVIEW", message)
     if dpg.does_item_exist(PREVIEW_STATUS_TAG):
         dpg.set_value(PREVIEW_STATUS_TAG, message)
 
 
-def _build_preview_body(target_id: str) -> None:
-    """(Re)build the panel children for one preview session (main thread)."""
-    with dpg.group(parent=PREVIEW_PANEL_TAG, tag=PREVIEW_BODY_TAG):
-        themed_text(target_id, slot="text_bright", tag=PREVIEW_TITLE_TAG, wrap=520)
-        with dpg.group(tag=PREVIEW_VIDEO_SLOT_TAG):
-            dpg.add_text("Connecting...", tag=PREVIEW_WAIT_TAG)
-        with dpg.group(horizontal=True):
-            dpg.add_button(
-                label="Pause", width=70, tag=PREVIEW_PLAYBTN_TAG, callback=on_preview_play_button
-            )
-            dpg.add_slider_float(
-                default_value=0.0,
-                min_value=0.0,
-                max_value=1.0,
-                width=250,
-                tag=PREVIEW_SEEK_TAG,
-                callback=on_preview_seek,
-            )
-            themed_text("0:00 / 0:00", slot="text", tag=PREVIEW_TIME_TAG)
-            dpg.add_button(label="Close", width=60, callback=close_source_preview)
-        themed_text("", slot="text_dim", tag=PREVIEW_STATUS_TAG, wrap=520)
+def _preview_remember_rect() -> None:
+    """Keep the last window geometry for the next preview session."""
+    global _preview_win_rect
+    if not dpg.does_item_exist(PREVIEW_WINDOW_TAG):
+        return
+    w = int(dpg.get_item_width(PREVIEW_WINDOW_TAG) or 0)
+    h = int(dpg.get_item_height(PREVIEW_WINDOW_TAG) or 0)
+    if w < 200 or h < 120:
+        return
+    x, y = dpg.get_item_pos(PREVIEW_WINDOW_TAG)
+    _preview_win_rect = (int(x), int(y), w, h)
+
+
+def _layout_preview_content() -> None:
+    """Reflow the video + transport to the current window size (resize-safe)."""
+    if not dpg.does_item_exist(PREVIEW_WINDOW_TAG):
+        return
+    w = max(260, int(dpg.get_item_width(PREVIEW_WINDOW_TAG) or 0) or PREVIEW_WIN_W)
+    h = max(200, int(dpg.get_item_height(PREVIEW_WINDOW_TAG) or 0) or PREVIEW_WIN_H)
+    # transport row: fixed buttons/time, the seek slider takes the rest
+    if dpg.does_item_exist(PREVIEW_SEEK_TAG):
+        dpg.configure_item(PREVIEW_SEEK_TAG, width=max(80, w - 330))
+    if dpg.does_item_exist(PREVIEW_STATUS_TAG):
+        dpg.configure_item(PREVIEW_STATUS_TAG, wrap=max(200, w - 24))
+    # the video fills the width and keeps its aspect, leaving room for the
+    # transport + status rows below
+    if _preview_tex_dims is not None and dpg.does_item_exist(PREVIEW_IMAGE_TAG):
+        tex_w, tex_h = _preview_tex_dims
+        avail_h = max(120, h - 120)
+        disp_w = max(200, w - 20)
+        disp_h = int(disp_w * tex_h / tex_w)
+        if disp_h > avail_h:
+            disp_h = max(120, avail_h)
+            disp_w = max(200, int(disp_h * tex_w / tex_h))
+        dpg.configure_item(PREVIEW_IMAGE_TAG, width=disp_w, height=disp_h)
+
+
+def _on_preview_window_resize(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Window resized: reflow the inner video + transport (main thread)."""
+    _preview_remember_rect()
+    _layout_preview_content()
+
+
+def _open_preview_window(target_id: str, message: str | None = None) -> None:
+    """Create (fresh) the dedicated Preview window with its content.
+
+    ``message`` given: an error window (no transport) so a refused preview is
+    visible and closable, never a silent no-op.
+    """
+    if _preview_win_rect is not None:
+        x, y, w, h = _preview_win_rect
+    else:
+        x, y, w, h = PREVIEW_WIN_X, PREVIEW_WIN_Y, PREVIEW_WIN_W, PREVIEW_WIN_H
+    if message is not None:
+        title = "Preview"
+        with dpg.window(label=title, tag=PREVIEW_WINDOW_TAG, width=420, height=120, pos=(x, y)):
+            themed_text(message, slot="warning", tag=PREVIEW_MSG_TEXT_TAG, wrap=380)
+            dpg.add_button(label="Close", width=90, callback=close_source_preview)
+    else:
+        with dpg.window(
+            label=f"Preview — {target_id}",
+            tag=PREVIEW_WINDOW_TAG,
+            width=w,
+            height=h,
+            pos=(x, y),
+        ):
+            with dpg.group(tag=PREVIEW_VIDEO_SLOT_TAG):
+                dpg.add_text("Connecting...", tag=PREVIEW_WAIT_TAG)
+            with dpg.group(horizontal=True):
+                dpg.add_button(
+                    label="Pause",
+                    width=70,
+                    tag=PREVIEW_PLAYBTN_TAG,
+                    callback=on_preview_play_button,
+                )
+                dpg.add_slider_float(
+                    default_value=0.0,
+                    min_value=0.0,
+                    max_value=1.0,
+                    width=max(80, w - 330),
+                    tag=PREVIEW_SEEK_TAG,
+                    callback=on_preview_seek,
+                )
+                themed_text("0:00 / 0:00", slot="text", tag=PREVIEW_TIME_TAG)
+                dpg.add_button(label="Close", width=60, callback=close_source_preview)
+            themed_text("", slot="text_dim", tag=PREVIEW_STATUS_TAG)
+    # window resize handler: inner content follows the window size
+    if dpg.does_item_exist(PREVIEW_RESIZE_REG_TAG):
+        dpg.delete_item(PREVIEW_RESIZE_REG_TAG)
+    with dpg.item_handler_registry(tag=PREVIEW_RESIZE_REG_TAG):
+        dpg.add_item_resize_handler(callback=_on_preview_window_resize)
+    dpg.bind_item_handler_registry(PREVIEW_WINDOW_TAG, PREVIEW_RESIZE_REG_TAG)
 
 
 def _preview_apply_frame(rgba: Any) -> None:
@@ -3183,38 +3265,34 @@ def _preview_apply_frame(rgba: Any) -> None:
             tag=tex_tag,
             parent="texture_registry",
         )
-        win_w = dpg.get_item_width("vimix_media_window") or 550
-        disp_w = max(200, win_w - 24)
-        disp_h = max(120, int(disp_w * height / width))
         dpg.add_image(
             tex_tag,
             tag=PREVIEW_IMAGE_TAG,
             parent=PREVIEW_VIDEO_SLOT_TAG,
-            width=disp_w,
-            height=disp_h,
+            width=max(200, PREVIEW_WIN_W - 20),
+            height=180,
         )
         if dpg.does_item_exist(PREVIEW_WAIT_TAG):
             dpg.delete_item(PREVIEW_WAIT_TAG)
         _preview_tex_dims = dims
     else:
         dpg.set_value(tex_tag, rgba.reshape(-1))
+    _layout_preview_content()
 
 
 def close_source_preview(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Clean stop: close the worker, release the texture, hide the panel."""
+    """Clean stop: remember the geometry, close the worker, drop the window."""
     global _preview_player, _preview_tex_dims
+    _preview_remember_rect()
     player = _preview_player
     _preview_player = None
     if player is not None:
         player.close()
-    for tag in (PREVIEW_TEXTURE_TAG, PREVIEW_IMAGE_TAG):
-        if dpg.does_item_exist(tag):
-            dpg.delete_item(tag)
+    if dpg.does_item_exist(PREVIEW_RESIZE_REG_TAG):
+        dpg.delete_item(PREVIEW_RESIZE_REG_TAG)
+    if dpg.does_item_exist(PREVIEW_WINDOW_TAG):
+        dpg.delete_item(PREVIEW_WINDOW_TAG)  # drops the texture/image children too
     _preview_tex_dims = None
-    if dpg.does_item_exist(PREVIEW_BODY_TAG):
-        dpg.delete_item(PREVIEW_BODY_TAG)
-    if dpg.does_item_exist(PREVIEW_PANEL_TAG):
-        dpg.hide_item(PREVIEW_PANEL_TAG)
     state.preview_active = None
     state.preview_playing = False
     state.preview_error = None
@@ -3226,9 +3304,9 @@ def close_source_preview(sender: Any = None, app_data: Any = None, user_data: An
 
 
 def start_source_preview(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Open the embedded preview for a source (tile 'Preview...' action). One
-    preview at a time; images/non-media show an explicit message, never a
-    panel; unknown-kind media are classified via the meta endpoint first."""
+    """Open the dedicated Preview window for a source (tile 'Preview...' action).
+    One preview at a time; images/non-media show an explicit message window,
+    never a transport; unknown-kind media classify via the meta endpoint first."""
     global _preview_player, _preview_error_shown
     target_id = str(user_data)
     props = _source_props(target_id)
@@ -3239,16 +3317,16 @@ def start_source_preview(sender: Any = None, app_data: Any = None, user_data: An
 
     reason = _preview_reason(target_id, props, classify)
     if reason != "ok":
+        close_source_preview()
         _preview_status(reason)
+        _open_preview_window(target_id, message=reason)
         return
     close_source_preview()
     _preview_error_shown = False
     state.preview_error = None
     state.preview_active = target_id
     state.preview_playing = True
-    _build_preview_body(target_id)
-    if dpg.does_item_exist(PREVIEW_PANEL_TAG):
-        dpg.show_item(PREVIEW_PANEL_TAG)
+    _open_preview_window(target_id)
     player = preview.PreviewPlayer(target_id, host=endpoints["host"], port=endpoints["port"])
     _preview_player = player
     player.start()
@@ -3278,7 +3356,11 @@ def on_preview_seek(sender: Any = None, app_data: Any = None, user_data: Any = N
 
 def tick_source_preview(_now: float) -> None:
     """Main-loop tick: drain preview frames onto the texture, keep the transport
-    in sync, surface worker errors once (main thread only, HIGH-1)."""
+    in sync, surface worker errors once, stop when the window is X-closed
+    (main thread only, HIGH-1)."""
+    if state.preview_active is not None and not dpg.does_item_exist(PREVIEW_WINDOW_TAG):
+        close_source_preview()  # the user X-closed the window: stop the stream
+        return
     if state.preview_active is None:
         while True:
             try:
@@ -6733,6 +6815,8 @@ def _window_menu_entries() -> list[tuple[str, str]]:
         ("mapper_window", "Mapper"),
     ]
     entries += [(p["tag"], f"Monitor Player {p['id']}") for p in monitor_players]
+    if state.preview_active is not None:  # the preview window exists while a preview is active
+        entries.append((PREVIEW_WINDOW_TAG, "Preview"))
     return entries
 
 
@@ -7740,20 +7824,18 @@ with dpg.window(
         )
 
 # WINDOW 4: VIMIX MEDIA
-with dpg.window(
-    label="Vimix sources",
-    width=550,
-    height=690,
-    pos=(1100, 10),
-    no_close=True,
-    tag="vimix_media_window",
+with (
+    dpg.window(
+        label="Vimix sources",
+        width=550,
+        height=690,
+        pos=(1100, 10),
+        no_close=True,
+        tag="vimix_media_window",
+    ),
+    dpg.group(tag="vimix_media_group"),
 ):
-    # e38s03: the embedded preview panel is a SIBLING of the tile grid (hidden
-    # until a preview starts) — grid rebuilds never destroy a playing preview.
-    with dpg.group(tag=PREVIEW_PANEL_TAG, show=False):
-        pass
-    with dpg.group(tag="vimix_media_group"):
-        pass
+    pass
 
 # WINDOW 5: OSC LOGS (hidden; opened from the menubar "Show" > "Logs")
 with dpg.window(label="Logs", width=950, height=150, pos=(720, 820), tag="logs_window", show=False):
