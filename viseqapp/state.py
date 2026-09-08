@@ -54,6 +54,9 @@ midi_learn_pending: tuple[str, dict[str, Any]] | None = None
 midi_learn_started_at: float = 0.0  # e14: learn-session start, for the safety timeout
 
 
+midi_learn_armed_tag: str | None = None  # learn marker armed by the last click (its M turns amber)
+
+
 midi_selected_port: str | None = None  # e14s03: port whose bindings the Bindings section shows
 
 
@@ -84,6 +87,17 @@ blob_queue: queue.Queue[Any] = queue.Queue()
 texture_queue: queue.Queue[Any] = queue.Queue()
 
 
+# e38: source video preview transport (viseqapp/preview.py) — the worker
+# pushes decoded RGBA float32 frames as (source_name, frame) tuples here;
+# the main loop drains them into the preview texture (worker never imports
+# dpg). preview_active names the source shown right now (UI-owned);
+# preview_error carries the last fatal message for the panel.
+preview_frames: queue.Queue[Any] = queue.Queue()
+preview_active: str | None = None
+preview_playing: bool = False  # transport running (play) vs paused — UI-owned
+preview_error: str | None = None
+
+
 log_queue: queue.Queue[str] = queue.Queue()
 
 
@@ -96,6 +110,12 @@ _media_cell_cache: dict[str, str | float] = {}
 
 
 global_vimix_state: dict[str, Any] = {"current_source": None, "sources": {}}
+
+
+# e36s01: per-target full-component vectors for anchored OSC sends
+# (target_id -> property -> [component values]). Written by full-vector sends;
+# nil-capable properties never consult it. Fed by live vimix state in e36s06.
+source_anchors: dict[str, dict[str, list[float]]] = {}
 
 
 viseq_selected_source: str | None = None
@@ -326,7 +346,49 @@ mapper_counter: int = 0
 mapper_pending_target: str | None = None  # source the New-mapping dialog targets
 
 
+# e35s02: active cue runs — written by the cue engine (viseqapp/cue.py) from
+# the scheduler thread, read by the UI for running indicators (e35s03). Each
+# entry: {mapping_id, target_id, plan, cursor} with plan entries of the shape
+# (time_ms, action, payload) built by cue.build_cue_plan. Main thread only
+# mutates through the queues; the engine mutates this list directly (it is
+# dpg-free by construction).
+cue_runs: list[dict[str, Any]] = []
+
+
+# e35s05: which mapping's cue editor is open (main-thread only; None = closed).
+# The window shows the mapping context, so a removed mapping must close it.
+cue_editor_mapping_id: int | None = None
+
+
+# e35s03: main-thread cache of the last relabel per cue-list card trigger
+# (mapping id -> label). Written ONLY by tick_cue_triggers on the main thread;
+# cleared by refresh_mapper_ui after a body rebuild. Worker threads never touch
+# it (HIGH-1) — the engine reflects running state through cue_runs alone.
+cue_trigger_label_cache: dict[int, str] = {}
+
+
+# e35 UAT: last rendered progress text per cue-list card ('3 of 10'); written
+# only by tick_cue_triggers on the main thread. The engine never touches it.
+cue_progress_cache: dict[int, str] = {}
+
+
+# e35 UAT: TWO shared button/trigger themes (OFF then ON) bound by tag. They are
+# root-level theme items created once and rebuilt ONLY when the active palette
+# changes — per-trigger theme churn caused DPG alias collisions (1000).
+trigger_theme_tags: list[str | None] = [None, None]  # [0]=off, [1]=on
+trigger_theme_signature: tuple[tuple[int, ...], ...] | None = None
+
+
 # e17 / BUG-2026-09-01T194500: last focused workspace window. DPG's
 # get_active_window() returns None while the viewport menu bar has focus, so
 # the Windows-menu mark and the Ctrl+Tab anchor come from this tracking instead.
 current_window: str | None = None
+
+
+# e37 (project-save-as-titlebar): the session's project identity — which .viseq
+# document the live content belongs to and whether the next Save would write
+# something different. Main-thread only: the file flows and the title sync run
+# on the main thread; worker modules never touch these fields.
+current_project_path: str | None = None  # None = unnamed (new) project
+project_dirty: bool = False  # live content differs from the last-saved baseline
+saved_content_fingerprint: str = ""  # canonical JSON of the content at the last save/open/new

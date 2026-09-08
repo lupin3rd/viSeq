@@ -160,8 +160,9 @@ MONITOR_SPEED_TEXT_SIZE = 12  # px font size of the speed label inside the disc
 # their OWN content (see _mapper_row_height): slider rows ~60 px, knob rows
 # taller, +16 px when a source is bound. Measured on DearPyGui 2.3.1 with the
 # compact theme (WindowPadding 4/FramePadding y 2/ItemSpacing 2): content inset
-# ~6 px top + ~12 px bottom air (MAPPER_ROW_PAD_V = 18), a small-font text/drag row is
-# 17 px, a slider/button box 17 px, the knob a fixed 44 px, gaps 2 px; the
+# ~4 px top + ~4 px bottom air (MAPPER_ROW_PAD_V = 8 — trimmed 2026-09-05 so the
+# cards no longer show a dead band at the bottom), a small-font text/drag row is
+# 14 px, a slider/button box 14 px, the knob a fixed 44 px, gaps 2 px; the
 # ProggyTiny-10 advance is 6 px/char (widest label 'Transparency' = 72 px).
 MAPPER_WINDOW_WIDTH = 660
 
@@ -187,10 +188,12 @@ MAPPER_LINE_NO_FONT_SIZE = 13  # px size of the row line numbers (ProggyTiny, > 
 MAPPER_LINE_NO_TEXT_H = 13  # px text height used to center the line number in the row
 
 
-MAPPER_TEXT_H = 17  # px height of one compact text/drag row (measured: drag box 17 px)
+MAPPER_TEXT_H = 14  # px height of one compact text/drag row (measured 2026-09-06 on the
+# 10 px ProggyTiny theme: a drag box is ~14 px, not 17 — the old value left a
+# visible dead band under the last readout row of a card)
 
 
-MAPPER_CTRL_H = 17  # px height of a compact slider/button box (measured)
+MAPPER_CTRL_H = 14  # px height of a compact slider/button box (same 10 px-font measure)
 
 
 MAPPER_KNOB_H = 44  # px height of the fixed knob widget
@@ -199,7 +202,8 @@ MAPPER_KNOB_H = 44  # px height of the fixed knob widget
 MAPPER_ROW_GAP = 2  # px item spacing between the card rows
 
 
-MAPPER_ROW_PAD_V = 18  # card inset: 6 top + 12 bottom air (guards the last line vs font drift)
+MAPPER_ROW_PAD_V = 8  # card inset: 4 top + 4 bottom air (2026-09-05: was 6+12 —
+# rows reclaimed ~8-10 px and the cards no longer show a dead band at the bottom)
 
 
 MAPPER_SMALL_CHAR_PX = 6  # px advance of the 10 px ProggyTiny mapper font (measured)
@@ -223,7 +227,31 @@ MAPPER_RESET_H = 16  # px height of the reset button
 MAPPER_CB_W = 16  # px width of the enable checkbox on a caption row (measured, compact theme)
 
 
-MAPPER_DRAG_W = 40  # px width of the from/to drag boxes on the output/input lines
+# e34s01: per-row '+' add button — a NARROW trailing slot (2026-09-05 rework:
+# it used to span the full card pitch and wrapped like a 150 px card on resize).
+MAPPER_ADD_W = 24  # the '+' button width
+MAPPER_ADD_H = 22  # the '+' button height
+MAPPER_ADD_SLOT_W = 36  # the slot child + its spacing (small, NOT the card pitch)
+
+
+MAPPER_DRAG_W = 40  # px width of the from/to drag boxes on the slider 'output:'/'input:' lines
+
+
+# e34s02: px width of the from/to drag boxes in the compact knob/button band —
+# smaller than MAPPER_DRAG_W so 'Out'/'Inp' + two boxes fit beside the 44 px control.
+MAPPER_BAND_DRAG_W = 34
+
+# e33s04: fixed slot count of the Mapper in the learn bar (user rule: 4 lines,
+# pre-bindable even when fewer rows exist — a missing line is a logged no-op).
+MAPPER_LEARN_SLOTS = 4
+
+# e33s02: learn-marker button on a card caption / row lead (compact, tooltip-only)
+MAPPER_MARKER_W = 15
+MAPPER_MARKER_H = 15
+
+# e33s04: wider spacing BETWEEN the learn-bar groups (replaces the almost
+# invisible DPG vertical separators — the user asked for plain space).
+MARKER_GROUP_GAP = 18
 
 
 VIOSC_IP = "127.0.0.1"
@@ -233,6 +261,19 @@ VIOSC_PORT = 6666
 
 
 VIOSC_LISTEN_PORT = 6667  # the port viOSC sends replies to; viseq's own server listens here
+
+
+# e38: source video preview (SOURCE_PREVIEW_LATEST.md) — the HTTP file
+# transport on machine A (viOSC, VIOSC_PREVIEW_PORT default) and the local
+# decode/display caps on machine B. Frames are decoded at <= the texture cap
+# (DPG stretches the small texture to the panel) and pushed at most
+# PREVIEW_MAX_FPS — one raw-texture set_value per frame on the main thread.
+PREVIEW_PORT = 8686  # matches the viOSC HTTP preview server default
+PREVIEW_PATH_PREFIX = "/preview/"  # served as /preview/<source-name>/file|meta
+PREVIEW_CAP_WIDTH = 640  # px texture-cap width (measured budget, SPIKE-source-preview)
+PREVIEW_CAP_HEIGHT = 360  # px texture-cap height
+PREVIEW_MAX_FPS = 30.0  # decoded/pushed frame ceiling
+PREVIEW_HTTP_TIMEOUT = 10.0  # s: av.open + meta request timeout
 
 
 # Palette slots drive every chrome color: the global theme, the per-item themes, explicit
@@ -384,6 +425,42 @@ MIDI_ACTION_TRACK_ASSIGN = "track_assign"
 MIDI_ACTION_MAPPER_MAPPING = "mapper_mapping"  # e18: a learned MIDI control drives a Mapper mapping
 
 
+MIDI_ACTION_MAPPER_CUE_OPEN = "mapper_cue_open"  # e34s05: open a cue-list mapping's window
+
+# e33s02: marker-based learn targets on a Mapper card caption (enable + reset)
+MIDI_ACTION_MAPPER_ENABLE = "mapper_enable"  # toggle the e24 armed flag (momentary)
+MIDI_ACTION_MAPPER_RESET = "mapper_reset"  # return the control to its neutral default (e27)
+
+# e33s03: marker-based learn targets on the Mapper rows and the card source menu
+MIDI_ACTION_MAPPER_LINE = "mapper_line"  # variant B: selected media -> the mapper row (line)
+MIDI_ACTION_MAPPER_BAND = "mapper_band"  # bind the mapping to an audio band (2/3)
+
+# e33s04: source browsing + selection-relative actions (Mediagrid learn bar).
+# Rule (user, 2026-09-05): bindings never anchor to a volatile source — the
+# action applies to the SELECTED source at trigger time.
+MIDI_ACTION_SOURCE_NEXT = "source_next"  # select the next source in the grid order (wrap)
+MIDI_ACTION_SOURCE_PREV = "source_prev"  # select the previous source in the grid order (wrap)
+MIDI_ACTION_REGEN_SELECTED = "regen_selected_thumb"  # regen the selected source's thumbs
+MIDI_ACTION_SEQ_ROW_ASSIGN = "seq_row_assign"  # selected source -> a sequencer row (slot)
+MIDI_ACTION_ENABLE_CORRECTION = "enable_correction"  # arm the SELECTED source's CC block
+
+
+# e33s02: momentary learn actions trigger at CC value >= this threshold (MIDI's
+# conventional CC-switch split); lower CC values are a deliberate no-op.
+MIDI_CC_TRIGGER_THRESHOLD = 64
+
+
+# BUG-2026-09-06T124150: pitch-bend levers (DJ pitch faders) send mido
+# `pitchwheel`, a 14-bit signed message (-8192..8191, centre 0), not CC. viseq
+# normalizes it onto the app-wide 0..127 value scale so every consumer (Mapper
+# input-range seed, trigger thresholds) is unchanged. A pitch wheel has no
+# number — the channel is its only discriminator.
+MIDI_PITCH_MIN = -8192
+MIDI_PITCH_MAX = 8191
+MIDI_PITCH_NUMBER = 0
+MIDI_PITCH_VALUE_STEPS = 127  # target scale, matching CC/note velocities
+
+
 DEFAULT_CONFIG: dict[str, Any] = {
     # e11s02: the window layout moved into project files; the config keeps the
     # fallback theme, MIDI and the recent-projects list + restore flag.
@@ -402,12 +479,24 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "listen_ip": VIOSC_IP,
         "listen_port": VIOSC_LISTEN_PORT,
     },
+    # e38: source video preview — the viOSC HTTP file-server port (same host as
+    # the OSC client, machine A). Only the port is tunable; the host always
+    # follows the configured osc client_ip.
+    "preview": {"port": PREVIEW_PORT},
 }
 
 
 # e14: a Learn session can never hijack the sequencer controls indefinitely — it
 # auto-exits after this many seconds if no capture completes.
 MIDI_LEARN_TIMEOUT_SECONDS = 30.0
+
+
+# BUG-2026-09-07: after a failed input open (or clock reconnect) the worker waits
+# this long before trying again. Every failing mido/rtmidi open can leak an ALSA
+# sequencer client (mido #256, fixed only in 1.3.4.dev+), so a dead ALSA must
+# never be hammered — the 2 s retry loop saturated the 192-client kernel table
+# on the live rig and silently killed controller detection.
+MIDI_OPEN_RETRY_COOLDOWN_SECONDS = 15.0
 
 
 PROJECT_FORMAT = "viseq-project"
@@ -431,6 +520,7 @@ MAPPER_PERSISTED_KEYS: tuple[str, ...] = (
     "id",
     "target_id",
     "property",
+    "component",  # e36s02: controlled axis/channel of a multi-value property (None for scalar)
     "control",
     "value",
     "band",
@@ -441,6 +531,7 @@ MAPPER_PERSISTED_KEYS: tuple[str, ...] = (
     "input_from",
     "input_to",
     "enabled",
+    "cue",  # e35s01: the per-mapping cue macro (rows + gap_ms), inert for non-cue-list controls
 )
 
 

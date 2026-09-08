@@ -9,6 +9,7 @@
 #   python3.13 -m venv .venv && .venv/bin/pip install -r requirements.txt
 #
 dearpygui==2.3.1
+av==18.1.0  # e38: source video preview decode (bundled FFmpeg; cp313 wheel)
 essentia==2.1b6.dev1389
 mido==1.3.3
 numpy>=2,<3

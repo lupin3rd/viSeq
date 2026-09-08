@@ -19,6 +19,11 @@ from viseqapp.constants import (
     GRID_LED_OFF,
     GRID_LED_WHITE,
     MIDI_ACTION_SEQ_TOGGLE,
+    MIDI_OPEN_RETRY_COOLDOWN_SECONDS,
+    MIDI_PITCH_MAX,
+    MIDI_PITCH_MIN,
+    MIDI_PITCH_NUMBER,
+    MIDI_PITCH_VALUE_STEPS,
 )
 from viseqapp.profiles import (
     _DEFAULT_GRID_NOTE_FORMULA,
@@ -56,6 +61,10 @@ def _parse_midi_msg(msg: Any) -> tuple[str | None, int, int]:
 
     note_on velocity>0 is the trigger edge (velocity 0 and note_off are releases and must
     never fire a binding — Launchpad sends note_on with velocity 0 on release).
+    BUG-2026-09-06T124150: pitchwheel (DJ pitch levers) is 14-bit signed -8192..8191
+    with the channel as its only discriminator; it normalizes onto the app-wide
+    0..127 value scale (centre of travel ~64) so executors and trigger thresholds
+    are unchanged.
     """
     if msg.type == "note_on":
         if msg.velocity > 0:
@@ -65,6 +74,12 @@ def _parse_midi_msg(msg: Any) -> tuple[str | None, int, int]:
         return (None, 0, 0)
     if msg.type == "control_change":
         return ("cc", int(msg.control), int(msg.value))
+    if msg.type == "pitchwheel":
+        pitch = int(msg.pitch)
+        value = round(
+            (pitch - MIDI_PITCH_MIN) * MIDI_PITCH_VALUE_STEPS / (MIDI_PITCH_MAX - MIDI_PITCH_MIN)
+        )
+        return ("pitch", MIDI_PITCH_NUMBER, int(value))
     return (None, 0, 0)
 
 
@@ -99,14 +114,39 @@ def binding_source_from_message(msg: Any, port_name: str) -> dict[str, Any] | No
     return {"device": port_name, "channel": int(msg.channel), "type": msg_type, "number": number}
 
 
-def available_controller_ports() -> list[str]:
-    """MIDI input ports not yet added as controllers (e14s03)."""
+def scan_midi_inputs() -> tuple[list[str], str | None]:
+    """Live MIDI input scan that NEVER raises (BUG-2026-09-07T152802).
+
+    Returns (port names, error). A healthy scan yields the names with error None.
+    When mido/ALSA cannot create a sequencer client (kernel table exhausted by
+    leaked rtmidi clients — mido #256), the call raises inside rtmidi; the error
+    is captured and returned so the UI can show why the controller is not
+    detected instead of silently presenting an empty device list.
+    """
     try:
         import mido
 
         names = list(mido.get_input_names())
-    except Exception:
-        names = []
+    except Exception as e:
+        return [], str(e)
+    return names, None
+
+
+def midi_open_retry_due(last_fail_at: float | None, now: float) -> bool:
+    """True when an input open may be attempted: first try or cooldown elapsed.
+
+    Gates the worker retry (BUG-2026-09-07T152802): a failing open can leak an
+    ALSA sequencer client upstream, so a dead ALSA must be re-attempted at the
+    cooldown cadence, never on every 2-second worker tick.
+    """
+    if last_fail_at is None:
+        return True
+    return now - last_fail_at >= MIDI_OPEN_RETRY_COOLDOWN_SECONDS
+
+
+def available_controller_ports() -> list[str]:
+    """MIDI input ports not yet added as controllers (e14s03)."""
+    names, _error = scan_midi_inputs()
     used = {controller["port"] for controller in midi_controllers}
     return [name for name in names if name not in used]
 
@@ -124,6 +164,64 @@ def save_midi_controllers(sender: Any = None, app_data: Any = None, user_data: A
         for controller in midi_controllers
     ]
     save_config(cfg)
+
+
+def project_mapper_bindings() -> list[dict[str, Any]]:
+    """Project-scoped MIDI rows: bindings that drive a Mapper mapping, port-tagged.
+
+    A binding belongs to the project when its params carry a ``mapping_id`` — it
+    is the MIDI side of one of the project's Mapper mappings. These rows are
+    stored WITH the project (user 2026-09-07) so opening a project restores
+    exactly its routing; generic rows (transport/sequencer/beat) stay global in
+    the app config, because their meaning is not project-bound.
+    """
+    rows: list[dict[str, Any]] = []
+    for controller in midi_controllers:
+        for binding in controller.get("bindings") or []:
+            params = binding.get("params")
+            if isinstance(params, dict) and params.get("mapping_id") is not None:
+                rows.append({"port": controller["port"], **dict(binding)})
+    return rows
+
+
+def _binding_mapping_key(binding: dict[str, Any]) -> tuple[str, int]:
+    """Identity of a Mapper-binding row within one port: (action, mapping_id)."""
+    return (
+        str(binding.get("action") or ""),
+        int((binding.get("params") or {}).get("mapping_id") or 0),
+    )
+
+
+def apply_project_mapper_bindings(rows: Any, live_mapping_ids: set[int]) -> None:
+    """Merge the project's Mapper-binding rows onto the controllers (user 2026-09-07).
+
+    Each row targets the controller whose port matches. A row whose mapping_id
+    does not exist in the loaded project is dropped (stale); a row already
+    present for the same (action, mapping_id) on a port is replaced so re-
+    learning inside the project updates the routing instead of stacking rows.
+    """
+    if not isinstance(rows, list):
+        return
+    incoming_by_port: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        params = row.get("params")
+        if not (
+            isinstance(params, dict) and int(params.get("mapping_id") or 0) in live_mapping_ids
+        ):
+            continue
+        body = {k: v for k, v in row.items() if k != "port"}
+        incoming_by_port.setdefault(str(row.get("port") or ""), []).append(body)
+    for controller in midi_controllers:
+        incoming = incoming_by_port.get(controller["port"])
+        if not incoming:
+            continue
+        existing = controller.setdefault("bindings", [])
+        for row in incoming:
+            key = _binding_mapping_key(row)
+            existing[:] = [b for b in existing if _binding_mapping_key(b) != key]
+            existing.append(row)
 
 
 def selected_controller() -> dict[str, Any] | None:
@@ -214,7 +312,9 @@ def set_midi_enabled(enabled: bool) -> None:
 
     Disabling closes every controller output so the device stops lighting up
     immediately (e14 bug fix); re-enabling reconnects the outputs and re-registers
-    the auto grid bindings (BUG-2026-08-29T102156).
+    the auto grid bindings (BUG-2026-08-29T102156). The controller list is
+    persisted on every toggle too — re-writing the config from a stale copy used
+    to silently discard bindings learned since the last save (user 2026-09-07).
     """
     state.midi_enabled = enabled
     if not enabled:
@@ -224,6 +324,7 @@ def set_midi_enabled(enabled: bool) -> None:
     cfg = load_config()
     cfg["midi"]["enabled"] = enabled
     save_config(cfg)
+    save_midi_controllers()
 
 
 def _close_midi_input(port: Any) -> None:
@@ -318,15 +419,20 @@ def _register_grid_bindings(controller: dict[str, Any], profile: dict[str, Any])
 
 
 def controller_connect(controller: dict[str, Any], mido: Any) -> None:
-    """Open the controller's LED output, send setup SysEx, register grid bindings (e14s02)."""
+    """Open the controller's LED output, send setup SysEx, register grid bindings (e14s02).
+
+    BUG-2026-09-07T152802: the output-port lookup is INSIDE the guard — with ALSA
+    refusing sequencer clients the lookup raises and must log + disconnect, never
+    escape into the MIDI re-enable UI callback.
+    """
     controller_disconnect(controller)
     profile = controller_profile_of(controller)
     if profile is None or not profile.get("features", {}).get("leds"):
         return
-    out_name = _find_output_port(controller["port"], mido)
-    if out_name is None:
-        return
     try:
+        out_name = _find_output_port(controller["port"], mido)
+        if out_name is None:
+            return
         with _controller_lock:
             controller["output"] = mido.open_output(out_name)
         if profile.get("setup_sysex"):
@@ -335,7 +441,7 @@ def controller_connect(controller: dict[str, Any], mido: Any) -> None:
             _register_grid_bindings(controller, profile)
         append_log("MIDI", f"{profile.get('name', controller['port'])} output on {out_name}")
     except Exception as e:
-        log_error("MIDI", f"output {out_name}: {e}")
+        log_error("MIDI", f"output {controller['port']}: {e}")
         controller_disconnect(controller)
 
 
@@ -412,13 +518,8 @@ def _grid_restore_playhead() -> None:
 
 
 def _clock_port_name() -> str | None:
-    """The MIDI input the clock listens on: clock_source, else the first input (e14s04)."""
+    """The MIDI input the clock listens on: clock_source, else the first input."""
     if state.midi_clock_source:
         return state.midi_clock_source
-    try:
-        import mido
-
-        names = mido.get_input_names()
-        return names[0] if names else None
-    except Exception:
-        return None
+    names, _error = scan_midi_inputs()
+    return names[0] if names else None
