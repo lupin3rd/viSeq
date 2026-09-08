@@ -278,7 +278,7 @@ DEFAULT_MONITOR_PROPS = ["alpha", "seek", "speed"]  # requested when a monitor s
 # 0.4.0 — Leap Motion mapper source, per-mapping reset, project save + OSC config persist,
 # Mapper tile/row workflows (thumb assign, Add-to-Mapper submenu, line numbers).
 # 0.3.0 — Mapper family (rows/remap/enable/cycle), compact Vimix-sources grid, windows, XDG.
-APP_VERSION: str = "0.5.0"
+APP_VERSION: str = "0.5.1"
 
 # Author's GitHub profile, shown as a link in the About window (e08s01, user request).
 GITHUB_URL: str = "https://github.com/lupin3rd"
@@ -5809,23 +5809,26 @@ def mapper_dialog_confirm(sender: Any = None, app_data: Any = None, user_data: A
 
     e36s03: a multi-value property reads the component picker (defaulting to its
     first component when the combo was never populated); cue-list controls skip
-    it (their property is inert).
+    it (their property is inert). BUG-2026-09-08T120000: the component picker
+    must be read BEFORE the dialog is deleted — real dpg get_value() on a
+    deleted widget returns None, and the fallback would silently bind every
+    vector mapping to its FIRST component (color -> always R).
     """
     if not dpg.does_item_exist("mapper_new_dialog"):
         return
     prop = str(dpg.get_value("mapper_prop_combo"))
     control = str(dpg.get_value("mapper_control_combo"))
     target = state.mapper_pending_target
-    dpg.delete_item("mapper_new_dialog")
-    if target is None:
-        return
     component: str | None = None
-    if control != "cue list":
+    if target is not None and control != "cue list":
         entry = catalog.PROPERTY_CATALOG.get(prop)
         if entry is not None and len(entry["components"]) > 1:
             keys = [c["key"] for c in entry["components"]]
             candidate = str(dpg.get_value("mapper_component_combo"))
             component = candidate if candidate in keys else keys[0]
+    dpg.delete_item("mapper_new_dialog")
+    if target is None:
+        return
     mapper.add_mapping(target, prop, control, component=component)
     refresh_mapper_ui()
     dpg.show_item("mapper_window")
@@ -6034,12 +6037,48 @@ def cue_row_delete(sender: Any = None, app_data: Any = None, user_data: Any = No
 
 def on_cue_kind_change(sender: Any, app_data: Any, user_data: Any = None) -> None:
     """Row-dialog kind combo: reveal ONLY the fields of the chosen kind
-    (e35s04 + e36s05: a 'burst' kind runs one bounded rate message)."""
+    (e35s04 + e36s05: a 'burst' kind runs one bounded rate message).
+
+    e36s06 real-DPG fix: the property/burst containers share the fixed editor
+    tags (cue_dlg_value / cue_dlg_v0.. / cue_dlg_ms), so switching kind must
+    re-render the ACTIVE value kind (or clear the shared containers when
+    leaving them) — otherwise the burst area stays empty (no row can be added)
+    and the previous kind's tags linger and duplicate (duplicate tags raise in
+    real DPG 2.3.1).
+    """
     kind = str(app_data)
     dpg.configure_item("cue_prop_fields", show=kind == "property")
     dpg.configure_item("cue_wait_fields", show=kind == "wait")
     dpg.configure_item("cue_mapper_fields", show=kind == "mapper")
     dpg.configure_item("cue_burst_fields", show=kind == "burst")
+    _cue_dlg_render_kind_editors(kind)
+
+
+def _cue_dlg_render_kind_editors(kind: str) -> None:
+    """(Re)render the value editors of the row dialog's ACTIVE kind (e36s06).
+
+    The property and burst containers share the fixed editor tags, so only one
+    kind may hold them: entering a value kind renders one fresh set, leaving
+    one clears both. Burst normalizes its property combo onto a legal rate
+    when it still holds the previous kind's property.
+    """
+    if kind == "property":
+        prop = str(dpg.get_value("cue_dlg_prop_combo"))
+        if prop not in catalog.PROPERTY_CATALOG:
+            prop = "alpha"
+            dpg.set_value("cue_dlg_prop_combo", prop)
+        _cue_dlg_render_values("cue_prop_values", prop)
+    elif kind == "burst":
+        prop = str(dpg.get_value("cue_dlg_burst_combo"))
+        rates = _cue_row_rate_candidates()
+        if prop not in rates:
+            prop = rates[0] if rates else "turn"
+            dpg.set_value("cue_dlg_burst_combo", prop)
+        _cue_dlg_render_values("cue_burst_values", prop)
+    else:
+        for container in ("cue_prop_values", "cue_burst_values"):
+            if dpg.does_item_exist(container):
+                dpg.delete_item(container, children_only=True)
 
 
 def _dlg_float(tag: str, default: float) -> float:
@@ -6066,15 +6105,23 @@ def _cue_dlg_render_values(
     """Render the value/component + optional ms editors of a row property into
     the given container (e36s05): one drag for a single-value property (tag
     cue_dlg_value), one labelled drag per component for multi-value properties
-    (tags cue_dlg_v0..), plus an 'Animate (ms)' drag on ms-capable properties."""
-    if dpg.does_item_exist(container):
-        dpg.delete_item(container, children_only=True)
+    (tags cue_dlg_v0..), plus an 'Animate (ms)' drag on ms-capable properties.
+
+    e36s06 real-DPG fix: the property and burst containers SHARE the fixed
+    editor tags, so both are cleared before rendering (a stale second set
+    would duplicate tags — real DPG raises) and the labels use themed_text:
+    raw dpg.add_text has no ``slot`` keyword, which raised and killed the
+    value area (user report: the Add cue row dialog cannot insert values).
+    """
+    for container in ("cue_prop_values", "cue_burst_values"):
+        if dpg.does_item_exist(container):
+            dpg.delete_item(container, children_only=True)
     entry = catalog.PROPERTY_CATALOG[prop]
     comps = entry["components"]
     pre = prefilled or [float(c["neutral"]) for c in comps]
     if len(comps) == 1:
         comp = comps[0]
-        dpg.add_text("Value", slot="text_dim", parent=container)
+        themed_text("Value", slot="text_dim", parent=container)
         dpg.add_drag_float(
             parent=container,
             default_value=pre[0],
@@ -6087,7 +6134,7 @@ def _cue_dlg_render_values(
         )
     else:
         for i, comp in enumerate(comps):
-            dpg.add_text(f"{comp['label']}", slot="text_dim", parent=container)
+            themed_text(f"{comp['label']}", slot="text_dim", parent=container)
             dpg.add_drag_float(
                 parent=container,
                 default_value=pre[i] if i < len(pre) else float(comp["neutral"]),
@@ -6099,7 +6146,7 @@ def _cue_dlg_render_values(
                 tag=f"cue_dlg_v{i}",
             )
     if entry["ms"]:
-        dpg.add_text("Animate (ms)", slot="text_dim", parent=container)
+        themed_text("Animate (ms)", slot="text_dim", parent=container)
         dpg.add_drag_float(
             parent=container,
             default_value=ms_value if ms_value > 0 else 0.0,
