@@ -222,6 +222,14 @@ MAPPER_LEARN_SLOTS = 4
 MAPPER_MARKER_W = 15
 MAPPER_MARKER_H = 15
 
+# e40s08: the per-source State band — a bordered box on the source line's OWN
+# sub-line (no line number) holding that source's State Routes, plus a header
+# row ('State' + a small '+'). Both the header and one Route row measure the
+# checkbox/button height, so the box height is box padding + the header + N rows
+# + the gaps between them (measured on DPG 2.3.1, compact mapper theme).
+MAPPER_STATE_BOX_HEADER_H = 16  # px height of the box header row
+MAPPER_STATE_BOX_ROW_H = 16  # px height of one State Route row inside the box
+
 # e33s04: wider spacing BETWEEN the learn-bar groups (replaces the almost
 # invisible DPG vertical separators — the user asked for plain space).
 MARKER_GROUP_GAP = 18
@@ -427,6 +435,7 @@ MIDI_ACTION_SEQ_ROW_DISABLE = "seq_row_disable"  # deactivate every step of a se
 MIDI_ACTION_ENABLE_CORRECTION = "enable_correction"  # arm the SELECTED source's CC block
 MIDI_ACTION_MONITOR_TOGGLE = "monitor_toggle"  # e39s01: show/hide the MIDI Monitor window
 MIDI_ACTION_ROUTE_TOGGLE = "route_toggle"  # e40s01: arm/disarm a Route (its Enabled gate)
+MIDI_ACTION_ROUTE_ADD = "route_add"  # e40s08: create a State Route on a source line (its box '+')
 
 
 # e39s01: MIDI Monitor (diagnostic window). The capture is bounded so a spinning

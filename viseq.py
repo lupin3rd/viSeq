@@ -79,6 +79,8 @@ from viseqapp.constants import (
     MAPPER_ROW_THUMB_H,
     MAPPER_ROW_THUMB_W,
     MAPPER_SMALL_CHAR_PX,
+    MAPPER_STATE_BOX_HEADER_H,
+    MAPPER_STATE_BOX_ROW_H,
     MAPPER_TEXT_H,
     MAPPER_WINDOW_HEIGHT,
     MAPPER_WINDOW_WIDTH,
@@ -110,6 +112,7 @@ from viseqapp.constants import (
     MIDI_ACTION_NUDGE_BACK,
     MIDI_ACTION_NUDGE_FORWARD,
     MIDI_ACTION_REGEN_SELECTED,
+    MIDI_ACTION_ROUTE_ADD,
     MIDI_ACTION_ROUTE_TOGGLE,
     MIDI_ACTION_SEQ_ROW_ASSIGN,
     MIDI_ACTION_SEQ_ROW_DISABLE,
@@ -3708,6 +3711,8 @@ _MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
     MIDI_ACTION_MONITOR_TOGGLE: lambda p, v: _exec_monitor_toggle(p, v),
     # e40s01: arm/disarm a Route's Enabled gate
     MIDI_ACTION_ROUTE_TOGGLE: lambda p, v: _exec_route_toggle(p, v),
+    # e40s08: create a State Route on a source line (the State box '+')
+    MIDI_ACTION_ROUTE_ADD: lambda p, v: _exec_route_add(p, v),
 }
 
 _last_unknown_action_log: dict[str, float] = {}  # action id -> last log time (throttle)
@@ -4514,6 +4519,23 @@ def _exec_route_toggle(params: dict[str, Any], value: int) -> None:
     mapper.set_mapping_enabled(int(route["id"]), enabled)
     if dpg.does_item_exist(f"route_enable_{route['id']}"):
         dpg.set_value(f"route_enable_{route['id']}", enabled)
+
+
+def _exec_route_add(params: dict[str, Any], value: int) -> None:
+    """e40s08: a momentary press adds a State Route to a Mapper source line.
+
+    The line index (same vocabulary as MIDI_ACTION_MAPPER_LINE) resolves through
+    mapper.row_targets() at TRIGGER time — a binding never captures a volatile
+    source id. A stale line index is a logged no-op.
+    """
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    line = int(params.get("line", -1))
+    rows = mapper.row_targets()
+    if line < 0 or line >= len(rows):
+        _log_stale_midi_target(MIDI_ACTION_ROUTE_ADD, f"no line {line}")
+        return
+    add_state_route(user_data=rows[line])
 
 
 def _sync_monitor_learn_marker() -> None:
@@ -5843,7 +5865,11 @@ def _route_origin_label(route: dict[str, Any]) -> str:
 
 
 def _render_route_row(route: dict[str, Any], parent: Any) -> None:
-    """One Get/Global row: Origin -> Destination + arm/edit/delete + learn marker."""
+    """One State/Global row: Origin -> Destination + arm/edit/delete + learn marker.
+
+    e40s08: every control carries an explicit height (MAPPER_STATE_BOX_ROW_H) so
+    the row is height-constant and the State box can compute its own height.
+    """
     rid = int(route["id"])
     tag = f"route_row_{rid}"
     in_from = float(route.get("input_from") or 0.0)
@@ -5862,12 +5888,23 @@ def _render_route_row(route: dict[str, Any], parent: Any) -> None:
         )
         dpg.add_checkbox(
             tag=f"route_enable_{rid}",
+            height=MAPPER_STATE_BOX_ROW_H,
             default_value=bool(route.get("enabled", False)),
             callback=on_route_enable,
             user_data=rid,
         )
-        dpg.add_button(label="Edit", callback=open_route_editor, user_data=rid)
-        dpg.add_button(label="X", callback=delete_route, user_data=rid)
+        dpg.add_button(
+            label="Edit",
+            height=MAPPER_STATE_BOX_ROW_H,
+            callback=open_route_editor,
+            user_data=rid,
+        )
+        dpg.add_button(
+            label="X",
+            height=MAPPER_STATE_BOX_ROW_H,
+            callback=delete_route,
+            user_data=rid,
+        )
         if state.midi_learn_mode:  # e33 rule: the arm toggle is MIDI-mappable
             learn_marker(
                 MIDI_ACTION_ROUTE_TOGGLE,
@@ -5875,6 +5912,61 @@ def _render_route_row(route: dict[str, Any], parent: Any) -> None:
                 parent=tag,
                 tag=f"route_mk_{rid}",
             )
+
+
+def _mapper_state_box_height(route_count: int) -> int:
+    """Fixed height of one source's State box (e40s08).
+
+    A bordered child_window (WindowPadding 4 on each side) holding the header
+    row and one row per State Route, separated by MAPPER_ROW_GAP. Rows are
+    height-constant (MAPPER_STATE_BOX_ROW_H), so the box never needs scrolling.
+    """
+    rows = max(0, int(route_count))
+    inner = MAPPER_STATE_BOX_HEADER_H + rows * (MAPPER_STATE_BOX_ROW_H + MAPPER_ROW_GAP)
+    return inner + 2 * MAPPER_ROW_PAD_V
+
+
+def _render_state_box(
+    target_id: str, routes: list[dict[str, Any]], parent: Any, line_index: int
+) -> None:
+    """The per-source State band: a bordered box on the source line's own sub-line.
+
+    e40s08: a State Origin always has a Source, so its Routes belong to that
+    Source's block instead of floating under the Control cards. The box carries
+    NO line number — line numbering stays 1:1 with sources, so the tile menu
+    'Add to Mapper > line N' and MIDI_ACTION_MAPPER_LINE keep resolving. Its
+    header '+' adds a State Route to THIS source. An orphan Route (its source is
+    gone) stays here, disabled, and resumes when the source returns.
+    """
+    box_tag = f"mapper_state_box_{target_id}"
+    head_tag = f"mapper_state_head_{target_id}"
+    with dpg.child_window(
+        parent=parent,
+        width=0,
+        height=_mapper_state_box_height(len(routes)),
+        border=True,
+        no_scrollbar=True,
+        tag=box_tag,
+    ):
+        with dpg.group(horizontal=True, tag=head_tag):
+            themed_text("State", slot="text_dim")
+            dpg.add_button(
+                label="+",
+                width=MAPPER_X_W,
+                height=MAPPER_X_H,
+                callback=add_state_route,
+                user_data=target_id,
+                tag=f"mapper_state_add_{target_id}",
+            )
+            if state.midi_learn_mode:  # e33 rule: the add action is MIDI-mappable
+                learn_marker(
+                    MIDI_ACTION_ROUTE_ADD,
+                    {"line": line_index},
+                    parent=head_tag,
+                    tag=f"mapper_state_mk_{target_id}",
+                )
+        for route in routes:
+            _render_route_row(route, parent=box_tag)
 
 
 def on_route_enable(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -5891,17 +5983,17 @@ def delete_route(sender: Any = None, app_data: Any = None, user_data: Any = None
     refresh_mapper_ui()
 
 
-def new_route_dialog(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Create a State -> MIDI Route on the first source and open its editor (e40s01)."""
-    targets = list(mapper.row_targets())
-    if not targets:
-        log_error("Mapper", "no source to route from - right-click one in Vimix sources first")
-        return
+def _create_state_route(target_id: str) -> dict[str, Any]:
+    """A fresh State -> MIDI Route on one source, seeded with the first controller.
+
+    Shared by the filter-bar 'New Route' button and the per-source State box '+'
+    (e40s08), so the two entry points can never drift.
+    """
     ports = [str(c.get("port", "")) for c in midi_controllers if c.get("port")]
-    route = mapper.add_route(
+    return mapper.add_route(
         ORIGIN_STATE,
         DEST_MIDI,
-        target_id=targets[0],
+        target_id=target_id,
         prop="seek",
         destination_spec={
             "controller_port": ports[0] if ports else "",
@@ -5910,7 +6002,21 @@ def new_route_dialog(sender: Any = None, app_data: Any = None, user_data: Any = 
             "number": 0,
         },
     )
+
+
+def add_state_route(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """The State box '+': add a State Route to that source and open its editor (e40s08)."""
+    route = _create_state_route(str(user_data))
     _open_route_editor(int(route["id"]))
+
+
+def new_route_dialog(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Create a State -> MIDI Route on the first source and open its editor (e40s01)."""
+    targets = list(mapper.row_targets())
+    if not targets:
+        log_error("Mapper", "no source to route from - right-click one in Vimix sources first")
+        return
+    add_state_route(user_data=targets[0])
 
 
 def open_route_editor(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -6212,7 +6318,10 @@ def refresh_mapper_ui() -> None:
     pitch = MAPPER_MINI_W + 4
     for row_no, (target_id, mappings) in enumerate(rows.items(), start=1):
         routes = route_rows.get(target_id, [])
-        if not (_mapper_show_control and mappings) and not (_mapper_show_get and routes):
+        # e40s08: the State box shows its Routes, and stays in learn mode so its
+        # '+' learn marker has a home on every source.
+        show_state_box = _mapper_show_get and (bool(routes) or state.midi_learn_mode)
+        if not (_mapper_show_control and mappings) and not show_state_box:
             continue
         block = dpg.add_group(parent="mapper_mappings_group")
         if mappings and _mapper_show_control:
@@ -6285,9 +6394,8 @@ def refresh_mapper_ui() -> None:
                     parent=line,
                     tag=f"mapper_mk_line_{target_id}",
                 )
-        if _mapper_show_get:
-            for route in routes:
-                _render_route_row(route, parent=block)
+        if show_state_box:
+            _render_state_box(target_id, routes, parent=block, line_index=row_no - 1)
     # e35s03/UAT: rebuilt cards relabel their running triggers and progress
     # readouts (the caches are stale after the body rebuild — re-seed in one pass)
     state.cue_trigger_label_cache.clear()
