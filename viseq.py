@@ -5396,7 +5396,7 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
                 )
             dpg.add_checkbox(
                 default_value=mapping.get("enabled", False),
-                callback=on_mapper_enable,
+                callback=on_mapping_enable,
                 user_data=mid,
                 tag=f"mapper_enable_{mid}",
             )
@@ -5913,7 +5913,7 @@ def _render_mapping_row(mapping: dict[str, Any], parent: Any) -> None:
             label=_mapping_enable_label(mapping),
             tag=f"mapping_enable_{rid}",
             default_value=bool(mapping.get("enabled", False)),
-            callback=on_mapping_row_enable,
+            callback=on_mapping_enable,
             user_data=rid,
         )
         dpg.add_button(
@@ -5925,7 +5925,7 @@ def _render_mapping_row(mapping: dict[str, Any], parent: Any) -> None:
         dpg.add_button(
             label="X",
             height=MAPPER_STATE_BOX_ROW_H,
-            callback=delete_mapping_row,
+            callback=delete_mapping,
             user_data=rid,
         )
         if state.midi_learn_mode:  # e33 rule: the arm toggle is MIDI-mappable
@@ -5998,19 +5998,25 @@ def _render_state_box(
             _render_mapping_row(mapping, parent=box_tag)
 
 
-def on_mapping_row_enable(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Mapping row arm checkbox: flip the Enabled gate (no body refresh, e40s01).
+def on_mapping_enable(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Arm checkbox of a Mapping (mini-card OR row): flip the Enabled gate.
 
-    e40s09: distinct from the mini-card's on_mapper_enable so the rename does not
-    merge the two; e40s10 collapses them into one handler.
+    e40s10: the card and the row are two renderings of the same Mapping, so they
+    share ONE handler (an arm is an arm, no body refresh — e24).
     """
     mapper.set_mapping_enabled(int(user_data), bool(app_data))
 
 
-def delete_mapping_row(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Delete a Mapping row, drop its runtime memory and rebuild the body (e40s01)."""
-    rid = int(user_data)
-    state.mapper_mappings[:] = [m for m in state.mapper_mappings if int(m["id"]) != rid]
+def delete_mapping(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """X of a Mapping (mini-card OR row): remove it and its runtime memory (e40s10).
+
+    One path for both renderings: the Mapping leaves the list, its cue run stops
+    and its open editor closes (`_drop_mapping_editor_and_runs`), and the engine's
+    per-Mapping bookkeeping is pruned.
+    """
+    mid = int(user_data)
+    mapper.remove_mapping(mid)
+    _drop_mapping_editor_and_runs(mid)
     live_ids = {int(m["id"]) for m in state.mapper_mappings}
     emission.prune_book(state.mapping_book, state.mapping_values, live_ids)
     refresh_mapper_ui()
@@ -6456,11 +6462,6 @@ def show_mapper_window(sender: Any = None, app_data: Any = None, user_data: Any 
     dpg.focus_item("mapper_window")  # e17: a shown window must come to the front
 
 
-def on_mapper_enable(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Tick the enable checkbox: arm/mute the mapping (no body refresh, e24)."""
-    mapper.set_mapping_enabled(int(user_data), bool(app_data))
-
-
 def on_mapper_control(sender: Any, app_data: Any, user_data: Any) -> None:
     """Slider/knob change: send the clamped OUTPUT value (e23s01)."""
     mid = int(user_data)
@@ -6698,14 +6699,6 @@ def reset_mapping(sender: Any = None, app_data: Any = None, user_data: Any = Non
         return
     mapper.reset_mapping_value(mid)
     _sync_mapper_control(mid)
-
-
-def delete_mapping(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """X on a mapping card: remove the mapping, stop its cue, close its editor."""
-    mid = int(user_data)
-    mapper.remove_mapping(mid)
-    _drop_mapping_editor_and_runs(mid)
-    refresh_mapper_ui()
 
 
 def open_new_mapping_dialog(
