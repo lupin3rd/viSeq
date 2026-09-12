@@ -100,31 +100,6 @@ def find_source_by_name(name: str) -> Any:
     return None, None
 
 
-def find_player_index(player_id: int) -> int | None:
-    for i, p in enumerate(state.monitor_players):
-        if p["id"] == player_id:
-            return i
-    return None
-
-
-def send_monitor_command(player_id: int) -> None:
-    idx = find_player_index(player_id)
-    if idx is None:
-        return
-    player = state.monitor_players[idx]
-    target_id = player["target_id"]
-    if not target_id:
-        return
-    addr = f"/viosc/monitor/{target_id}"
-    props = player.get("props", [])
-    if props:
-        osc_client.send_message(addr, list(props))
-        append_log("OUT", f"{addr} {props}")
-    else:
-        osc_client.send_message(addr, [])
-        append_log("OUT", f"{addr} (stop)")
-
-
 def incoming_osc_handler(address: str, *args: Any) -> None:
     append_log("IN ", address)
     try:

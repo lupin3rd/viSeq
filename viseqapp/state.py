@@ -267,12 +267,6 @@ thumb_cycle_state: dict[str, tuple[int, float]] = {}
 thumb_fail_count: dict[str, int] = {}
 
 
-monitor_players: list[dict[str, Any]] = []  # each: {"id", "tag", "target_id", "props"}
-
-
-monitor_player_counter = 0
-
-
 _last_unmatched_log: dict[str, float] = {}  # port -> last unmatched-message log time
 
 
@@ -336,7 +330,7 @@ leap_drive_state: dict[int, dict[str, Any]] = {}
 
 # e16: Mapper state — OSC property mappings (see viseqapp/mapper.py).
 # Each entry: {id, target_id, property, control, value}; ids come from the
-# monotonic counter (like monitor_player_counter).
+# monotonic counter (like the other UI element counters).
 mapper_mappings: list[dict[str, Any]] = []
 
 

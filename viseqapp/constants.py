@@ -23,9 +23,6 @@ THUMB_REQUEST_INTERVAL = 3.0  # min seconds between thumbnail requests per sourc
 LOG_HISTORY_LIMIT = 25  # max entries kept in the OSC log window
 
 
-MONITOR_OFFSET = (280, 260)  # grid spacing between monitor player windows
-
-
 DPG_COLOR_SCALE = 255.0  # DPG ToColor divides color inputs by 255 -> its color API is 0..255
 
 
@@ -122,30 +119,6 @@ MEDIA_TITLE_ELLIPSIS = "..."  # ASCII dots: ProggyClean (default font) has no U+
 
 
 MEDIA_TITLE_CHAR_PX = 7  # default-font estimate (ProggyClean 13 px) used before the atlas is built
-
-
-MONITOR_THUMB_W = 115  # thumbnail width, same as the Mediagrid/sequencer
-
-
-MONITOR_THUMB_H = 65  # thumbnail height, same as the Mediagrid/sequencer
-
-
-MONITOR_DISC_SIZE = 64  # px side of the turntable disc
-
-
-MONITOR_ALPHA_W = 10  # px width of the vertical alpha bar
-
-
-MONITOR_SEEK_W = 250  # px width of the horizontal seek bar
-
-
-MONITOR_DISC_R = 26.0  # radius of the rotating turntable arm
-
-
-MONITOR_DISC_RPM = 33.0  # disc rotations per minute at speed 1.0 (vinyl standard)
-
-
-MONITOR_SPEED_TEXT_SIZE = 12  # px font size of the speed label inside the disc
 
 
 # e16/e20/e22/e23: Mapper window geometry — the body is a vertical stack of
