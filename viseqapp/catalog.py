@@ -11,7 +11,7 @@ the optional-ms animation flag and enum options.
 
 Every entry: {family, components:[{key,label,min,max,neutral}], partial,
 ms, options, derivable}. The last one is a CLIENT-side capability (e40s01,
-ADR-route-model): unlike family/ranges/ms/options (facts of the vimix OSC API,
+ADR-mapping-model): unlike family/ranges/ms/options (facts of the vimix OSC API,
 per the wiki), ``derivable`` says viseq may extrapolate the value between state
 refreshes — only ``seek`` is derivable today.
 
@@ -232,9 +232,9 @@ def is_trigger(prop: str) -> bool:
 
 
 def is_derivable(prop: str) -> bool:
-    """True when a Route may DEAD-RECKON this property between state refreshes.
+    """True when a Mapping may DEAD-RECKON this property between state refreshes.
 
-    e40s01 (ADR-route-model, decision 5): a client-side capability, not a vimix
+    e40s01 (ADR-mapping-model, decision 5): a client-side capability, not a vimix
     OSC fact — a linear timeline position (seek) can be extrapolated from the
     last value plus speed * elapsed while the source plays. Every catalog entry
     carries the flag; only seek is True today.

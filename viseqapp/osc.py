@@ -17,10 +17,10 @@ from pythonosc import osc_server, udp_client
 
 from viseqapp import state
 from viseqapp.constants import (
+    MAPPING_OSC_MAX_PORT,
     MAX_STATE_JSON_BYTES,
     MAX_THUMBNAIL_BLOB_BYTES,
     MAX_THUMBNAIL_PIXELS,
-    ROUTE_OSC_MAX_PORT,
     VIOSC_IP,
     VIOSC_PORT,
 )
@@ -132,12 +132,12 @@ class ViseqOSCUDPServer(osc_server.ThreadingOSCUDPServer):
 
 
 # e40s03: OSC OUTPUT DESTINATIONS — an opt-in third-party egress.
-# One cached SimpleUDPClient per (host, port) so a Route never recreates a socket
+# One cached SimpleUDPClient per (host, port) so a Mapping never recreates a socket
 # per emission; a destination is validated before any send (address must be an
 # OSC path, port in range, host non-empty). The viOSC client above is untouched:
 # /vimix traffic never goes through here.
 
-_route_clients: dict[tuple[str, int], Any] = {}
+_mapping_clients: dict[tuple[str, int], Any] = {}
 
 
 def validate_destination(spec: Any) -> str | None:
@@ -152,8 +152,8 @@ def validate_destination(spec: Any) -> str | None:
         port = int(raw_port) if raw_port is not None else 0
     except (TypeError, ValueError):
         return f"OSC port {raw_port!r} is not a number"
-    if not 1 <= port <= ROUTE_OSC_MAX_PORT:
-        return f"OSC port {port} out of range 1..{ROUTE_OSC_MAX_PORT}"
+    if not 1 <= port <= MAPPING_OSC_MAX_PORT:
+        return f"OSC port {port} out of range 1..{MAPPING_OSC_MAX_PORT}"
     address = str(spec.get("address") or "").strip()
     if not address.startswith("/") or len(address) < 2:
         return f"OSC address {address!r} must start with '/'"
@@ -163,15 +163,15 @@ def validate_destination(spec: Any) -> str | None:
 def _client_for(host: str, port: int) -> Any:
     """The cached UDP client of one (host, port) destination (e40s03)."""
     key = (str(host), int(port))
-    client = _route_clients.get(key)
+    client = _mapping_clients.get(key)
     if client is None:
         client = udp_client.SimpleUDPClient(key[0], key[1])
-        _route_clients[key] = client
+        _mapping_clients[key] = client
     return client
 
 
-def send_route_osc(spec: Any, value: float) -> bool:
-    """Send one value to a Route's OSC destination; False on an invalid spec (e40s03).
+def send_mapping_osc(spec: Any, value: float) -> bool:
+    """Send one value to a Mapping's OSC destination; False on an invalid spec (e40s03).
 
     Best-effort and never raising into the main loop: a bad spec or a failing
     send is logged and returns False (the viOSC client and the /vimix path are
@@ -179,13 +179,13 @@ def send_route_osc(spec: Any, value: float) -> bool:
     """
     error = validate_destination(spec)
     if error is not None:
-        log_error("OSC", f"route destination: {error}")
+        log_error("OSC", f"mapping destination: {error}")
         return False
     address = str(spec["address"])
     try:
         _client_for(str(spec["host"]), int(spec["port"])).send_message(address, [float(value)])
-        append_log("OUT", f"{address} [{float(value):.2f}] (route)")
+        append_log("OUT", f"{address} [{float(value):.2f}] (mapping)")
         return True
     except Exception as e:
-        log_error("OSC", f"route destination {address}: {e}")
+        log_error("OSC", f"mapping destination {address}: {e}")
         return False

@@ -21,6 +21,12 @@ from viseqapp.constants import (
     DESTINATIONS,
     MAPPER_MAX_MAPPINGS,
     MAPPER_PERSISTED_KEYS,
+    MAPPING_DEFAULT_CADENCE_MS,
+    MAPPING_DIRECTIONS,
+    MAPPING_MIDI_EMIT_EPSILON,
+    MAPPING_MIN_CADENCE_MS,
+    MAPPING_OSC_EMIT_EPSILON,
+    MAPPING_STEPS_CONTINUOUS,
     MIDI_MONITOR_OUTCOME_HOLD,
     MIDI_MONITOR_OUTCOME_MUTED,
     MIDI_MONITOR_OUTCOME_SENT,
@@ -29,12 +35,6 @@ from viseqapp.constants import (
     ORIGIN_CONTROL,
     ORIGIN_STATE,
     ORIGINS,
-    ROUTE_DEFAULT_CADENCE_MS,
-    ROUTE_DIRECTIONS,
-    ROUTE_MIDI_EMIT_EPSILON,
-    ROUTE_MIN_CADENCE_MS,
-    ROUTE_OSC_EMIT_EPSILON,
-    ROUTE_STEPS_CONTINUOUS,
 )
 from viseqapp.osc import osc_client
 from viseqapp.queues import append_log
@@ -63,13 +63,16 @@ MAPPER_PROPERTIES: dict[str, dict[str, Any]] = {
     "speed": {"label": "Speed", "min": 0.1, "max": 10.0},
 }
 
-MAPPER_CONTROL_ROUTE = "route"  # e40s01: a state/clock/const Route has no physical control kind
+MAPPER_CONTROL_MAPPING = "mapping"  # e40s01: a State/Clock/Constant Mapping has no control
+# e40s09: the value e40 originally persisted for the same sentinel (Route era).
+# sanitize_mapping still accepts it and heals it, so an old .viseq file loads.
+MAPPER_CONTROL_MAPPING_LEGACY = "route"
 MAPPER_CONTROLS: tuple[str, ...] = (
     "slider",
     "knob",
     "button",
     "cue list",  # e34s04: a button-like trigger whose card opens its cue-list window
-    MAPPER_CONTROL_ROUTE,  # e40s01: Route rows driven by a State/Clock/Constant Origin
+    MAPPER_CONTROL_MAPPING,  # e40s01: Mapping rows driven by a State/Clock/Constant Origin
 )
 
 # e35s01: the extensible cue row kinds — the window editor and the engine
@@ -85,7 +88,7 @@ MAPPER_CONTROL_TAG_KINDS: dict[str, str] = {
     "knob": "knob",
     "button": "btn",
     "cue list": "cue",
-    MAPPER_CONTROL_ROUTE: "route",  # e40s01: Route rows render their own row editor
+    MAPPER_CONTROL_MAPPING: "mapping",  # e40s01: Mapping rows render their own row editor
 }
 
 
@@ -372,23 +375,23 @@ def quantize_unit(unit: float, steps: int) -> float:
     segment without the user touching epsilon or the rate cap.
     """
     clamped = _clamp(float(unit), 0.0, 1.0)
-    if int(steps) <= ROUTE_STEPS_CONTINUOUS:
+    if int(steps) <= MAPPING_STEPS_CONTINUOUS:
         return clamped
     segments = int(steps) - 1
     return round(clamped * segments) / segments
 
 
-def route_output_value(route: dict[str, Any], raw: float) -> float:
+def mapping_output_value(mapping: dict[str, Any], raw: float) -> float:
     """The Destination value a raw Origin value maps to (pure, no send, e40s01).
 
     Mirrors the dispatch math (``_raw_unit`` zone ownership + quantisation +
     output range); a value outside the Origin window HOLDS the current value.
     """
-    unit = _raw_unit(route, raw)
+    unit = _raw_unit(mapping, raw)
     if unit is None:
-        return float(route["value"])
-    unit = quantize_unit(unit, int(route.get("steps", ROUTE_STEPS_CONTINUOUS)))
-    out_from, out_to = float(route["output_from"]), float(route["output_to"])
+        return float(mapping["value"])
+    unit = quantize_unit(unit, int(mapping.get("steps", MAPPING_STEPS_CONTINUOUS)))
+    out_from, out_to = float(mapping["output_from"]), float(mapping["output_to"])
     return out_from + unit * (out_to - out_from)
 
 
@@ -404,7 +407,7 @@ def prop_flag(value: Any) -> bool:
 
 
 def dead_reckon(
-    route: dict[str, Any], last_value: float, elapsed_s: float, props: dict[str, Any]
+    mapping: dict[str, Any], last_value: float, elapsed_s: float, props: dict[str, Any]
 ) -> float:
     """Extrapolate a derivable State Origin between refreshes (e40s01).
 
@@ -414,39 +417,39 @@ def dead_reckon(
     Origin window; a paused source, a non-derivable property and a negative
     elapsed all return the last value unchanged.
     """
-    if not catalog.is_derivable(str(route["property"])) or not prop_flag(props.get("play")):
+    if not catalog.is_derivable(str(mapping["property"])) or not prop_flag(props.get("play")):
         return float(last_value)
     speed = props.get("speed")
     speed = float(speed) if isinstance(speed, (int, float)) else 1.0
-    lo, hi = _input_window(float(route["input_from"]), float(route["input_to"]))
+    lo, hi = _input_window(float(mapping["input_from"]), float(mapping["input_to"]))
     return _clamp(float(last_value) + speed * max(0.0, float(elapsed_s)), lo, hi)
 
 
-def route_emit_epsilon(destination: str) -> float:
-    """The minimum Destination value change that makes a Route emit (e40s01).
+def mapping_emit_epsilon(destination: str) -> float:
+    """The minimum Destination value change that makes a Mapping emit (e40s01).
 
     ADR decision 6: a named constant per Destination kind — one MIDI step for
     notes/CC (an integer scale), a real float change for OSC.
     """
     if destination == DEST_MIDI:
-        return ROUTE_MIDI_EMIT_EPSILON
-    return ROUTE_OSC_EMIT_EPSILON
+        return MAPPING_MIDI_EMIT_EPSILON
+    return MAPPING_OSC_EMIT_EPSILON
 
 
 def origin_of(mapping: dict[str, Any]) -> str:
-    """The Route Origin of a mapping; a legacy row (no key) is Control (e40s01)."""
+    """The Mapping Origin of a mapping; a legacy row (no key) is Control (e40s01)."""
     origin = mapping.get("origin", ORIGIN_CONTROL)
     return origin if origin in ORIGINS else ORIGIN_CONTROL
 
 
 def destination_of(mapping: dict[str, Any]) -> str:
-    """The Route Destination of a mapping; a legacy row (no key) is Vimix (e40s01)."""
+    """The Mapping Destination of a mapping; a legacy row (no key) is Vimix (e40s01)."""
     destination = mapping.get("destination", DEST_VIMIX)
     return destination if destination in DESTINATIONS else DEST_VIMIX
 
 
 def _default_input_range(origin: str, spec: dict[str, Any]) -> tuple[float | None, float | None]:
-    """The default Origin window of a Route (e40s01).
+    """The default Origin window of a Mapping (e40s01).
 
     A State Origin reads a catalog property, so its window is the property
     range; Clock/Constant Origins produce a 0..1 unit; a Control Origin has no
@@ -460,7 +463,7 @@ def _default_input_range(origin: str, spec: dict[str, Any]) -> tuple[float | Non
 
 
 def _default_output_range(destination: str, spec: dict[str, Any]) -> tuple[float, float]:
-    """The default Destination range of a Route (e40s01).
+    """The default Destination range of a Mapping (e40s01).
 
     A MIDI Destination is the 0..127 value scale (note velocity / CC), an OSC
     Destination defaults to the 0..1 unit, and a Vimix Destination keeps the
@@ -476,9 +479,9 @@ def _default_output_range(destination: str, spec: dict[str, Any]) -> tuple[float
 def default_output_range(
     destination: str, prop: str, component: str | None = None
 ) -> tuple[float, float]:
-    """The default Destination range of a Route for a property (e40s03).
+    """The default Destination range of a Mapping for a property (e40s03).
 
-    Used by the Route editor when the Destination changes: MIDI is 0..127, OSC
+    Used by the Mapping editor when the Destination changes: MIDI is 0..127, OSC
     the 0..1 unit, Vimix the catalog range.
     """
     return _default_output_range(destination, _component_spec(prop, component))
@@ -504,7 +507,7 @@ def _build_mapping(
     hue 0.0, posterize 0), not arithmetic midpoints. Shared by add_mapping
     and sanitize_mapping so the persistence schema never drifts.
 
-    e40s01: a mapping is a Route (Origin -> Remap -> Destination). ``origin``
+    e40s01: a mapping is a Mapping (Origin -> Rescale -> Destination). ``origin``
     and ``destination`` default to the legacy Control -> Vimix pair; a State
     Origin seeds its Origin window from the catalog property, an output
     Destination its range from the MIDI/OSC scale.
@@ -523,13 +526,13 @@ def _build_mapping(
     neutral = _clamp(float(spec["neutral"]), min(out_from, out_to), max(out_from, out_to))
     return {
         "id": mapping_id,
-        # e40s01 Route discriminators (legacy rows hydrate to control -> vimix)
+        # e40s01 Mapping discriminators (legacy rows hydrate to control -> vimix)
         "origin": origin,
         "destination": destination,
         "destination_spec": {},
         "origin_spec": {},
-        "cadence": ROUTE_DEFAULT_CADENCE_MS if origin == ORIGIN_STATE else None,
-        "steps": ROUTE_STEPS_CONTINUOUS,
+        "cadence": MAPPING_DEFAULT_CADENCE_MS if origin == ORIGIN_STATE else None,
+        "steps": MAPPING_STEPS_CONTINUOUS,
         "target_id": target_id,
         "property": prop,
         "component": component,
@@ -538,7 +541,7 @@ def _build_mapping(
         "band": None,  # e18: audio-band source (2 or 3), exclusive with midi/leap
         "midi": None,  # e18: learned MIDI source {device, type, number}
         "leap": None,  # e26s03: leap signal '<hand>.<field>' (e.g. 'left.pinch')
-        # e23: value remap. output_from/to = the range the Destination sweeps
+        # e23: value rescale. output_from/to = the range the Destination sweeps
         # (catalog range for Vimix, 0..127 for MIDI; editable/reversible).
         # input_from/to = the Origin window (raw control range, or the catalog
         # property range for a State Origin).
@@ -553,19 +556,19 @@ def _build_mapping(
     }
 
 
-def _validate_route(origin: str, destination: str) -> None:
+def _validate_mapping(origin: str, destination: str) -> None:
     """Reject an inconsistent Origin/Destination pair (developer error, e40s01).
 
-    v1 keeps the directions of ROUTE_DIRECTIONS: a Vimix Destination needs a
+    v1 keeps the directions of MAPPING_DIRECTIONS: a Vimix Destination needs a
     Control Origin (target_id is the write target), an output Destination needs
     a State/Clock/Constant Origin. A Control Origin driving MIDI/OSC is additive
-    later (ADR-route-model).
+    later (ADR-mapping-model).
     """
     if origin not in ORIGINS:
         raise ValueError(f"unknown origin {origin!r} (expected one of {ORIGINS})")
     if destination not in DESTINATIONS:
         raise ValueError(f"unknown destination {destination!r} (expected one of {DESTINATIONS})")
-    allowed = ROUTE_DIRECTIONS[origin]
+    allowed = MAPPING_DIRECTIONS[origin]
     if destination not in allowed:
         raise ValueError(
             f"origin {origin!r} cannot use destination {destination!r} (v1 allows {allowed})"
@@ -573,59 +576,57 @@ def _validate_route(origin: str, destination: str) -> None:
 
 
 def add_mapping(
-    target_id: str, prop: str, control: str, component: str | None = None
+    target_id: str | None = None,
+    prop: str = "alpha",
+    control: str | None = None,
+    component: str | None = None,
+    *,
+    origin: str = ORIGIN_CONTROL,
+    destination: str = DEST_VIMIX,
+    destination_spec: dict[str, Any] | None = None,
+    origin_spec: dict[str, Any] | None = None,
+    cadence: int | None = None,
+    steps: int = MAPPING_STEPS_CONTINUOUS,
 ) -> dict[str, Any]:
-    """Create a mapping entry and append it to the mapper state (e16s01).
+    """Create a Mapping and append it to the mapper state (e16s01, e40s01, e40s09).
+
+    The SINGLE factory for every (Origin, Destination) pair. The Control -> Vimix
+    shape passes its ``control`` kind (slider/knob/button/cue list); a State/
+    Clock/Constant Origin omits it, must pass a pair ``MAPPING_DIRECTIONS``
+    allows, and may carry the opaque ``destination_spec``/``origin_spec`` dicts
+    (validated by the UI and the engine that consume them). A Clock Origin seeds
+    its Origin window from CLOCK_SOURCES.
 
     e36s02: ``component`` selects the axis/channel of a multi-value property
     (None = scalar property, or the FIRST component for a vector property).
     """
-    state.mapper_counter += 1
-    mapping = _build_mapping(state.mapper_counter, target_id, prop, control, component=component)
-    state.mapper_mappings.append(mapping)
-    return mapping
-
-
-def add_route(
-    origin: str,
-    destination: str,
-    *,
-    target_id: str | None = None,
-    prop: str = "alpha",
-    destination_spec: dict[str, Any] | None = None,
-    origin_spec: dict[str, Any] | None = None,
-    cadence: int | None = None,
-    steps: int = ROUTE_STEPS_CONTINUOUS,
-) -> dict[str, Any]:
-    """Create a Route (e40s01) and append it to the mapper state.
-
-    ``add_mapping`` remains the factory for the Control -> Vimix shape (its
-    control kind is meaningful there); this one covers State/Clock/Constant
-    Origins writing a MIDI/OSC Destination. ``destination_spec`` and
-    ``origin_spec`` are kept as opaque persisted dicts (validated by the UI and
-    the engine that consume them); a Clock Origin seeds its Origin window from
-    CLOCK_SOURCES.
-    """
-    _validate_route(origin, destination)
+    _validate_mapping(origin, destination)
+    if control is None:
+        control = MAPPER_CONTROL_MAPPING
+        value_mapping = True
+    else:
+        value_mapping = False
     state.mapper_counter += 1
     mapping = _build_mapping(
         state.mapper_counter,
         target_id,
         prop,
-        MAPPER_CONTROL_ROUTE,
+        control,
+        component=component,
         origin=origin,
         destination=destination,
     )
-    if isinstance(destination_spec, dict):
-        mapping["destination_spec"] = dict(destination_spec)
-    if isinstance(origin_spec, dict):
-        mapping["origin_spec"] = dict(origin_spec)
-    if origin == ORIGIN_CLOCK:
-        clock = str(mapping["origin_spec"].get("clock") or CLOCK_DEFAULT)
-        mapping["input_from"], mapping["input_to"] = CLOCK_SOURCES.get(clock, (0.0, 1.0))
-    if origin == ORIGIN_STATE and cadence is not None:
-        mapping["cadence"] = max(ROUTE_MIN_CADENCE_MS, int(cadence))
-    mapping["steps"] = max(ROUTE_STEPS_CONTINUOUS, int(steps))
+    if value_mapping:
+        if isinstance(destination_spec, dict):
+            mapping["destination_spec"] = dict(destination_spec)
+        if isinstance(origin_spec, dict):
+            mapping["origin_spec"] = dict(origin_spec)
+        if origin == ORIGIN_CLOCK:
+            clock = str(mapping["origin_spec"].get("clock") or CLOCK_DEFAULT)
+            mapping["input_from"], mapping["input_to"] = CLOCK_SOURCES.get(clock, (0.0, 1.0))
+        if origin == ORIGIN_STATE and cadence is not None:
+            mapping["cadence"] = max(MAPPING_MIN_CADENCE_MS, int(cadence))
+        mapping["steps"] = max(MAPPING_STEPS_CONTINUOUS, int(steps))
     state.mapper_mappings.append(mapping)
     return mapping
 
@@ -673,16 +674,16 @@ def sanitize_mapping(raw: Any) -> dict[str, Any] | None:
         return None
     if not isinstance(destination, str) or destination not in DESTINATIONS:
         return None
-    if destination not in ROUTE_DIRECTIONS[origin]:
+    if destination not in MAPPING_DIRECTIONS[origin]:
         return None  # e40s01: inconsistent Origin/Destination pair
     control = str(raw.get("control") or "")
     if origin == ORIGIN_CONTROL:
-        if control not in MAPPER_CONTROLS or control == MAPPER_CONTROL_ROUTE:
+        if control not in MAPPER_CONTROLS or control == MAPPER_CONTROL_MAPPING:
             return None
     else:
-        if control not in ("", MAPPER_CONTROL_ROUTE):
+        if control not in ("", MAPPER_CONTROL_MAPPING, MAPPER_CONTROL_MAPPING_LEGACY):
             return None
-        control = MAPPER_CONTROL_ROUTE
+        control = MAPPER_CONTROL_MAPPING
     entry = catalog.PROPERTY_CATALOG[prop]
     target_id = str(raw.get("target_id") or "") or None
     if len(entry["components"]) > 1:
@@ -747,12 +748,12 @@ def sanitize_mapping(raw: Any) -> dict[str, Any] | None:
         clock = str(mapping["origin_spec"].get("clock") or CLOCK_DEFAULT)
         mapping["input_from"], mapping["input_to"] = CLOCK_SOURCES.get(clock, (0.0, 1.0))
     if origin == ORIGIN_STATE:
-        cadence = _to_float_or(raw.get("cadence"), ROUTE_DEFAULT_CADENCE_MS)
-        mapping["cadence"] = max(ROUTE_MIN_CADENCE_MS, int(cadence))
+        cadence = _to_float_or(raw.get("cadence"), MAPPING_DEFAULT_CADENCE_MS)
+        mapping["cadence"] = max(MAPPING_MIN_CADENCE_MS, int(cadence))
     else:
         mapping["cadence"] = None
-    steps = _to_float_or(raw.get("steps"), ROUTE_STEPS_CONTINUOUS)
-    mapping["steps"] = max(ROUTE_STEPS_CONTINUOUS, int(steps))
+    steps = _to_float_or(raw.get("steps"), MAPPING_STEPS_CONTINUOUS)
+    mapping["steps"] = max(MAPPING_STEPS_CONTINUOUS, int(steps))
     lo, hi = _output_bounds(mapping)
     neutral = float(spec["neutral"])  # e36s02: catalog no-effect neutral
     mapping["value"] = _clamp(_to_float_or(raw.get("value"), neutral), lo, hi)
@@ -823,39 +824,39 @@ def find_mapping(mapping_id: int) -> dict[str, Any] | None:
 
 
 def prune_mappings(live_ids: set[str]) -> list[dict[str, Any]]:
-    """Drop Control->Vimix mappings whose source is gone; DISABLE other Routes.
+    """Drop Control->Vimix mappings whose source is gone; DISABLE other Mappings.
 
     Returns the removed entries (the L-1 live-sources prune in
     ``update_vimix_sources_ui`` so a removed source takes its input mappings
-    with it automatically). e40s01 orphan policy (ADR-route-model): an orphan
-    State Route keeps its setup and is DISABLED instead of deleted; it is
+    with it automatically). e40s01 orphan policy (ADR-mapping-model): an orphan
+    State Mapping keeps its setup and is DISABLED instead of deleted; it is
     re-enabled automatically when the source comes back (the disabled ids are
-    tracked in state.route_orphans, so a user-disarmed Route is never re-armed).
-    Source-less Routes (Clock/Constant, target_id None) are never affected.
+    tracked in state.mapping_orphans, so a user-disarmed Mapping is never re-armed).
+    Source-less Mappings (Clock/Constant, target_id None) are never affected.
     """
     removed: list[dict[str, Any]] = []
     for mapping in state.mapper_mappings:
         if mapping["target_id"] is None:
             continue
         if mapping["target_id"] in live_ids:
-            # e40s02: a Route the orphan policy disabled resumes when its source
+            # e40s02: a Mapping the orphan policy disabled resumes when its source
             # comes back (only if the prune itself disabled it, never a user arm)
-            if int(mapping["id"]) in state.route_orphans:
+            if int(mapping["id"]) in state.mapping_orphans:
                 mapping["enabled"] = True
-                state.route_orphans.discard(int(mapping["id"]))
+                state.mapping_orphans.discard(int(mapping["id"]))
             continue
         if origin_of(mapping) == ORIGIN_CONTROL:
             removed.append(mapping)
         else:
             if mapping.get("enabled"):
                 mapping["enabled"] = False
-                state.route_orphans.add(int(mapping["id"]))
+                state.mapping_orphans.add(int(mapping["id"]))
     if removed:
         removed_ids = {m["id"] for m in removed}
         state.mapper_mappings[:] = [m for m in state.mapper_mappings if m["id"] not in removed_ids]
-        for mapping_id in list(state.route_orphans):
+        for mapping_id in list(state.mapping_orphans):
             if mapping_id not in {m["id"] for m in state.mapper_mappings}:
-                state.route_orphans.discard(mapping_id)
+                state.mapping_orphans.discard(mapping_id)
     return removed
 
 
@@ -1006,7 +1007,7 @@ def reset_mapping_value(mapping_id: int) -> float:
     1.0, posterize 0.0, transparency 1.0, color channels 1.0, ...). A
     button-like control (button, cue list — e34s04) returns to the OFF end
     (output_from) instead — the un-pressed state, consistent with
-    toggle_mapping_value. A remapped output range (e23) clamps the neutral
+    toggle_mapping_value. A rescaleped output range (e23) clamps the neutral
     into the mapping's own interval, exactly like set_mapping_output
     re-clamps. Returns the effective stored value (0.0 for an unknown id);
     the e24 gate applies: a disabled mapping stores + moves but sends no OSC.
@@ -1235,7 +1236,7 @@ def preview_mapping_value(mapping: dict[str, Any], raw: float) -> tuple[float, s
 def apply_input_value(mapping_id: int, raw: float) -> float:
     """Drive a mapping from a raw source value (band level / MIDI value, e23s02).
 
-    The raw value is remapped through the mapping's input range onto a clamped
+    The raw value is rescaleped through the mapping's input range onto a clamped
     0..1 unit, then through the output range (apply_unit_value) and sent as
     OSC. Reversed ranges (from > to) sweep the other way inside the window.
     BUG-2026-09-07T160930 — ZONE OWNERSHIP: a raw value OUTSIDE the input
@@ -1258,7 +1259,7 @@ def apply_input_value(mapping_id: int, raw: float) -> float:
 def apply_unit_value(mapping_id: int, unit: float) -> float:
     """Drive a mapping from a clamped 0..1 unit value (e18).
 
-    e23: the unit is remapped onto the mapping's OUTPUT range
+    e23: the unit is rescaleped onto the mapping's OUTPUT range
     (output_from + unit*(output_to-output_from)), stored on the mapping and
     sent as OSC; a reversed output range sweeps the other way. Returns the
     effective value (0.0 for an unknown id). Worker-safe, HIGH-1.

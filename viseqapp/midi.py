@@ -421,8 +421,8 @@ def _register_grid_bindings(controller: dict[str, Any], profile: dict[str, Any])
     ]
 
 
-def _route_wants_output(port_name: str) -> bool:
-    """True when a Route writes MIDI to this controller port (e40s01)."""
+def _mapping_wants_output(port_name: str) -> bool:
+    """True when a Mapping writes MIDI to this controller port (e40s01)."""
     return any(
         mapping.get("destination") == DEST_MIDI
         and str((mapping.get("destination_spec") or {}).get("controller_port") or "") == port_name
@@ -434,7 +434,7 @@ def controller_connect(controller: dict[str, Any], mido: Any) -> None:
     """Open the controller's LED output, send setup SysEx, register grid bindings (e14s02).
 
     e40s01 relaxes the LED-only guard: the output opens when the device declares
-    ``features.leds`` OR a Route targets it (the setup SysEx and the grid
+    ``features.leds`` OR a Mapping targets it (the setup SysEx and the grid
     bindings still need the profile). BUG-2026-09-07T152802: the output-port
     lookup is INSIDE the guard — with ALSA refusing sequencer clients the lookup
     raises and must log + disconnect, never escape into the MIDI re-enable UI
@@ -443,7 +443,7 @@ def controller_connect(controller: dict[str, Any], mido: Any) -> None:
     controller_disconnect(controller)
     profile = controller_profile_of(controller)
     leds = bool(profile is not None and profile.get("features", {}).get("leds"))
-    if not leds and not _route_wants_output(str(controller.get("port") or "")):
+    if not leds and not _mapping_wants_output(str(controller.get("port") or "")):
         return
     try:
         out_name = _find_output_port(controller["port"], mido)
@@ -478,11 +478,11 @@ def controller_disconnect(controller: dict[str, Any]) -> None:
     controller["auto_bindings"] = []
 
 
-_route_output_fail_at: dict[str, float] = {}
+_mapping_output_fail_at: dict[str, float] = {}
 
 
-def ensure_route_output(controller: dict[str, Any]) -> bool:
-    """Open a controller's output when a Route needs it (e40s01, throttled).
+def ensure_mapping_output(controller: dict[str, Any]) -> bool:
+    """Open a controller's output when a Mapping needs it (e40s01, throttled).
 
     Returns True when an output is available. Reuses the LED path's port lookup
     and lock; an absent/failing port backs off with the shared open cooldown so
@@ -494,26 +494,26 @@ def ensure_route_output(controller: dict[str, Any]) -> bool:
         return True
     port = str(controller.get("port") or "")
     now = time.monotonic()
-    if not midi_open_retry_due(_route_output_fail_at.get(port), now):
+    if not midi_open_retry_due(_mapping_output_fail_at.get(port), now):
         return False
     try:
         import mido
 
         out_name = _find_output_port(port, mido)
         if out_name is None:
-            _route_output_fail_at[port] = now
+            _mapping_output_fail_at[port] = now
             return False
         with _controller_lock:
             controller["output"] = mido.open_output(out_name)
-        append_log("MIDI", f"route output on {out_name}")
+        append_log("MIDI", f"mapping output on {out_name}")
         return True
     except Exception as e:
-        _route_output_fail_at[port] = now
-        log_error("MIDI", f"route output {port}: {e}")
+        _mapping_output_fail_at[port] = now
+        log_error("MIDI", f"mapping output {port}: {e}")
         return False
 
 
-def send_route_midi(
+def send_mapping_midi(
     controller: dict[str, Any], kind: str, channel: int, number: int, value: int
 ) -> bool:
     """Send a note (velocity) or CC (value) on a controller's output (e40s01).
@@ -541,7 +541,7 @@ def send_route_midi(
             output.send(message)
         return True
     except Exception as e:
-        log_error("MIDI", f"route output {controller.get('port')}: {e}")
+        log_error("MIDI", f"mapping output {controller.get('port')}: {e}")
         return False
 
 

@@ -388,21 +388,21 @@ project_dirty: bool = False  # live content differs from the last-saved baseline
 saved_content_fingerprint: str = ""  # canonical JSON of the content at the last save/open/new
 
 
-# e40s01: the Route engine's runtime memory — per-Route real-value bookkeeping for
-# dead-reckoning (routeengine.route_raw_value) and the last emitted Destination
+# e40s01: the Mapping engine's runtime memory — per-Mapping real-value bookkeeping for
+# dead-reckoning (emission.mapping_raw_value) and the last emitted Destination
 # value (the epsilon dedupe). Main-thread only; never persisted.
-route_book: dict[int, dict[str, Any]] = {}
-route_values: dict[int, float] = {}
-# e40s01: the /viosc/monitor subscriptions the live routes currently hold, so the
+mapping_book: dict[int, dict[str, Any]] = {}
+mapping_values: dict[int, float] = {}
+# e40s01: the /viosc/monitor subscriptions the live mappings currently hold, so the
 # tick only re-issues them when the desired set changes.
-route_subscriptions: dict[str, list[str]] = {}
-# e40s02: Routes the orphan policy disabled (their source is gone); they are
+mapping_subscriptions: dict[str, list[str]] = {}
+# e40s02: Mappings the orphan policy disabled (their source is gone); they are
 # re-enabled automatically when the source comes back.
-route_orphans: set[int] = set()
+mapping_orphans: set[int] = set()
 # e40s06: the targeted watch lane — the /viosc/reply deltas land on this queue
 # from the OSC server thread and are applied on the main thread; the plan last
 # sent to viOSC and whether the lane is proven alive (None = unknown, still
 # using the 2 s monitor fallback).
 watch_state_queue: queue.Queue[tuple[str, list[Any]]] = queue.Queue()
-route_watch_plan: dict[str, dict[str, Any]] = {}
+mapping_watch_plan: dict[str, dict[str, Any]] = {}
 osc_watch_supported: bool | None = None

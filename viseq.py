@@ -20,7 +20,7 @@ from PIL import Image
 from pythonosc import dispatcher, udp_client
 
 import viseqapp  # noqa: F401  scaffold hook (REFACTOR_LATEST.md commit 1): proves the package import path works at boot
-from viseqapp import actions, catalog, cue, leap, mapper, midimonitor, preview, routeengine, state
+from viseqapp import actions, catalog, cue, emission, leap, mapper, midimonitor, preview, state
 from viseqapp.audio import (
     _set_band_variable,
     apply_spectrum_agc,
@@ -86,6 +86,17 @@ from viseqapp.constants import (
     MAPPER_WINDOW_WIDTH,
     MAPPER_X_H,
     MAPPER_X_W,
+    MAPPING_CONST_VALUE_DEFAULT,
+    MAPPING_CONST_VALUE_MAX,
+    MAPPING_CONST_VALUE_MIN,
+    MAPPING_DEFAULT_CADENCE_MS,
+    MAPPING_DIRECTIONS,
+    MAPPING_MIN_CADENCE_MS,
+    MAPPING_OSC_DEFAULT_ADDRESS,
+    MAPPING_OSC_DEFAULT_HOST,
+    MAPPING_OSC_DEFAULT_PORT,
+    MAPPING_STEPS_CONTINUOUS,
+    MAPPING_TICK_INTERVAL_S,
     MARKER_GROUP_GAP,
     MEDIA_ALPHA_SLIDER_W,
     MEDIA_BADGE_H,
@@ -108,12 +119,12 @@ from viseqapp.constants import (
     MIDI_ACTION_MAPPER_LINE,
     MIDI_ACTION_MAPPER_MAPPING,
     MIDI_ACTION_MAPPER_RESET,
+    MIDI_ACTION_MAPPING_ADD,
+    MIDI_ACTION_MAPPING_TOGGLE,
     MIDI_ACTION_MONITOR_TOGGLE,
     MIDI_ACTION_NUDGE_BACK,
     MIDI_ACTION_NUDGE_FORWARD,
     MIDI_ACTION_REGEN_SELECTED,
-    MIDI_ACTION_ROUTE_ADD,
-    MIDI_ACTION_ROUTE_TOGGLE,
     MIDI_ACTION_SEQ_ROW_ASSIGN,
     MIDI_ACTION_SEQ_ROW_DISABLE,
     MIDI_ACTION_SEQ_ROW_ENABLE,
@@ -150,17 +161,6 @@ from viseqapp.constants import (
     PROJECT_FORMAT,
     PROJECT_VERSION,
     RECENT_PROJECTS_MAX,
-    ROUTE_CONST_VALUE_DEFAULT,
-    ROUTE_CONST_VALUE_MAX,
-    ROUTE_CONST_VALUE_MIN,
-    ROUTE_DEFAULT_CADENCE_MS,
-    ROUTE_DIRECTIONS,
-    ROUTE_MIN_CADENCE_MS,
-    ROUTE_OSC_DEFAULT_ADDRESS,
-    ROUTE_OSC_DEFAULT_HOST,
-    ROUTE_OSC_DEFAULT_PORT,
-    ROUTE_STEPS_CONTINUOUS,
-    ROUTE_TICK_INTERVAL_S,
     SLOT_BUTTON_HEIGHT,
     SLOT_BUTTON_INDENT,
     SLOT_BUTTON_TOP_SPACER,
@@ -203,7 +203,7 @@ from viseqapp.midi import (
     controller_disconnect,
     controller_profile_of,
     controller_profiles,
-    ensure_route_output,
+    ensure_mapping_output,
     find_controller_by_port,
     grid_controller,
     grid_flash_playhead,
@@ -215,7 +215,7 @@ from viseqapp.midi import (
     save_midi_controllers,
     scan_midi_inputs,
     selected_bindings,
-    send_route_midi,
+    send_mapping_midi,
     set_midi_enabled,
 )
 from viseqapp.osc import (
@@ -225,7 +225,7 @@ from viseqapp.osc import (
     get_current_target_id,
     incoming_osc_handler,
     osc_client,
-    send_route_osc,
+    send_mapping_osc,
     thumbnail_decoder_worker,
 )
 from viseqapp.osc import (
@@ -304,12 +304,12 @@ Image.MAX_IMAGE_PIXELS = 25_000_000  # PIL's hard ceiling (~25 MP)
 # viseq application version — single source of truth (matches specs/release-plan.yaml, e08s02).
 # e13s01: this is the first real release of viSeq (user decision).
 # e20s03: 0.2.0 — viseqapp refactor + controller profiles + new project + Mapper family.
-# 0.6.0 — value routing (Route = Origin -> Remap -> Destination), MIDI Monitor, cue-row
+# 0.6.0 — value routing (Mapping = Origin -> Rescale -> Destination), MIDI Monitor, cue-row
 # dialog fixes, monitor players removed (viOSC 0.4.0).
 # 0.5.0 — source Preview (viOSC 0.3.0), cue lists, persistent MIDI-learn Mapper, Save as.
 # 0.4.0 — Leap Motion mapper source, per-mapping reset, project save + OSC config persist,
 # Mapper tile/row workflows (thumb assign, Add-to-Mapper submenu, line numbers).
-# 0.3.0 — Mapper family (rows/remap/enable/cycle), compact Vimix-sources grid, windows, XDG.
+# 0.3.0 — Mapper family (rows/rescale/enable/cycle), compact Vimix-sources grid, windows, XDG.
 APP_VERSION: str = "0.6.0"
 
 # Author's GitHub profile, shown as a link in the About window (e08s01, user request).
@@ -3709,10 +3709,10 @@ _MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
     MIDI_ACTION_ENABLE_CORRECTION: _exec_enable_correction,
     # e39s01: the MIDI Monitor window toggle (mappable per the e33 rule)
     MIDI_ACTION_MONITOR_TOGGLE: lambda p, v: _exec_monitor_toggle(p, v),
-    # e40s01: arm/disarm a Route's Enabled gate
-    MIDI_ACTION_ROUTE_TOGGLE: lambda p, v: _exec_route_toggle(p, v),
-    # e40s08: create a State Route on a source line (the State box '+')
-    MIDI_ACTION_ROUTE_ADD: lambda p, v: _exec_route_add(p, v),
+    # e40s01: arm/disarm a Mapping's Enabled gate
+    MIDI_ACTION_MAPPING_TOGGLE: lambda p, v: _exec_mapping_toggle(p, v),
+    # e40s08: create a State Mapping on a source line (the State box '+')
+    MIDI_ACTION_MAPPING_ADD: lambda p, v: _exec_mapping_add(p, v),
 }
 
 _last_unknown_action_log: dict[str, float] = {}  # action id -> last log time (throttle)
@@ -3740,6 +3740,7 @@ def midi_execute(action: str, params: dict[str, Any], value: int) -> None:
     one entry here, never a new if/elif branch. An id the registry does not know
     (stale binding) is a logged no-op.
     """
+    action = actions.canonical_action(action)  # e40s09: a Route-era id still resolves
     executor = _MIDI_EXECUTORS.get(action)
     if executor is None:
         _log_unknown_midi_action(action)
@@ -3816,7 +3817,7 @@ def _record_monitor_rx(
 
 
 def handle_midi_message(msg: Any, port_name: str) -> None:
-    """Route one incoming message (main thread): learn capture first, then dispatch.
+    """Mapping one incoming message (main thread): learn capture first, then dispatch.
 
     e39s01: every parsed message is also reported to the MIDI Monitor with its
     resolution outcome — observation only, the dispatch below is unchanged.
@@ -4503,26 +4504,26 @@ def _exec_monitor_toggle(params: dict[str, Any], value: int) -> None:
     toggle_midi_monitor_window()
 
 
-def _exec_route_toggle(params: dict[str, Any], value: int) -> None:
-    """e40s01: a momentary press arms/disarms a Route (its Enabled gate).
+def _exec_mapping_toggle(params: dict[str, Any], value: int) -> None:
+    """e40s01: a momentary press arms/disarms a Mapping (its Enabled gate).
 
     The arm checkbox follows in place when its row is on screen; a stale
-    route id is a logged no-op.
+    mapping id is a logged no-op.
     """
     if value < MIDI_CC_TRIGGER_THRESHOLD:
         return
-    route = mapper.find_mapping(int(params.get("route_id", 0)))
-    if route is None:
-        _log_stale_midi_target(MIDI_ACTION_ROUTE_TOGGLE, f"no route {params.get('route_id')}")
+    mapping = mapper.find_mapping(int(params.get("mapping_id", 0)))
+    if mapping is None:
+        _log_stale_midi_target(MIDI_ACTION_MAPPING_TOGGLE, f"no mapping {params.get('mapping_id')}")
         return
-    enabled = not bool(route.get("enabled", False))
-    mapper.set_mapping_enabled(int(route["id"]), enabled)
-    if dpg.does_item_exist(f"route_enable_{route['id']}"):
-        dpg.set_value(f"route_enable_{route['id']}", enabled)
+    enabled = not bool(mapping.get("enabled", False))
+    mapper.set_mapping_enabled(int(mapping["id"]), enabled)
+    if dpg.does_item_exist(f"mapping_enable_{mapping['id']}"):
+        dpg.set_value(f"mapping_enable_{mapping['id']}", enabled)
 
 
-def _exec_route_add(params: dict[str, Any], value: int) -> None:
-    """e40s08: a momentary press adds a State Route to a Mapper source line.
+def _exec_mapping_add(params: dict[str, Any], value: int) -> None:
+    """e40s08: a momentary press adds a State Mapping to a Mapper source line.
 
     The line index (same vocabulary as MIDI_ACTION_MAPPER_LINE) resolves through
     mapper.row_targets() at TRIGGER time — a binding never captures a volatile
@@ -4533,9 +4534,9 @@ def _exec_route_add(params: dict[str, Any], value: int) -> None:
     line = int(params.get("line", -1))
     rows = mapper.row_targets()
     if line < 0 or line >= len(rows):
-        _log_stale_midi_target(MIDI_ACTION_ROUTE_ADD, f"no line {line}")
+        _log_stale_midi_target(MIDI_ACTION_MAPPING_ADD, f"no line {line}")
         return
-    add_state_route(user_data=rows[line])
+    add_state_mapping(user_data=rows[line])
 
 
 def _sync_monitor_learn_marker() -> None:
@@ -4708,24 +4709,24 @@ def tick_midi_monitor() -> None:
     refresh_midi_monitor()
 
 
-# --- ROUTES (e40s01) ---------------------------------------------------------
-# The main-loop emission tick: refresh the enabled State Routes, remap and emit
+# --- MAPPINGS (e40s01) ---------------------------------------------------------
+# The main-loop emission tick: refresh the enabled State Mappings, rescale and emit
 # their Destination values with an epsilon dedupe. The Vimix Destination is
 # driven by its own control path; the OSC Destination arrives in e40s03.
 
-_routes_last_tick = 0.0
+_mappings_last_tick = 0.0
 
 
-def _route_props_lookup(target_id: str) -> dict[str, Any] | None:
-    """The live properties of a Route's source (the viOSC state table)."""
+def _mapping_props_lookup(target_id: str) -> dict[str, Any] | None:
+    """The live properties of a Mapping's source (the viOSC state table)."""
     _, props = find_source_by_name(target_id)
     return props
 
 
-def _sync_route_subscriptions() -> None:
-    """Hold the State Routes' transport subscriptions (e40s01 + e40s06).
+def _sync_mapping_subscriptions() -> None:
+    """Hold the State Mappings' transport subscriptions (e40s01 + e40s06).
 
-    Two lanes, coalesced per (source) — ADR-route-model decision 2:
+    Two lanes, coalesced per (source) — ADR-mapping-model decision 2:
     - the FAST lane: `/viosc/watch/<source> <cadence_ms> <props...>` (e40s06),
       answered with targeted `/viosc/reply/<source> <prop> <value>` deltas;
     - the FALLBACK: the 2 s `/viosc/monitor` subscription (e40s01), kept while
@@ -4733,39 +4734,39 @@ def _sync_route_subscriptions() -> None:
       The first reply proves the lane, then the fallback stops for good.
     Only re-issues what changed; the tick runs this every frame.
     """
-    plan = routeengine.state_watch_plan(state.mapper_mappings)
-    if state.osc_watch_supported is not False and plan != state.route_watch_plan:
+    plan = emission.state_watch_plan(state.mapper_mappings)
+    if state.osc_watch_supported is not False and plan != state.mapping_watch_plan:
         for target, spec in plan.items():
             addr = f"/viosc/watch/{target}"
             osc_client.send_message(addr, [int(spec["cadence_ms"]), *spec["props"]])
             append_log("OUT", f"{addr} {spec['cadence_ms']} {spec['props']}")
-        for target in set(state.route_watch_plan) - set(plan):
+        for target in set(state.mapping_watch_plan) - set(plan):
             osc_client.send_message(f"/viosc/watch/{target}", [])
             append_log("OUT", f"/viosc/watch/{target} (stop)")
-        state.route_watch_plan = plan
+        state.mapping_watch_plan = plan
     desired = (
         {}
         if state.osc_watch_supported
         else {target: list(spec["props"]) for target, spec in plan.items()}
     )
-    if desired == state.route_subscriptions:
+    if desired == state.mapping_subscriptions:
         return
     for target, props in desired.items():
         addr = f"/viosc/monitor/{target}"
         osc_client.send_message(addr, list(props))
         append_log("OUT", f"{addr} {props}")
-    for target in set(state.route_subscriptions) - set(desired):
+    for target in set(state.mapping_subscriptions) - set(desired):
         addr = f"/viosc/monitor/{target}"
         osc_client.send_message(addr, [])
         append_log("OUT", f"{addr} (stop)")
-    state.route_subscriptions = desired
+    state.mapping_subscriptions = desired
 
 
 def _apply_watch_reply(name: str, args: list[Any]) -> None:
     """Apply one targeted /viosc/reply delta to the state table (e40s06, main thread).
 
     The reply carries (property, value) pairs; the state table is the same one
-    the Route engine and the raw view read, so the fast lane needs no other
+    the Mapping engine and the raw view read, so the fast lane needs no other
     plumbing. The first reply proves the lane and drops the 2 s fallback.
     """
     _, props = find_source_by_name(name)
@@ -4775,22 +4776,22 @@ def _apply_watch_reply(name: str, args: list[Any]) -> None:
         props[str(args[i])] = args[i + 1]
     if state.osc_watch_supported is not True:
         state.osc_watch_supported = True
-        _sync_route_subscriptions()
+        _sync_mapping_subscriptions()
 
 
-def _emit_route(route: dict[str, Any], value: float) -> None:
-    """Send one Route's Destination value (e40s01 MIDI, e40s03 OSC)."""
-    destination = mapper.destination_of(route)
-    spec = route.get("destination_spec") or {}
+def _emit_mapping(mapping: dict[str, Any], value: float) -> None:
+    """Send one Mapping's Destination value (e40s01 MIDI, e40s03 OSC)."""
+    destination = mapper.destination_of(mapping)
+    spec = mapping.get("destination_spec") or {}
     if destination == DEST_OSC:
-        send_route_osc(spec, value)
+        send_mapping_osc(spec, value)
         return
     if destination != DEST_MIDI:
         return
     controller = find_controller_by_port(str(spec.get("controller_port") or ""))
-    if controller is None or not ensure_route_output(controller):
+    if controller is None or not ensure_mapping_output(controller):
         return
-    send_route_midi(
+    send_mapping_midi(
         controller,
         str(spec.get("type") or MIDI_KIND_CC),
         int(spec.get("channel", 0)),
@@ -4799,7 +4800,7 @@ def _emit_route(route: dict[str, Any], value: float) -> None:
     )
 
 
-def _route_clock_lookup(kind: str) -> float | None:
+def _mapping_clock_lookup(kind: str) -> float | None:
     """The live transport/app value of a Clock Origin (e40s02)."""
     if kind == "bpm":
         return float(state.current_bpm)
@@ -4810,26 +4811,26 @@ def _route_clock_lookup(kind: str) -> float | None:
     return None
 
 
-def tick_routes(now: float | None = None) -> None:
-    """Emit the changed Route values, capped at ROUTE_TICK_INTERVAL_S (e40s01)."""
-    global _routes_last_tick
+def tick_mappings(now: float | None = None) -> None:
+    """Emit the changed Mapping values, capped at MAPPING_TICK_INTERVAL_S (e40s01)."""
+    global _mappings_last_tick
     if now is None:
         now = time.monotonic()
-    if now - _routes_last_tick < ROUTE_TICK_INTERVAL_S:
+    if now - _mappings_last_tick < MAPPING_TICK_INTERVAL_S:
         return
-    _routes_last_tick = now
-    _sync_route_subscriptions()
+    _mappings_last_tick = now
+    _sync_mapping_subscriptions()
     live_ids = {int(m["id"]) for m in state.mapper_mappings}
-    routeengine.prune_book(state.route_book, state.route_values, live_ids)
-    for route, value in routeengine.plan_emissions(
+    emission.prune_book(state.mapping_book, state.mapping_values, live_ids)
+    for mapping, value in emission.plan_emissions(
         state.mapper_mappings,
-        _route_props_lookup,
-        state.route_book,
-        state.route_values,
+        _mapping_props_lookup,
+        state.mapping_book,
+        state.mapping_values,
         now,
-        clock_lookup=_route_clock_lookup,
+        clock_lookup=_mapping_clock_lookup,
     ):
-        _emit_route(route, value)
+        _emit_mapping(mapping, value)
 
 
 def show_leap_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -5624,7 +5625,7 @@ def drive_mapper_band(band_id: int, level: float) -> None:
     """Push an audio-band level into every control mapped to that band (e18).
 
     Called by refresh_band_value (main thread, ~30 fps while the band is
-    enabled). e23s02: the raw level (0..1) is remapped through each mapping's
+    enabled). e23s02: the raw level (0..1) is rescaleped through each mapping's
     input range (default 0..1), then through its output range.
     """
     for m in state.mapper_mappings:
@@ -5763,7 +5764,7 @@ def mapper_leap_cancel(sender: Any = None, app_data: Any = None, user_data: Any 
 def midi_mapping_value(mapping_id: int, midi_value: int) -> None:
     """Drive a mapper control from a learned MIDI value (e23s02).
 
-    The raw 0..127 value is remapped through the mapping's input range
+    The raw 0..127 value is rescaleped through the mapping's input range
     (default 0..127), then through its output range, and the control widget
     follows. Cue list (e35s03): the value marker IS the trigger — a value >= 64
     runs/restarts the cue, anything below is ignored.
@@ -5821,9 +5822,9 @@ def _mapper_cards_per_line() -> int:
     return max(1, int((available - lead) // pitch))
 
 
-# --- ROUTES IN THE MAPPER (e40s01) -------------------------------------------
+# --- MAPPINGS IN THE MAPPER (e40s01) -------------------------------------------
 # Each source is one line with a Control band (the input-mapping cards) and a State
-# band (the Routes reading that source); source-less Routes (Clock/Constant) live
+# band (the Mappings reading that source); source-less Mappings (Clock/Constant) live
 # in a Global line on top. Three chips hide a band/line.
 
 _mapper_show_control = True
@@ -5840,10 +5841,10 @@ def on_mapper_filter(sender: Any = None, app_data: Any = None, user_data: Any = 
     refresh_mapper_ui()
 
 
-def _route_destination_label(route: dict[str, Any]) -> str:
-    """Short Destination summary of a Route row readout (e40s01)."""
-    destination = mapper.destination_of(route)
-    spec = route.get("destination_spec") or {}
+def _mapping_destination_label(mapping: dict[str, Any]) -> str:
+    """Short Destination summary of a Mapping row readout (e40s01)."""
+    destination = mapper.destination_of(mapping)
+    spec = mapping.get("destination_spec") or {}
     if destination == DEST_MIDI:
         kind = "note" if str(spec.get("type")) == MIDI_KIND_NOTE else "cc"
         return f"MIDI {spec.get('controller_port', '?')} {kind} {spec.get('number', 0)}"
@@ -5852,30 +5853,30 @@ def _route_destination_label(route: dict[str, Any]) -> str:
     return "Vimix"
 
 
-def _route_origin_label(route: dict[str, Any]) -> str:
-    """Short Origin summary of a Route row readout (e40s01).
+def _mapping_origin_label(mapping: dict[str, Any]) -> str:
+    """Short Origin summary of a Mapping row readout (e40s01).
 
-    e40s08: a State Route renders inside its Source's band, so the Source name
+    e40s08: a State Mapping renders inside its Source's band, so the Source name
     is redundant there — the row names only the Property.
     """
-    origin = mapper.origin_of(route)
+    origin = mapper.origin_of(mapping)
     if origin == ORIGIN_STATE:
-        return str(route["property"])
+        return str(mapping["property"])
     if origin == ORIGIN_CLOCK:
-        return f"clock {route.get('origin_spec', {}).get('clock', 'beat')}"
+        return f"clock {mapping.get('origin_spec', {}).get('clock', 'beat')}"
     if origin == ORIGIN_CONST:
-        return f"const {route.get('origin_spec', {}).get('value', 0.0)}"
-    return str(route["property"])
+        return f"const {mapping.get('origin_spec', {}).get('value', 0.0)}"
+    return str(mapping["property"])
 
 
-def _route_enable_label(route: dict[str, Any]) -> str:
-    """The arm checkbox caption of one Route row (e40s08).
+def _mapping_enable_label(mapping: dict[str, Any]) -> str:
+    """The arm checkbox caption of one Mapping row (e40s08).
 
     Mirrors the control cards' 'Enable mapper' wording per Origin kind, so a
-    State row reads 'Enable state' instead of a generic 'Enable route' (and the
+    State row reads 'Enable state' instead of a generic 'Enable mapping' (and the
     source-less rows name their own Origin).
     """
-    origin = mapper.origin_of(route)
+    origin = mapper.origin_of(mapping)
     if origin == ORIGIN_STATE:
         return "Enable state"
     if origin == ORIGIN_CLOCK:
@@ -5883,7 +5884,7 @@ def _route_enable_label(route: dict[str, Any]) -> str:
     return "Enable constant"
 
 
-def _render_route_row(route: dict[str, Any], parent: Any) -> None:
+def _render_mapping_row(mapping: dict[str, Any], parent: Any) -> None:
     """One State/Global row: Origin -> Destination + arm/edit/delete + learn marker.
 
     e40s08: the buttons carry an explicit height (MAPPER_STATE_BOX_ROW_H) so the
@@ -5892,16 +5893,16 @@ def _render_route_row(route: dict[str, Any], parent: Any) -> None:
     kwarg (SystemError, verified against the real binding) and its own 17 px is
     what the row settles at anyway.
     """
-    rid = int(route["id"])
-    tag = f"route_row_{rid}"
-    in_from = float(route.get("input_from") or 0.0)
-    in_to = float(route.get("input_to") or 0.0)
-    out_from = float(route["output_from"])
-    out_to = float(route["output_to"])
-    cadence = f" {int(route['cadence'])}ms" if route.get("cadence") else ""
+    rid = int(mapping["id"])
+    tag = f"mapping_row_{rid}"
+    in_from = float(mapping.get("input_from") or 0.0)
+    in_to = float(mapping.get("input_to") or 0.0)
+    out_from = float(mapping["output_from"])
+    out_to = float(mapping["output_to"])
+    cadence = f" {int(mapping['cadence'])}ms" if mapping.get("cadence") else ""
     with dpg.group(horizontal=True, parent=parent, tag=tag):
         themed_text(
-            f"{_route_origin_label(route)} -> {_route_destination_label(route)}",
+            f"{_mapping_origin_label(mapping)} -> {_mapping_destination_label(mapping)}",
             slot="text_dim",
         )
         themed_text(
@@ -5909,44 +5910,44 @@ def _render_route_row(route: dict[str, Any], parent: Any) -> None:
             slot="text_dim",
         )
         dpg.add_checkbox(
-            label=_route_enable_label(route),
-            tag=f"route_enable_{rid}",
-            default_value=bool(route.get("enabled", False)),
-            callback=on_route_enable,
+            label=_mapping_enable_label(mapping),
+            tag=f"mapping_enable_{rid}",
+            default_value=bool(mapping.get("enabled", False)),
+            callback=on_mapping_row_enable,
             user_data=rid,
         )
         dpg.add_button(
             label="Edit",
             height=MAPPER_STATE_BOX_ROW_H,
-            callback=open_route_editor,
+            callback=open_mapping_editor,
             user_data=rid,
         )
         dpg.add_button(
             label="X",
             height=MAPPER_STATE_BOX_ROW_H,
-            callback=delete_route,
+            callback=delete_mapping_row,
             user_data=rid,
         )
         if state.midi_learn_mode:  # e33 rule: the arm toggle is MIDI-mappable
             learn_marker(
-                MIDI_ACTION_ROUTE_TOGGLE,
-                {"route_id": rid},
+                MIDI_ACTION_MAPPING_TOGGLE,
+                {"mapping_id": rid},
                 parent=tag,
-                tag=f"route_mk_{rid}",
-                tooltip=f"Map: {_route_enable_label(route)}",
+                tag=f"mapping_mk_{rid}",
+                tooltip=f"Map: {_mapping_enable_label(mapping)}",
             )
 
 
-def _mapper_state_box_height(route_count: int) -> int:
+def _mapper_state_box_height(mapping_count: int) -> int:
     """Fixed height of one source's State box (e40s08).
 
     A bordered child_window (WindowPadding 4 per side = MAPPER_ROW_PAD_V of air)
-    holding the header row and one row per State Route, separated by
+    holding the header row and one row per State Mapping, separated by
     MAPPER_ROW_GAP. Rows are height-constant (MAPPER_STATE_BOX_ROW_H), so the
     box never needs scrolling. Measured against real DPG 2.3.1 on the rig: the
     formula is exact (content == box minus the padding) at every row count.
     """
-    rows = max(0, int(route_count))
+    rows = max(0, int(mapping_count))
     return (
         MAPPER_ROW_PAD_V
         + MAPPER_STATE_BOX_HEADER_H
@@ -5955,15 +5956,15 @@ def _mapper_state_box_height(route_count: int) -> int:
 
 
 def _render_state_box(
-    target_id: str, routes: list[dict[str, Any]], parent: Any, line_index: int
+    target_id: str, mappings: list[dict[str, Any]], parent: Any, line_index: int
 ) -> None:
     """The per-source State band: a bordered box on the source line's own sub-line.
 
-    e40s08: a State Origin always has a Source, so its Routes belong to that
+    e40s08: a State Origin always has a Source, so its Mappings belong to that
     Source's block instead of floating under the Control cards. The box carries
     NO line number — line numbering stays 1:1 with sources, so the tile menu
     'Add to Mapper > line N' and MIDI_ACTION_MAPPER_LINE keep resolving. Its
-    header '+' adds a State Route to THIS source. An orphan Route (its source is
+    header '+' adds a State Mapping to THIS source. An orphan Mapping (its source is
     gone) stays here, disabled, and resumes when the source returns.
     """
     box_tag = f"mapper_state_box_{target_id}"
@@ -5971,7 +5972,7 @@ def _render_state_box(
     with dpg.child_window(
         parent=parent,
         width=0,
-        height=_mapper_state_box_height(len(routes)),
+        height=_mapper_state_box_height(len(mappings)),
         border=True,
         no_scrollbar=True,
         tag=box_tag,
@@ -5982,45 +5983,49 @@ def _render_state_box(
                 label="+",
                 width=MAPPER_X_W,
                 height=MAPPER_X_H,
-                callback=add_state_route,
+                callback=add_state_mapping,
                 user_data=target_id,
                 tag=f"mapper_state_add_{target_id}",
             )
             if state.midi_learn_mode:  # e33 rule: the add action is MIDI-mappable
                 learn_marker(
-                    MIDI_ACTION_ROUTE_ADD,
+                    MIDI_ACTION_MAPPING_ADD,
                     {"line": line_index},
                     parent=head_tag,
                     tag=f"mapper_state_mk_{target_id}",
                 )
-        for route in routes:
-            _render_route_row(route, parent=box_tag)
+        for mapping in mappings:
+            _render_mapping_row(mapping, parent=box_tag)
 
 
-def on_route_enable(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Route arm checkbox: flip the Enabled gate (no body refresh, e40s01)."""
+def on_mapping_row_enable(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Mapping row arm checkbox: flip the Enabled gate (no body refresh, e40s01).
+
+    e40s09: distinct from the mini-card's on_mapper_enable so the rename does not
+    merge the two; e40s10 collapses them into one handler.
+    """
     mapper.set_mapping_enabled(int(user_data), bool(app_data))
 
 
-def delete_route(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Delete a Route, drop its runtime memory and rebuild the body (e40s01)."""
+def delete_mapping_row(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Delete a Mapping row, drop its runtime memory and rebuild the body (e40s01)."""
     rid = int(user_data)
     state.mapper_mappings[:] = [m for m in state.mapper_mappings if int(m["id"]) != rid]
     live_ids = {int(m["id"]) for m in state.mapper_mappings}
-    routeengine.prune_book(state.route_book, state.route_values, live_ids)
+    emission.prune_book(state.mapping_book, state.mapping_values, live_ids)
     refresh_mapper_ui()
 
 
-def _create_state_route(target_id: str) -> dict[str, Any]:
-    """A fresh State -> MIDI Route on one source, seeded with the first controller.
+def _create_state_mapping(target_id: str) -> dict[str, Any]:
+    """A fresh State -> MIDI Mapping on one source, seeded with the first controller.
 
-    Shared by the filter-bar 'New Route' button and the per-source State box '+'
+    Shared by the filter-bar 'New Mapping' button and the per-source State box '+'
     (e40s08), so the two entry points can never drift.
     """
     ports = [str(c.get("port", "")) for c in midi_controllers if c.get("port")]
-    return mapper.add_route(
-        ORIGIN_STATE,
-        DEST_MIDI,
+    return mapper.add_mapping(
+        origin=ORIGIN_STATE,
+        destination=DEST_MIDI,
         target_id=target_id,
         prop="seek",
         destination_spec={
@@ -6032,66 +6037,68 @@ def _create_state_route(target_id: str) -> dict[str, Any]:
     )
 
 
-def add_state_route(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """The State box '+': add a State Route to that source and open its editor (e40s08)."""
-    route = _create_state_route(str(user_data))
-    _open_route_editor(int(route["id"]))
+def add_state_mapping(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """The State box '+': add a State Mapping to that source and open its editor (e40s08)."""
+    mapping = _create_state_mapping(str(user_data))
+    _open_mapping_editor(int(mapping["id"]))
 
 
-def new_route_dialog(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Create a State -> MIDI Route on the first source and open its editor (e40s01)."""
+def new_mapping_dialog(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Create a State -> MIDI Mapping on the first source and open its editor (e40s01)."""
     targets = list(mapper.row_targets())
     if not targets:
-        log_error("Mapper", "no source to route from - right-click one in Vimix sources first")
+        log_error("Mapper", "no source to mapping from - right-click one in Vimix sources first")
         return
-    add_state_route(user_data=targets[0])
+    add_state_mapping(user_data=targets[0])
 
 
-def open_route_editor(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """'Edit' on a Route row: open the editor modal (e40s01)."""
-    _open_route_editor(int(user_data))
+def open_mapping_editor(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """'Edit' on a Mapping row: open the editor modal (e40s01)."""
+    _open_mapping_editor(int(user_data))
 
 
-def on_route_destination_change(
+def on_mapping_destination_change(
     sender: Any = None, app_data: Any = None, user_data: Any = None
 ) -> None:
-    """Destination combo in the Route editor: reveal only its fields (e40s03)."""
+    """Destination combo in the Mapping editor: reveal only its fields (e40s03)."""
     destination = str(app_data or DEST_MIDI)
-    dpg.configure_item("route_midi_fields", show=destination == DEST_MIDI)
-    dpg.configure_item("route_osc_fields", show=destination == DEST_OSC)
+    dpg.configure_item("mapping_midi_fields", show=destination == DEST_MIDI)
+    dpg.configure_item("mapping_osc_fields", show=destination == DEST_OSC)
 
 
-def on_route_origin_change(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Origin combo in the Route editor: reveal only the chosen Origin fields (e40s02)."""
+def on_mapping_origin_change(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Origin combo in the Mapping editor: reveal only the chosen Origin fields (e40s02)."""
     origin = str(app_data or ORIGIN_STATE)
-    dpg.configure_item("route_state_fields", show=origin == ORIGIN_STATE)
-    dpg.configure_item("route_clock_fields", show=origin == ORIGIN_CLOCK)
-    dpg.configure_item("route_const_fields", show=origin == ORIGIN_CONST)
+    dpg.configure_item("mapping_state_fields", show=origin == ORIGIN_STATE)
+    dpg.configure_item("mapping_clock_fields", show=origin == ORIGIN_CLOCK)
+    dpg.configure_item("mapping_const_fields", show=origin == ORIGIN_CONST)
 
 
-def _open_route_editor(route_id: int) -> None:
-    """Edit one Route: Origin (state/clock/constant) + MIDI Destination + steps.
+def _open_mapping_editor(mapping_id: int) -> None:
+    """Edit one Mapping: Origin (state/clock/constant) + MIDI Destination + steps.
 
     Control Origins are not edited here (their cards live in the Control band);
     the Origin combo shows only the source-less/State kinds. The Origin window is
-    reseeded at confirm, so a cancel leaves the Route untouched.
+    reseeded at confirm, so a cancel leaves the Mapping untouched.
     """
-    route = mapper.find_mapping(route_id)
-    if route is None:
+    mapping = mapper.find_mapping(mapping_id)
+    if mapping is None:
         return
-    if dpg.does_item_exist("mapper_route_window"):
-        dpg.delete_item("mapper_route_window")
-    origin = mapper.origin_of(route)
+    if dpg.does_item_exist("mapper_mapping_window"):
+        dpg.delete_item("mapper_mapping_window")
+    origin = mapper.origin_of(mapping)
     if origin == ORIGIN_CONTROL:
         return
-    destination = mapper.destination_of(route)
-    spec = route.get("destination_spec") or {}
+    destination = mapper.destination_of(mapping)
+    spec = mapping.get("destination_spec") or {}
     ports = [str(c.get("port", "")) for c in midi_controllers if c.get("port")]
-    clock = str((route.get("origin_spec") or {}).get("clock") or CLOCK_DEFAULT)
-    const = float((route.get("origin_spec") or {}).get("value", ROUTE_CONST_VALUE_DEFAULT))
+    clock = str((mapping.get("origin_spec") or {}).get("clock") or CLOCK_DEFAULT)
+    const = float((mapping.get("origin_spec") or {}).get("value", MAPPING_CONST_VALUE_DEFAULT))
     with dpg.window(
-        label="Edit Route",
-        tag="mapper_route_window",
+        label="Edit Mapping",
+        tag="mapper_mapping_window",
         modal=True,
         width=450,
         height=420,
@@ -6102,82 +6109,82 @@ def _open_route_editor(route_id: int) -> None:
             items=[ORIGIN_STATE, ORIGIN_CLOCK, ORIGIN_CONST],
             default_value=origin,
             width=280,
-            tag="route_origin_combo",
-            callback=on_route_origin_change,
+            tag="mapping_origin_combo",
+            callback=on_mapping_origin_change,
         )
-        with dpg.group(tag="route_state_fields", show=origin == ORIGIN_STATE):
+        with dpg.group(tag="mapping_state_fields", show=origin == ORIGIN_STATE):
             themed_text("Source", slot="text_dim")
             dpg.add_combo(
                 items=list(mapper.row_targets()),
-                default_value=str(route.get("target_id") or ""),
+                default_value=str(mapping.get("target_id") or ""),
                 width=280,
-                tag="route_source_combo",
+                tag="mapping_source_combo",
             )
             themed_text("Property", slot="text_dim")
             dpg.add_combo(
                 items=mapper.mappable_properties(),
-                default_value=str(route["property"]),
+                default_value=str(mapping["property"]),
                 width=280,
-                tag="route_property_combo",
+                tag="mapping_property_combo",
             )
             themed_text("Cadence (ms)", slot="text_dim")
             dpg.add_drag_int(
-                default_value=int(route.get("cadence") or ROUTE_DEFAULT_CADENCE_MS),
-                min_value=ROUTE_MIN_CADENCE_MS,
+                default_value=int(mapping.get("cadence") or MAPPING_DEFAULT_CADENCE_MS),
+                min_value=MAPPING_MIN_CADENCE_MS,
                 max_value=60_000,
                 width=160,
-                tag="route_cadence",
+                tag="mapping_cadence",
             )
-        with dpg.group(tag="route_clock_fields", show=origin == ORIGIN_CLOCK):
+        with dpg.group(tag="mapping_clock_fields", show=origin == ORIGIN_CLOCK):
             themed_text("Clock", slot="text_dim")
             dpg.add_combo(
                 items=list(CLOCK_SOURCES),
                 default_value=clock,
                 width=160,
-                tag="route_clock_combo",
+                tag="mapping_clock_combo",
             )
-        with dpg.group(tag="route_const_fields", show=origin == ORIGIN_CONST):
+        with dpg.group(tag="mapping_const_fields", show=origin == ORIGIN_CONST):
             themed_text("Value", slot="text_dim")
             dpg.add_drag_float(
                 default_value=const,
-                min_value=ROUTE_CONST_VALUE_MIN,
-                max_value=ROUTE_CONST_VALUE_MAX,
+                min_value=MAPPING_CONST_VALUE_MIN,
+                max_value=MAPPING_CONST_VALUE_MAX,
                 width=160,
                 format="%.3f",
                 speed=0.01,
-                tag="route_const_value",
+                tag="mapping_const_value",
             )
         themed_text("Destination", slot="text_dim")
         dpg.add_combo(
-            items=[d for d in DESTINATIONS if d in ROUTE_DIRECTIONS[origin]],
+            items=[d for d in DESTINATIONS if d in MAPPING_DIRECTIONS[origin]],
             default_value=destination,
             width=280,
-            tag="route_destination_combo",
-            callback=on_route_destination_change,
+            tag="mapping_destination_combo",
+            callback=on_mapping_destination_change,
         )
-        with dpg.group(tag="route_midi_fields", show=destination == DEST_MIDI):
+        with dpg.group(tag="mapping_midi_fields", show=destination == DEST_MIDI):
             themed_text("Controller", slot="text_dim")
             dpg.add_combo(
                 items=ports,
                 default_value=str(spec.get("controller_port") or (ports[0] if ports else "")),
                 width=280,
-                tag="route_controller_combo",
+                tag="mapping_controller_combo",
             )
-        with dpg.group(horizontal=True, tag="route_midi_row", show=destination == DEST_MIDI):
+        with dpg.group(horizontal=True, tag="mapping_midi_row", show=destination == DEST_MIDI):
             themed_text("Channel", slot="text_dim")
             dpg.add_drag_int(
                 default_value=int(spec.get("channel", 0)),
                 min_value=0,
                 max_value=15,
                 width=70,
-                tag="route_channel",
+                tag="mapping_channel",
             )
             themed_text("Type", slot="text_dim")
             dpg.add_combo(
                 items=[MIDI_KIND_CC, MIDI_KIND_NOTE],
                 default_value=str(spec.get("type") or MIDI_KIND_CC),
                 width=90,
-                tag="route_type_combo",
+                tag="mapping_type_combo",
             )
             themed_text("Number", slot="text_dim")
             dpg.add_drag_int(
@@ -6185,111 +6192,113 @@ def _open_route_editor(route_id: int) -> None:
                 min_value=0,
                 max_value=127,
                 width=70,
-                tag="route_number",
+                tag="mapping_number",
             )
-        with dpg.group(tag="route_osc_fields", show=destination == DEST_OSC):
+        with dpg.group(tag="mapping_osc_fields", show=destination == DEST_OSC):
             themed_text("Host", slot="text_dim")
             dpg.add_input_text(
-                default_value=str(spec.get("host") or ROUTE_OSC_DEFAULT_HOST),
+                default_value=str(spec.get("host") or MAPPING_OSC_DEFAULT_HOST),
                 width=280,
-                tag="route_osc_host",
+                tag="mapping_osc_host",
             )
             themed_text("Port", slot="text_dim")
             dpg.add_input_int(
-                default_value=int(spec.get("port") or ROUTE_OSC_DEFAULT_PORT),
+                default_value=int(spec.get("port") or MAPPING_OSC_DEFAULT_PORT),
                 width=160,
-                tag="route_osc_port",
+                tag="mapping_osc_port",
             )
             themed_text("Address", slot="text_dim")
             dpg.add_input_text(
-                default_value=str(spec.get("address") or ROUTE_OSC_DEFAULT_ADDRESS),
+                default_value=str(spec.get("address") or MAPPING_OSC_DEFAULT_ADDRESS),
                 width=280,
-                tag="route_osc_address",
+                tag="mapping_osc_address",
             )
         themed_text("Steps (1 = continuous)", slot="text_dim")
         dpg.add_drag_int(
-            default_value=int(route.get("steps", ROUTE_STEPS_CONTINUOUS)),
+            default_value=int(mapping.get("steps", MAPPING_STEPS_CONTINUOUS)),
             min_value=1,
             max_value=64,
             width=160,
-            tag="route_steps",
+            tag="mapping_steps",
         )
         dpg.add_separator()
         with dpg.group(horizontal=True):
-            dpg.add_button(label="OK", width=120, callback=route_editor_confirm, user_data=route_id)
+            dpg.add_button(
+                label="OK", width=120, callback=mapping_editor_confirm, user_data=mapping_id
+            )
             dpg.add_button(
                 label="Cancel",
                 width=120,
-                callback=lambda s, a: dpg.delete_item("mapper_route_window"),
+                callback=lambda s, a: dpg.delete_item("mapper_mapping_window"),
             )
-    dpg.show_item("mapper_route_window")
+    dpg.show_item("mapper_mapping_window")
 
 
-def route_editor_confirm(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Store the edited Route fields, reseed the Origin window and rebuild (e40s02)."""
-    route = mapper.find_mapping(int(user_data))
-    if route is None:
+def mapping_editor_confirm(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Store the edited Mapping fields, reseed the Origin window and rebuild (e40s02)."""
+    mapping = mapper.find_mapping(int(user_data))
+    if mapping is None:
         return
-    origin = str(dpg.get_value("route_origin_combo"))
+    origin = str(dpg.get_value("mapping_origin_combo"))
     if origin not in (ORIGIN_STATE, ORIGIN_CLOCK, ORIGIN_CONST):
         origin = ORIGIN_STATE
-    chosen = str(dpg.get_value("route_destination_combo"))
-    destination = chosen if chosen in DESTINATIONS else mapper.destination_of(route)
-    if destination not in ROUTE_DIRECTIONS[origin]:
+    chosen = str(dpg.get_value("mapping_destination_combo"))
+    destination = chosen if chosen in DESTINATIONS else mapper.destination_of(mapping)
+    if destination not in MAPPING_DIRECTIONS[origin]:
         log_error("Mapper", f"destination {destination!r} is not allowed for origin {origin!r}")
         return
-    previous_destination = mapper.destination_of(route)
-    route["origin"] = origin
-    route["destination"] = destination
-    route["cadence"] = None
+    previous_destination = mapper.destination_of(mapping)
+    mapping["origin"] = origin
+    mapping["destination"] = destination
+    mapping["cadence"] = None
     if origin == ORIGIN_STATE:
-        route["target_id"] = str(dpg.get_value("route_source_combo")) or None
-        prop = str(dpg.get_value("route_property_combo"))
+        mapping["target_id"] = str(dpg.get_value("mapping_source_combo")) or None
+        prop = str(dpg.get_value("mapping_property_combo"))
         entry = catalog.PROPERTY_CATALOG.get(prop)
         in_from, in_to = 0.0, 1.0
         if entry is not None:
-            route["property"] = prop
+            mapping["property"] = prop
             comp = entry["components"][0]
-            route["component"] = comp["key"] if len(entry["components"]) > 1 else None
+            mapping["component"] = comp["key"] if len(entry["components"]) > 1 else None
             in_from, in_to = float(comp["min"]), float(comp["max"])
-        route["origin_spec"] = {}
-        route["cadence"] = max(ROUTE_MIN_CADENCE_MS, int(dpg.get_value("route_cadence")))
+        mapping["origin_spec"] = {}
+        mapping["cadence"] = max(MAPPING_MIN_CADENCE_MS, int(dpg.get_value("mapping_cadence")))
     elif origin == ORIGIN_CLOCK:
-        clock = str(dpg.get_value("route_clock_combo"))
-        route["origin_spec"] = {"clock": clock}
-        route["target_id"] = None
+        clock = str(dpg.get_value("mapping_clock_combo"))
+        mapping["origin_spec"] = {"clock": clock}
+        mapping["target_id"] = None
         in_from, in_to = CLOCK_SOURCES.get(clock, (0.0, 1.0))
     else:
-        route["origin_spec"] = {"value": float(dpg.get_value("route_const_value"))}
-        route["target_id"] = None
+        mapping["origin_spec"] = {"value": float(dpg.get_value("mapping_const_value"))}
+        mapping["target_id"] = None
         in_from, in_to = 0.0, 1.0
-    mapper.set_mapping_input(route["id"], float(in_from), float(in_to))
-    route["steps"] = max(ROUTE_STEPS_CONTINUOUS, int(dpg.get_value("route_steps")))
+    mapper.set_mapping_input(mapping["id"], float(in_from), float(in_to))
+    mapping["steps"] = max(MAPPING_STEPS_CONTINUOUS, int(dpg.get_value("mapping_steps")))
     if destination == DEST_MIDI:
-        route["destination_spec"] = {
-            "controller_port": str(dpg.get_value("route_controller_combo")),
-            "channel": int(dpg.get_value("route_channel")),
-            "type": str(dpg.get_value("route_type_combo")),
-            "number": int(dpg.get_value("route_number")),
+        mapping["destination_spec"] = {
+            "controller_port": str(dpg.get_value("mapping_controller_combo")),
+            "channel": int(dpg.get_value("mapping_channel")),
+            "type": str(dpg.get_value("mapping_type_combo")),
+            "number": int(dpg.get_value("mapping_number")),
         }
     else:
         osc_spec = {
-            "host": str(dpg.get_value("route_osc_host")),
-            "port": int(dpg.get_value("route_osc_port")),
-            "address": str(dpg.get_value("route_osc_address")),
+            "host": str(dpg.get_value("mapping_osc_host")),
+            "port": int(dpg.get_value("mapping_osc_port")),
+            "address": str(dpg.get_value("mapping_osc_address")),
         }
         error = validate_osc_destination(osc_spec)
         if error is not None:
-            log_error("Mapper", f"route destination: {error}")
+            log_error("Mapper", f"mapping destination: {error}")
             return  # keep the dialog open so the user can fix the input
-        route["destination_spec"] = osc_spec
+        mapping["destination_spec"] = osc_spec
     if destination != previous_destination:
         out_from, out_to = mapper.default_output_range(
-            destination, str(route["property"]), route.get("component")
+            destination, str(mapping["property"]), mapping.get("component")
         )
-        mapper.set_mapping_output(route["id"], out_from, out_to)
-    if dpg.does_item_exist("mapper_route_window"):
-        dpg.delete_item("mapper_route_window")
+        mapper.set_mapping_output(mapping["id"], out_from, out_to)
+    if dpg.does_item_exist("mapper_mapping_window"):
+        dpg.delete_item("mapper_mapping_window")
     refresh_mapper_ui()
 
 
@@ -6320,48 +6329,48 @@ def refresh_mapper_ui() -> None:
         )
         return
     # e40s01: split the flat list into Control Origins (the card bands, grouped
-    # by source) and the other Routes (the State bands + the source-less Global
+    # by source) and the other Mappings (the State bands + the source-less Global
     # line). Row order stays mapper.row_targets() (e31s01).
     targets = list(mapper.row_targets())
     rows: dict[str, list[dict[str, Any]]] = {target: [] for target in targets}
-    route_rows: dict[str, list[dict[str, Any]]] = {target: [] for target in targets}
-    global_routes: list[dict[str, Any]] = []
+    mapping_rows: dict[str, list[dict[str, Any]]] = {target: [] for target in targets}
+    global_mappings: list[dict[str, Any]] = []
     for mapping in state.mapper_mappings:
         if mapper.origin_of(mapping) == ORIGIN_CONTROL:
             target = mapping["target_id"]
             if target in rows:
                 rows[target].append(mapping)
-        elif str(mapping.get("target_id") or "") in route_rows:
-            route_rows[str(mapping["target_id"])].append(mapping)
+        elif str(mapping.get("target_id") or "") in mapping_rows:
+            mapping_rows[str(mapping["target_id"])].append(mapping)
         else:
-            global_routes.append(mapping)
-    if _mapper_show_global and global_routes:
+            global_mappings.append(mapping)
+    if _mapper_show_global and global_mappings:
         global_block = dpg.add_group(parent="mapper_mappings_group", tag="mapper_global_block")
         themed_text("Clock+Constant", slot="text_dim", parent=global_block)
-        for route in global_routes:
-            _render_route_row(route, parent=global_block)
+        for mapping in global_mappings:
+            _render_mapping_row(mapping, parent=global_block)
     per_line = _mapper_cards_per_line()
     width = dpg.get_item_width("mapper_window") or MAPPER_WINDOW_WIDTH
     card_area = width - 8 - (_mapper_row_lead_px() + 4)
     pitch = MAPPER_MINI_W + 4
-    for row_no, (target_id, mappings) in enumerate(rows.items(), start=1):
-        routes = route_rows.get(target_id, [])
-        # e40s08: the State box shows its Routes, and stays in learn mode so its
+    for row_no, (target_id, control_mappings) in enumerate(rows.items(), start=1):
+        value_mappings = mapping_rows.get(target_id, [])
+        # e40s08: the State box shows its Mappings, and stays in learn mode so its
         # '+' learn marker has a home on every source.
-        show_state_box = _mapper_show_get and (bool(routes) or state.midi_learn_mode)
-        if not (_mapper_show_control and mappings) and not show_state_box:
+        show_state_box = _mapper_show_get and (bool(value_mappings) or state.midi_learn_mode)
+        if not (_mapper_show_control and control_mappings) and not show_state_box:
             continue
         block = dpg.add_group(parent="mapper_mappings_group")
-        if mappings and _mapper_show_control:
-            row_height = _mapper_row_height(mappings)
+        if control_mappings and _mapper_show_control:
+            row_height = _mapper_row_height(control_mappings)
             # e34s01 (2026-09-05 rework): the per-row '+' is a SMALL trailing
             # button, not a card slot — it rides the row's last card line when the
             # pixel room fits it (mapper.add_fits_last_line) and only moves to its
             # own narrow line when a very narrow window leaves no room.
             add_inline = mapper.add_fits_last_line(
-                len(mappings), per_line, card_area, pitch, MAPPER_ADD_SLOT_W
+                len(control_mappings), per_line, card_area, pitch, MAPPER_ADD_SLOT_W
             )
-            lines = mapper.row_slots(len(mappings), per_line)
+            lines = mapper.row_slots(len(control_mappings), per_line)
             for line_no, slot_line in enumerate(lines):
                 line = dpg.add_group(horizontal=True, parent=block)
                 if line_no == 0:
@@ -6384,8 +6393,8 @@ def refresh_mapper_ui() -> None:
                         parent=line,
                     )
                 for slot in slot_line:
-                    if slot < len(mappings):
-                        _render_mapper_card(mappings[slot], parent=line, height=row_height)
+                    if slot < len(control_mappings):
+                        _render_mapper_card(control_mappings[slot], parent=line, height=row_height)
                 # e34s01: the small '+' rides the last card line when it fits
                 if add_inline and line_no == len(lines) - 1:
                     _mapper_row_add(target_id, parent=line, height=row_height)
@@ -6393,7 +6402,9 @@ def refresh_mapper_ui() -> None:
                 # marker strip line directly UNDER it — the cards' markers live
                 # outside the bordered cards, aligned under each card slot. The
                 # add-only slot lines carry no markers.
-                if state.midi_learn_mode and any(slot < len(mappings) for slot in slot_line):
+                if state.midi_learn_mode and any(
+                    slot < len(control_mappings) for slot in slot_line
+                ):
                     strip = dpg.add_group(
                         horizontal=True,
                         parent=block,
@@ -6401,8 +6412,8 @@ def refresh_mapper_ui() -> None:
                     )
                     dpg.add_spacer(width=_mapper_row_lead_px(), parent=strip)
                     for slot in slot_line:
-                        if slot < len(mappings):
-                            _mapper_marker_slot(mappings[slot], parent=strip)
+                        if slot < len(control_mappings):
+                            _mapper_marker_slot(control_mappings[slot], parent=strip)
             if not add_inline:
                 # a very narrow window: the '+' gets its own narrow line under the
                 # cards (aligned with them) instead of overflowing the edge
@@ -6410,7 +6421,7 @@ def refresh_mapper_ui() -> None:
                 dpg.add_spacer(width=_mapper_row_lead_px(), parent=line)
                 _mapper_row_add(target_id, parent=line, height=row_height)
         else:
-            # a Get-only source keeps its line lead (number + thumbnail) without cards
+            # a State-only source keeps its line lead (number + thumbnail) without cards
             lead_height = MAPPER_CTRL_H
             line = dpg.add_group(horizontal=True, parent=block)
             _mapper_line_number(row_no, target_id, parent=line, height=lead_height)
@@ -6430,7 +6441,7 @@ def refresh_mapper_ui() -> None:
                 horizontal=True, parent=block, tag=f"mapper_state_line_{target_id}"
             )
             dpg.add_spacer(width=_mapper_row_lead_px(), parent=state_line)
-            _render_state_box(target_id, routes, parent=state_line, line_index=row_no - 1)
+            _render_state_box(target_id, value_mappings, parent=state_line, line_index=row_no - 1)
     # e35s03/UAT: rebuilt cards relabel their running triggers and progress
     # readouts (the caches are stale after the body rebuild — re-seed in one pass)
     state.cue_trigger_label_cache.clear()
@@ -7537,7 +7548,7 @@ def open_cue_list_window(sender: Any = None, app_data: Any = None, user_data: An
 
 
 def midi_control_loop() -> None:
-    """MIDI control worker (e14s02): poll every controller input port, route messages,
+    """MIDI control worker (e14s02): poll every controller input port, mapping messages,
     push executions to the main thread via ui_task_queue (HIGH-1 — no direct dpg calls).
     """
     try:
@@ -9142,7 +9153,7 @@ with (
         tag="mapper_scroll",
     ),
 ):
-    # e40s01: the section chips + New Route sit above the body inside the scroll
+    # e40s01: the section chips + New Mapping sit above the body inside the scroll
     with dpg.group(horizontal=True, tag="mapper_filter_group"):
         themed_text("Show", slot="text_dim")
         dpg.add_checkbox(
@@ -9160,7 +9171,7 @@ with (
             default_value=True,
             callback=on_mapper_filter,
         )
-        dpg.add_button(label="New Route", callback=new_route_dialog)
+        dpg.add_button(label="New Mapping", callback=new_mapping_dialog)
     # NOTE: a bare dpg.group(...) call does NOT create the item — the context
     # manager must be entered (dearpygui 2.x), same as the original tuple-with.
     with dpg.group(tag="mapper_mappings_group"):
@@ -9278,7 +9289,7 @@ try:
 
         tick_midi_monitor()  # e39s01: MIDI Monitor panes (idle-cheap, revision-gated)
 
-        tick_routes()  # e40s01: state Origin -> MIDI/OSC Destination emissions
+        tick_mappings()  # e40s01: state Origin -> MIDI/OSC Destination emissions
 
         tick_midi_learn_timeout()  # e18: expire stale MIDI Learn sessions (incl. mapper)
 

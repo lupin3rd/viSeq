@@ -223,15 +223,15 @@ MAPPER_MARKER_W = 15
 MAPPER_MARKER_H = 15
 
 # e40s08: the per-source State band — a bordered box on the source line's OWN
-# sub-line (no line number) holding that source's State Routes, plus a header
+# sub-line (no line number) holding that source's State Mappings, plus a header
 # row ('State' + a small '+'). Height = the box WindowPadding air
 # (MAPPER_ROW_PAD_V) + the header + N rows + the ItemSpacing gap between each.
 # 17 px is the MEASURED height of both rows on the rig with real DPG 2.3.1 (the
-# header's text and a Route row's checkbox both settle at 17, one px above the
+# header's text and a Mapping row's checkbox both settle at 17, one px above the
 # 16 px buttons); the buttons are forced to the same 17 so a row can never
 # outgrow the box.
 MAPPER_STATE_BOX_HEADER_H = 17  # px height of the box header row
-MAPPER_STATE_BOX_ROW_H = 17  # px height of one State Route row inside the box
+MAPPER_STATE_BOX_ROW_H = 17  # px height of one State Mapping row inside the box
 
 # e33s04: wider spacing BETWEEN the learn-bar groups (replaces the almost
 # invisible DPG vertical separators — the user asked for plain space).
@@ -437,8 +437,8 @@ MIDI_ACTION_SEQ_ROW_ENABLE = "seq_row_enable"  # activate every step of a sequen
 MIDI_ACTION_SEQ_ROW_DISABLE = "seq_row_disable"  # deactivate every step of a sequencer row
 MIDI_ACTION_ENABLE_CORRECTION = "enable_correction"  # arm the SELECTED source's CC block
 MIDI_ACTION_MONITOR_TOGGLE = "monitor_toggle"  # e39s01: show/hide the MIDI Monitor window
-MIDI_ACTION_ROUTE_TOGGLE = "route_toggle"  # e40s01: arm/disarm a Route (its Enabled gate)
-MIDI_ACTION_ROUTE_ADD = "route_add"  # e40s08: create a State Route on a source line (its box '+')
+MIDI_ACTION_MAPPING_TOGGLE = "mapping_toggle"  # e40s01: arm/disarm a Mapping (Enabled gate)
+MIDI_ACTION_MAPPING_ADD = "mapping_add"  # e40s08: add a State Mapping on a source line
 
 
 # e39s01: MIDI Monitor (diagnostic window). The capture is bounded so a spinning
@@ -547,7 +547,7 @@ MAPPER_PERSISTED_KEYS: tuple[str, ...] = (
     "input_to",
     "enabled",
     "cue",  # e35s01: the per-mapping cue macro (rows + gap_ms), inert for non-cue-list controls
-    # e40s01: a Mapping is a Route (Origin -> Remap -> Destination). Legacy rows
+    # e40s01: a Mapping is a Mapping (Origin -> Rescale -> Destination). Legacy rows
     # carry none of these keys and hydrate to Control -> Vimix, so old project
     # files load unchanged; the new keys are additive.
     "origin",
@@ -559,7 +559,7 @@ MAPPER_PERSISTED_KEYS: tuple[str, ...] = (
 )
 
 
-# e40s01: the Route discriminators (ADR-route-model). Origin = where the value
+# e40s01: the Mapping discriminators (ADR-mapping-model). Origin = where the value
 # comes from; Destination = where it goes.
 ORIGIN_CONTROL = "control"  # a physical control / band / MIDI / Leap drives the value
 ORIGIN_STATE = "state"  # a live Vimix property of a source is read
@@ -571,16 +571,16 @@ DEST_MIDI = "midi"  # writes a MIDI note/CC to a controller output port
 DEST_OSC = "osc"  # writes an OSC message to a third-party host/port/address
 DESTINATIONS: tuple[str, ...] = (DEST_VIMIX, DEST_MIDI, DEST_OSC)
 # The default state Origin cadence: viOSC's sync_interval default (ADR: it stays 2 s).
-ROUTE_DEFAULT_CADENCE_MS = 2000
-ROUTE_MIN_CADENCE_MS = 20  # sanity floor for a per-Route cadence
-ROUTE_RESYNC_EPSILON = 1e-6  # a live state change below this is not a resync
-ROUTE_TICK_INTERVAL_S = 1.0 / 30.0  # emission tick cap (ADR: named constant)
-ROUTE_MIDI_EMIT_EPSILON = 0.5  # one MIDI step (integer note velocity / CC)
-ROUTE_OSC_EMIT_EPSILON = 1e-4  # a float OSC argument needs a real change
+MAPPING_DEFAULT_CADENCE_MS = 2000
+MAPPING_MIN_CADENCE_MS = 20  # sanity floor for a per-Mapping cadence
+MAPPING_RESYNC_EPSILON = 1e-6  # a live state change below this is not a resync
+MAPPING_TICK_INTERVAL_S = 1.0 / 30.0  # emission tick cap (ADR: named constant)
+MAPPING_MIDI_EMIT_EPSILON = 0.5  # one MIDI step (integer note velocity / CC)
+MAPPING_OSC_EMIT_EPSILON = 1e-4  # a float OSC argument needs a real change
 # MIDI Destination kinds (destination_spec['type'])
 MIDI_KIND_NOTE = "note"
 MIDI_KIND_CC = "cc"
-ROUTE_STEPS_CONTINUOUS = 1  # quantisation steps <= 1 means no quantisation
+MAPPING_STEPS_CONTINUOUS = 1  # quantisation steps <= 1 means no quantisation
 # e40s02: the source-less Clock Origins and their natural value windows (the
 # seeded Origin window; the value comes from the live transport/app state).
 CLOCK_SOURCES: dict[str, tuple[float, float]] = {
@@ -589,16 +589,16 @@ CLOCK_SOURCES: dict[str, tuple[float, float]] = {
     "playing": (0.0, 1.0),  # transport flag as a value
 }
 CLOCK_DEFAULT = "bpm"
-ROUTE_CONST_VALUE_MIN = -10.0
-ROUTE_CONST_VALUE_MAX = 10.0
-ROUTE_CONST_VALUE_DEFAULT = 0.5
+MAPPING_CONST_VALUE_MIN = -10.0
+MAPPING_CONST_VALUE_MAX = 10.0
+MAPPING_CONST_VALUE_DEFAULT = 0.5
 # e40s03: an OSC Destination is a new, opt-in network egress: fixed address, one
-# value argument (ADR decision 8). These are the defaults of a fresh Route.
-ROUTE_OSC_DEFAULT_HOST = "127.0.0.1"
-ROUTE_OSC_DEFAULT_PORT = 9000
-ROUTE_OSC_DEFAULT_ADDRESS = "/viseq/route"
-ROUTE_OSC_MAX_PORT = 65535
-ROUTE_DIRECTIONS: dict[str, tuple[str, ...]] = {
+# value argument (ADR decision 8). These are the defaults of a fresh Mapping.
+MAPPING_OSC_DEFAULT_HOST = "127.0.0.1"
+MAPPING_OSC_DEFAULT_PORT = 9000
+MAPPING_OSC_DEFAULT_ADDRESS = "/viseq/mapping"
+MAPPING_OSC_MAX_PORT = 65535
+MAPPING_DIRECTIONS: dict[str, tuple[str, ...]] = {
     ORIGIN_CONTROL: (DEST_VIMIX,),  # v1: a Control Origin keeps writing Vimix
     ORIGIN_STATE: (DEST_MIDI, DEST_OSC),
     ORIGIN_CLOCK: (DEST_MIDI, DEST_OSC),
