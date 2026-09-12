@@ -588,6 +588,12 @@ DESTINATIONS: tuple[str, ...] = (DEST_VIMIX, DEST_MIDI, DEST_OSC)
 ROUTE_DEFAULT_CADENCE_MS = 2000
 ROUTE_MIN_CADENCE_MS = 20  # sanity floor for a per-Route cadence
 ROUTE_RESYNC_EPSILON = 1e-6  # a live state change below this is not a resync
+ROUTE_TICK_INTERVAL_S = 1.0 / 30.0  # emission tick cap (ADR: named constant)
+ROUTE_MIDI_EMIT_EPSILON = 0.5  # one MIDI step (integer note velocity / CC)
+ROUTE_OSC_EMIT_EPSILON = 1e-4  # a float OSC argument needs a real change
+# MIDI Destination kinds (destination_spec['type'])
+MIDI_KIND_NOTE = "note"
+MIDI_KIND_CC = "cc"
 ROUTE_STEPS_CONTINUOUS = 1  # quantisation steps <= 1 means no quantisation
 ROUTE_DIRECTIONS: dict[str, tuple[str, ...]] = {
     ORIGIN_CONTROL: (DEST_VIMIX,),  # v1: a Control Origin keeps writing Vimix

@@ -392,3 +392,13 @@ current_window: str | None = None
 current_project_path: str | None = None  # None = unnamed (new) project
 project_dirty: bool = False  # live content differs from the last-saved baseline
 saved_content_fingerprint: str = ""  # canonical JSON of the content at the last save/open/new
+
+
+# e40s01: the Route engine's runtime memory — per-Route real-value bookkeeping for
+# dead-reckoning (routeengine.route_raw_value) and the last emitted Destination
+# value (the epsilon dedupe). Main-thread only; never persisted.
+route_book: dict[int, dict[str, Any]] = {}
+route_values: dict[int, float] = {}
+# e40s01: the /viosc/monitor subscriptions the live routes currently hold, so the
+# tick only re-issues them when the desired set changes.
+route_subscriptions: dict[str, list[str]] = {}

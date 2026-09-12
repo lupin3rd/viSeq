@@ -29,7 +29,9 @@ from viseqapp.constants import (
     ORIGINS,
     ROUTE_DEFAULT_CADENCE_MS,
     ROUTE_DIRECTIONS,
+    ROUTE_MIDI_EMIT_EPSILON,
     ROUTE_MIN_CADENCE_MS,
+    ROUTE_OSC_EMIT_EPSILON,
     ROUTE_STEPS_CONTINUOUS,
 )
 from viseqapp.osc import osc_client
@@ -416,6 +418,17 @@ def dead_reckon(
     speed = float(speed) if isinstance(speed, (int, float)) else 1.0
     lo, hi = _input_window(float(route["input_from"]), float(route["input_to"]))
     return _clamp(float(last_value) + speed * max(0.0, float(elapsed_s)), lo, hi)
+
+
+def route_emit_epsilon(destination: str) -> float:
+    """The minimum Destination value change that makes a Route emit (e40s01).
+
+    ADR decision 6: a named constant per Destination kind — one MIDI step for
+    notes/CC (an integer scale), a real float change for OSC.
+    """
+    if destination == DEST_MIDI:
+        return ROUTE_MIDI_EMIT_EPSILON
+    return ROUTE_OSC_EMIT_EPSILON
 
 
 def origin_of(mapping: dict[str, Any]) -> str:

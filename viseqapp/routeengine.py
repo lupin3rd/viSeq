@@ -76,3 +76,38 @@ def refresh_state_routes(
         if raw is not None:
             out.append((route, raw))
     return out
+
+
+def plan_emissions(
+    routes: list[dict[str, Any]],
+    props_lookup: Callable[[str], dict[str, Any] | None],
+    book: dict[int, dict[str, Any]],
+    last_values: dict[int, float],
+    now: float,
+) -> list[tuple[dict[str, Any], float]]:
+    """(route, destination_value) for every enabled Route whose value changed.
+
+    Folds the state refresh, the pure Destination remap and the per-Destination
+    epsilon dedupe, updating ``last_values`` in place. The caller performs the
+    I/O: the engine never talks to a device (HIGH-1).
+    """
+    out: list[tuple[dict[str, Any], float]] = []
+    for route, raw in refresh_state_routes(routes, props_lookup, book, now):
+        value = mapper.route_output_value(route, raw)
+        route_id = int(route["id"])
+        previous = last_values.get(route_id)
+        epsilon = mapper.route_emit_epsilon(mapper.destination_of(route))
+        if previous is not None and abs(value - previous) < epsilon:
+            continue
+        last_values[route_id] = value
+        out.append((route, value))
+    return out
+
+
+def prune_book(
+    book: dict[int, dict[str, Any]], last_values: dict[int, float], live_ids: set[int]
+) -> None:
+    """Drop the runtime memory of Routes that no longer exist (e40s01)."""
+    for store in (book, last_values):
+        for route_id in [rid for rid in store if rid not in live_ids]:
+            del store[route_id]

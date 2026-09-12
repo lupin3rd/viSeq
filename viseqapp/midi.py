@@ -8,17 +8,20 @@ the worker loops live in the composition root and call these.
 
 import contextlib
 import threading
+import time
 from typing import Any
 
 from viseqapp import state
 from viseqapp.config import load_config, save_config
 from viseqapp.constants import (
+    DEST_MIDI,
     GRID_FLASH_SECONDS,
     GRID_LED_AMBER,
     GRID_LED_GREEN,
     GRID_LED_OFF,
     GRID_LED_WHITE,
     MIDI_ACTION_SEQ_TOGGLE,
+    MIDI_KIND_NOTE,
     MIDI_OPEN_RETRY_COOLDOWN_SECONDS,
     MIDI_PITCH_MAX,
     MIDI_PITCH_MIN,
@@ -418,16 +421,29 @@ def _register_grid_bindings(controller: dict[str, Any], profile: dict[str, Any])
     ]
 
 
+def _route_wants_output(port_name: str) -> bool:
+    """True when a Route writes MIDI to this controller port (e40s01)."""
+    return any(
+        mapping.get("destination") == DEST_MIDI
+        and str((mapping.get("destination_spec") or {}).get("controller_port") or "") == port_name
+        for mapping in state.mapper_mappings
+    )
+
+
 def controller_connect(controller: dict[str, Any], mido: Any) -> None:
     """Open the controller's LED output, send setup SysEx, register grid bindings (e14s02).
 
-    BUG-2026-09-07T152802: the output-port lookup is INSIDE the guard — with ALSA
-    refusing sequencer clients the lookup raises and must log + disconnect, never
-    escape into the MIDI re-enable UI callback.
+    e40s01 relaxes the LED-only guard: the output opens when the device declares
+    ``features.leds`` OR a Route targets it (the setup SysEx and the grid
+    bindings still need the profile). BUG-2026-09-07T152802: the output-port
+    lookup is INSIDE the guard — with ALSA refusing sequencer clients the lookup
+    raises and must log + disconnect, never escape into the MIDI re-enable UI
+    callback.
     """
     controller_disconnect(controller)
     profile = controller_profile_of(controller)
-    if profile is None or not profile.get("features", {}).get("leds"):
+    leds = bool(profile is not None and profile.get("features", {}).get("leds"))
+    if not leds and not _route_wants_output(str(controller.get("port") or "")):
         return
     try:
         out_name = _find_output_port(controller["port"], mido)
@@ -435,11 +451,17 @@ def controller_connect(controller: dict[str, Any], mido: Any) -> None:
             return
         with _controller_lock:
             controller["output"] = mido.open_output(out_name)
-        if profile.get("setup_sysex"):
+        if leds and profile is not None and profile.get("setup_sysex"):
             controller["output"].send(mido.Message("sysex", data=profile["setup_sysex"]))
-        if controller.get("role") == "grid" and profile.get("features", {}).get("grid"):
+        if (
+            leds
+            and profile is not None
+            and controller.get("role") == "grid"
+            and profile.get("features", {}).get("grid")
+        ):
             _register_grid_bindings(controller, profile)
-        append_log("MIDI", f"{profile.get('name', controller['port'])} output on {out_name}")
+        name = profile.get("name", controller["port"]) if profile else controller["port"]
+        append_log("MIDI", f"{name} output on {out_name}")
     except Exception as e:
         log_error("MIDI", f"output {controller['port']}: {e}")
         controller_disconnect(controller)
@@ -454,6 +476,73 @@ def controller_disconnect(controller: dict[str, Any]) -> None:
                 output.close()
             controller["output"] = None
     controller["auto_bindings"] = []
+
+
+_route_output_fail_at: dict[str, float] = {}
+
+
+def ensure_route_output(controller: dict[str, Any]) -> bool:
+    """Open a controller's output when a Route needs it (e40s01, throttled).
+
+    Returns True when an output is available. Reuses the LED path's port lookup
+    and lock; an absent/failing port backs off with the shared open cooldown so
+    the main loop never hammers ALSA (BUG-2026-09-07T152802).
+    """
+    if not state.midi_enabled:
+        return False
+    if controller.get("output") is not None:
+        return True
+    port = str(controller.get("port") or "")
+    now = time.monotonic()
+    if not midi_open_retry_due(_route_output_fail_at.get(port), now):
+        return False
+    try:
+        import mido
+
+        out_name = _find_output_port(port, mido)
+        if out_name is None:
+            _route_output_fail_at[port] = now
+            return False
+        with _controller_lock:
+            controller["output"] = mido.open_output(out_name)
+        append_log("MIDI", f"route output on {out_name}")
+        return True
+    except Exception as e:
+        _route_output_fail_at[port] = now
+        log_error("MIDI", f"route output {port}: {e}")
+        return False
+
+
+def send_route_midi(
+    controller: dict[str, Any], kind: str, channel: int, number: int, value: int
+) -> bool:
+    """Send a note (velocity) or CC (value) on a controller's output (e40s01).
+
+    Best-effort, never raising into the main loop: MIDI disabled, no open output
+    or a failing send return False (logged). The value, number and channel are
+    clamped into the MIDI ranges.
+    """
+    if not state.midi_enabled:
+        return False
+    output = controller.get("output")
+    if output is None:
+        return False
+    value = max(0, min(127, int(value)))
+    number = max(0, min(127, int(number)))
+    channel = max(0, min(15, int(channel)))
+    try:
+        import mido
+
+        if kind == MIDI_KIND_NOTE:
+            message = mido.Message("note_on", channel=channel, note=number, velocity=value)
+        else:
+            message = mido.Message("control_change", channel=channel, control=number, value=value)
+        with _controller_lock:
+            output.send(message)
+        return True
+    except Exception as e:
+        log_error("MIDI", f"route output {controller.get('port')}: {e}")
+        return False
 
 
 def grid_led(row: int, col: int, color: str) -> None:

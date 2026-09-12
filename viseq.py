@@ -21,7 +21,7 @@ from PIL import Image
 from pythonosc import dispatcher, udp_client
 
 import viseqapp  # noqa: F401  scaffold hook (REFACTOR_LATEST.md commit 1): proves the package import path works at boot
-from viseqapp import actions, catalog, cue, leap, mapper, midimonitor, preview, state
+from viseqapp import actions, catalog, cue, leap, mapper, midimonitor, preview, routeengine, state
 from viseqapp.audio import (
     _set_band_variable,
     apply_spectrum_agc,
@@ -42,6 +42,7 @@ from viseqapp.constants import (
     BEAT_SOURCE_MIDI,
     DEFAULT_MANUAL_BPM,
     DEFAULT_PALETTE,
+    DEST_MIDI,
     FRAME_SLEEP_ANIMATED,
     FRAME_SLEEP_IDLE,
     HELP_ASCII_LOGO,
@@ -118,6 +119,7 @@ from viseqapp.constants import (
     MIDI_ACTION_TRANSPORT_TAP,
     MIDI_CC_TRIGGER_THRESHOLD,
     MIDI_CLOCK_PULSES_PER_BEAT,
+    MIDI_KIND_CC,
     MIDI_LEARN_TIMEOUT_SECONDS,
     MIDI_MONITOR_OUTCOME_LEARN,
     MIDI_MONITOR_OUTCOME_MATCH,
@@ -145,6 +147,7 @@ from viseqapp.constants import (
     PROJECT_FORMAT,
     PROJECT_VERSION,
     RECENT_PROJECTS_MAX,
+    ROUTE_TICK_INTERVAL_S,
     SLOT_BUTTON_HEIGHT,
     SLOT_BUTTON_INDENT,
     SLOT_BUTTON_TOP_SPACER,
@@ -187,6 +190,7 @@ from viseqapp.midi import (
     controller_disconnect,
     controller_profile_of,
     controller_profiles,
+    ensure_route_output,
     find_controller_by_port,
     grid_controller,
     grid_flash_playhead,
@@ -198,6 +202,7 @@ from viseqapp.midi import (
     save_midi_controllers,
     scan_midi_inputs,
     selected_bindings,
+    send_route_midi,
     set_midi_enabled,
 )
 from viseqapp.osc import (
@@ -5017,6 +5022,75 @@ def tick_midi_monitor() -> None:
     refresh_midi_monitor()
 
 
+# --- ROUTES (e40s01) ---------------------------------------------------------
+# The main-loop emission tick: refresh the enabled State Routes, remap and emit
+# their Destination values with an epsilon dedupe. The Vimix Destination is
+# driven by its own control path; the OSC Destination arrives in e40s03.
+
+_routes_last_tick = 0.0
+
+
+def _route_props_lookup(target_id: str) -> dict[str, Any] | None:
+    """The live properties of a Route's source (the viOSC state table)."""
+    _, props = find_source_by_name(target_id)
+    return props
+
+
+def _sync_route_subscriptions() -> None:
+    """Hold one /viosc/monitor subscription per (source, properties union).
+
+    Re-issues only when the desired set changes (the tick runs every frame) and
+    stops the subscriptions no longer needed — the transport coalescing of
+    ADR-route-model decision 2.
+    """
+    desired = routeengine.state_subscriptions(state.mapper_mappings)
+    if desired == state.route_subscriptions:
+        return
+    for target, props in desired.items():
+        addr = f"/viosc/monitor/{target}"
+        osc_client.send_message(addr, list(props))
+        append_log("OUT", f"{addr} {props}")
+    for target in set(state.route_subscriptions) - set(desired):
+        addr = f"/viosc/monitor/{target}"
+        osc_client.send_message(addr, [])
+        append_log("OUT", f"{addr} (stop)")
+    state.route_subscriptions = desired
+
+
+def _emit_route(route: dict[str, Any], value: float) -> None:
+    """Send one Route's Destination value (e40s01: MIDI; OSC is e40s03)."""
+    if mapper.destination_of(route) != DEST_MIDI:
+        return
+    spec = route.get("destination_spec") or {}
+    controller = find_controller_by_port(str(spec.get("controller_port") or ""))
+    if controller is None or not ensure_route_output(controller):
+        return
+    send_route_midi(
+        controller,
+        str(spec.get("type") or MIDI_KIND_CC),
+        int(spec.get("channel", 0)),
+        int(spec.get("number", 0)),
+        round(value),
+    )
+
+
+def tick_routes(now: float | None = None) -> None:
+    """Emit the changed Route values, capped at ROUTE_TICK_INTERVAL_S (e40s01)."""
+    global _routes_last_tick
+    if now is None:
+        now = time.monotonic()
+    if now - _routes_last_tick < ROUTE_TICK_INTERVAL_S:
+        return
+    _routes_last_tick = now
+    _sync_route_subscriptions()
+    live_ids = {int(m["id"]) for m in state.mapper_mappings}
+    routeengine.prune_book(state.route_book, state.route_values, live_ids)
+    for route, value in routeengine.plan_emissions(
+        state.mapper_mappings, _route_props_lookup, state.route_book, state.route_values, now
+    ):
+        _emit_route(route, value)
+
+
 def show_leap_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     """Open the Leap Motion window from Settings > Leap Motion (e26s01)."""
     dpg.show_item("leap_window")
@@ -8924,6 +8998,8 @@ try:
         tick_cue_triggers()  # e35s03: cue-list card running labels (idle-cheap)
 
         tick_midi_monitor()  # e39s01: MIDI Monitor panes (idle-cheap, revision-gated)
+
+        tick_routes()  # e40s01: state Origin -> MIDI/OSC Destination emissions
 
         tick_midi_learn_timeout()  # e18: expire stale MIDI Learn sessions (incl. mapper)
 
