@@ -18,6 +18,7 @@ from viseqapp.constants import (
     ORIGIN_CLOCK,
     ORIGIN_CONST,
     ORIGIN_STATE,
+    ROUTE_DEFAULT_CADENCE_MS,
     ROUTE_RESYNC_EPSILON,
 )
 
@@ -36,6 +37,32 @@ def state_subscriptions(routes: list[dict[str, Any]]) -> dict[str, list[str]]:
         if target:
             out.setdefault(target, set()).add(str(route["property"]))
     return {target: sorted(props) for target, props in out.items()}
+
+
+def state_watch_plan(routes: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """The per-source watch plan of the enabled State Routes (e40s06).
+
+    {source: {"props": sorted properties, "cadence_ms": the FASTEST cadence of
+    that source's Routes}} — one watch entry per source, so several Routes
+    reading one source share a single subscription and the fastest Route wins
+    (ADR decisions 2-3).
+    """
+    plan: dict[str, dict[str, Any]] = {}
+    for route in routes:
+        if mapper.origin_of(route) != ORIGIN_STATE or not route.get("enabled"):
+            continue
+        target = str(route.get("target_id") or "")
+        if not target:
+            continue
+        cadence = int(route.get("cadence") or ROUTE_DEFAULT_CADENCE_MS)
+        entry = plan.setdefault(target, {"props": [], "cadence_ms": cadence})
+        prop = str(route["property"])
+        if prop not in entry["props"]:
+            entry["props"].append(prop)
+        entry["cadence_ms"] = min(int(entry["cadence_ms"]), cadence)
+    for entry in plan.values():
+        entry["props"].sort()
+    return plan
 
 
 def route_raw_value(

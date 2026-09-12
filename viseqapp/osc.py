@@ -105,6 +105,9 @@ def incoming_osc_handler(address: str, *args: Any) -> None:
     try:
         if address == "/viosc/replydata" and args and len(args[0]) <= MAX_STATE_JSON_BYTES:
             state.ui_state_queue.put(args[0])
+        elif address.startswith("/viosc/reply/") and args:
+            # e40s06: a targeted watch delta (prop, value, ...) for one source
+            state.watch_state_queue.put((address[len("/viosc/reply/") :], list(args)))
         elif (
             address.startswith("/viosc/replythumb/")
             and args

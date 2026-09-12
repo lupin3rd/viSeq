@@ -4699,13 +4699,31 @@ def _route_props_lookup(target_id: str) -> dict[str, Any] | None:
 
 
 def _sync_route_subscriptions() -> None:
-    """Hold one /viosc/monitor subscription per (source, properties union).
+    """Hold the State Routes' transport subscriptions (e40s01 + e40s06).
 
-    Re-issues only when the desired set changes (the tick runs every frame) and
-    stops the subscriptions no longer needed — the transport coalescing of
-    ADR-route-model decision 2.
+    Two lanes, coalesced per (source) — ADR-route-model decision 2:
+    - the FAST lane: `/viosc/watch/<source> <cadence_ms> <props...>` (e40s06),
+      answered with targeted `/viosc/reply/<source> <prop> <value>` deltas;
+    - the FALLBACK: the 2 s `/viosc/monitor` subscription (e40s01), kept while
+      the fast lane is unproven (an older daemon ignores the watch address).
+      The first reply proves the lane, then the fallback stops for good.
+    Only re-issues what changed; the tick runs this every frame.
     """
-    desired = routeengine.state_subscriptions(state.mapper_mappings)
+    plan = routeengine.state_watch_plan(state.mapper_mappings)
+    if state.osc_watch_supported is not False and plan != state.route_watch_plan:
+        for target, spec in plan.items():
+            addr = f"/viosc/watch/{target}"
+            osc_client.send_message(addr, [int(spec["cadence_ms"]), *spec["props"]])
+            append_log("OUT", f"{addr} {spec['cadence_ms']} {spec['props']}")
+        for target in set(state.route_watch_plan) - set(plan):
+            osc_client.send_message(f"/viosc/watch/{target}", [])
+            append_log("OUT", f"/viosc/watch/{target} (stop)")
+        state.route_watch_plan = plan
+    desired = (
+        {}
+        if state.osc_watch_supported
+        else {target: list(spec["props"]) for target, spec in plan.items()}
+    )
     if desired == state.route_subscriptions:
         return
     for target, props in desired.items():
@@ -4717,6 +4735,23 @@ def _sync_route_subscriptions() -> None:
         osc_client.send_message(addr, [])
         append_log("OUT", f"{addr} (stop)")
     state.route_subscriptions = desired
+
+
+def _apply_watch_reply(name: str, args: list[Any]) -> None:
+    """Apply one targeted /viosc/reply delta to the state table (e40s06, main thread).
+
+    The reply carries (property, value) pairs; the state table is the same one
+    the Route engine and the raw view read, so the fast lane needs no other
+    plumbing. The first reply proves the lane and drops the 2 s fallback.
+    """
+    _, props = find_source_by_name(name)
+    if props is None:
+        return
+    for i in range(0, len(args) - 1, 2):
+        props[str(args[i])] = args[i + 1]
+    if state.osc_watch_supported is not True:
+        state.osc_watch_supported = True
+        _sync_route_subscriptions()
 
 
 def _emit_route(route: dict[str, Any], value: float) -> None:
@@ -9079,6 +9114,10 @@ try:
 
         if latest_json:
             update_vimix_sources_ui(latest_json)
+
+        while not state.watch_state_queue.empty():
+            watch_name, watch_args = state.watch_state_queue.get()
+            _apply_watch_reply(watch_name, watch_args)
 
         while not texture_queue.empty():
             name, idx, img_data, w, h = texture_queue.get()
