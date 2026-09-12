@@ -224,11 +224,14 @@ MAPPER_MARKER_H = 15
 
 # e40s08: the per-source State band — a bordered box on the source line's OWN
 # sub-line (no line number) holding that source's State Routes, plus a header
-# row ('State' + a small '+'). Both the header and one Route row measure the
-# checkbox/button height, so the box height is box padding + the header + N rows
-# + the gaps between them (measured on DPG 2.3.1, compact mapper theme).
-MAPPER_STATE_BOX_HEADER_H = 16  # px height of the box header row
-MAPPER_STATE_BOX_ROW_H = 16  # px height of one State Route row inside the box
+# row ('State' + a small '+'). Height = the box WindowPadding air
+# (MAPPER_ROW_PAD_V) + the header + N rows + the ItemSpacing gap between each.
+# 17 px is the MEASURED height of both rows on the rig with real DPG 2.3.1 (the
+# header's text and a Route row's checkbox both settle at 17, one px above the
+# 16 px buttons); the buttons are forced to the same 17 so a row can never
+# outgrow the box.
+MAPPER_STATE_BOX_HEADER_H = 17  # px height of the box header row
+MAPPER_STATE_BOX_ROW_H = 17  # px height of one State Route row inside the box
 
 # e33s04: wider spacing BETWEEN the learn-bar groups (replaces the almost
 # invisible DPG vertical separators — the user asked for plain space).

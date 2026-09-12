@@ -5868,10 +5868,10 @@ def _render_route_row(route: dict[str, Any], parent: Any) -> None:
     """One State/Global row: Origin -> Destination + arm/edit/delete + learn marker.
 
     e40s08: the buttons carry an explicit height (MAPPER_STATE_BOX_ROW_H) so the
-    row is height-constant and the State box can compute its own height. The
-    checkbox does NOT: DearPyGui 2.3.1 add_checkbox rejects a height kwarg
-    (SystemError on the real rig, verified 2026-09-12) and it is shorter than
-    the buttons, so the rows dictate the height anyway.
+    row matches the checkbox-driven 17 px and the State box can compute its own
+    height. The checkbox does NOT: DearPyGui 2.3.1 add_checkbox rejects a height
+    kwarg (SystemError, verified against the real binding) and its own 17 px is
+    what the row settles at anyway.
     """
     rid = int(route["id"])
     tag = f"route_row_{rid}"
@@ -5919,13 +5919,18 @@ def _render_route_row(route: dict[str, Any], parent: Any) -> None:
 def _mapper_state_box_height(route_count: int) -> int:
     """Fixed height of one source's State box (e40s08).
 
-    A bordered child_window (WindowPadding 4 on each side) holding the header
-    row and one row per State Route, separated by MAPPER_ROW_GAP. Rows are
-    height-constant (MAPPER_STATE_BOX_ROW_H), so the box never needs scrolling.
+    A bordered child_window (WindowPadding 4 per side = MAPPER_ROW_PAD_V of air)
+    holding the header row and one row per State Route, separated by
+    MAPPER_ROW_GAP. Rows are height-constant (MAPPER_STATE_BOX_ROW_H), so the
+    box never needs scrolling. Measured against real DPG 2.3.1 on the rig: the
+    formula is exact (content == box minus the padding) at every row count.
     """
     rows = max(0, int(route_count))
-    inner = MAPPER_STATE_BOX_HEADER_H + rows * (MAPPER_STATE_BOX_ROW_H + MAPPER_ROW_GAP)
-    return inner + 2 * MAPPER_ROW_PAD_V
+    return (
+        MAPPER_ROW_PAD_V
+        + MAPPER_STATE_BOX_HEADER_H
+        + rows * (MAPPER_STATE_BOX_ROW_H + MAPPER_ROW_GAP)
+    )
 
 
 def _render_state_box(
