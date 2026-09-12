@@ -3095,10 +3095,17 @@ PREVIEW_TRANSPORT_TAG = "preview_transport"
 PREVIEW_FLOW_ROW_TAGS = ("preview_flow_0", "preview_flow_1", "preview_flow_2")
 
 # Transport layout (BUG-2026-09-12): the seek bar + controls never exceed the
-# video width; the buttons flow onto new lines when the video gets narrow.
+# video width; the buttons flow onto new lines when the video gets narrow, and
+# the window height hugs the content so no dead space is left below.
 PREVIEW_H_PAD = 20  # px horizontal padding of the video + transport content
-PREVIEW_TRANSPORT_RESERVE_H = 150  # px reserved below the video (transport rows + status)
 PREVIEW_H_SPACING = 8  # px horizontal spacing used by the button flow
+# Heights measured on DearPyGui 2.3.1 with the default style (the Preview window
+# binds no padding theme): window chrome (titlebar + padding) + the seek row +
+# the status line + the two item gaps = 104 px for a one-row transport; every
+# additional wrapped control row adds 23 px.
+PREVIEW_CONTENT_CHROME_H = 104
+PREVIEW_FLOW_ROW_STEP_H = 23
+PREVIEW_SCREEN_MARGIN_H = 48  # keep the fitted window inside the viewport
 PREVIEW_SEEK_MIN_W = 80
 PREVIEW_BTN_PAUSE_W = 70
 PREVIEW_TIME_RESERVE_W = 92  # px reserved for the timecode label
@@ -3234,40 +3241,63 @@ def _layout_preview_transport(content_w: int) -> None:
             dpg.configure_item(row_tag, show=bool(tags))
 
 
+def _preview_available_h() -> int:
+    """Usable window height inside the viewport; 0 when it cannot be read."""
+    try:
+        total = int(dpg.get_viewport_client_height())
+    except (TypeError, ValueError, AttributeError):
+        return 0
+    return max(0, total - PREVIEW_SCREEN_MARGIN_H)
+
+
 def _layout_preview_content() -> None:
     """Reflow the video + transport to the current window size.
 
-    The transport never exceeds the video width: the seek bar spans it and the
-    buttons wrap when the video is narrow. The applied geometry is cached so a
-    per-frame call never reflows (and never disturbs a slider drag) — only a
-    real size change reflows.
+    The video fills the window width and keeps its aspect; the transport never
+    exceeds the video width (the seek bar spans it, the buttons wrap); the
+    window height then HUGS the content, so no dead space is left below the
+    transport. The applied geometry is cached so a per-frame call never reflows
+    (and never disturbs a slider drag); the height is re-fit only when it moved.
     """
     global _preview_layout
     if not dpg.does_item_exist(PREVIEW_WINDOW_TAG):
         return
     w = max(260, int(dpg.get_item_width(PREVIEW_WINDOW_TAG) or 0) or PREVIEW_WIN_W)
-    h = max(200, int(dpg.get_item_height(PREVIEW_WINDOW_TAG) or 0) or PREVIEW_WIN_H)
-    disp_w = 0
-    disp_h = 0
-    if _preview_tex_dims is not None:
-        # the video fills the width, keeps its aspect, and leaves the transport
-        # its reserved room below
-        tex_w, tex_h = _preview_tex_dims
-        avail_h = max(120, h - PREVIEW_TRANSPORT_RESERVE_H)
-        disp_w = max(200, w - PREVIEW_H_PAD)
-        disp_h = int(disp_w * tex_h / tex_w)
-        if disp_h > avail_h:
-            disp_h = max(120, avail_h)
-            disp_w = max(200, int(disp_h * tex_w / tex_h))
-    content_w = disp_w if disp_w else max(200, w - PREVIEW_H_PAD)
-    if (disp_w, disp_h, content_w) == _preview_layout:
-        return  # geometry unchanged: keep the current rows (and any drag)
-    _preview_layout = (disp_w, disp_h, content_w)
-    if disp_w and dpg.does_item_exist(PREVIEW_IMAGE_TAG):
-        dpg.configure_item(PREVIEW_IMAGE_TAG, width=disp_w, height=disp_h)
-    _layout_preview_transport(content_w)
-    if dpg.does_item_exist(PREVIEW_STATUS_TAG):
-        dpg.configure_item(PREVIEW_STATUS_TAG, wrap=max(200, content_w))
+    if _preview_tex_dims is None:
+        content_w = max(200, w - PREVIEW_H_PAD)
+        if (0, 0, content_w) != _preview_layout:
+            _preview_layout = (0, 0, content_w)
+            _layout_preview_transport(content_w)
+        return
+    tex_w, tex_h = _preview_tex_dims
+    disp_w = max(200, w - PREVIEW_H_PAD)
+    disp_h = int(disp_w * tex_h / tex_w)
+    rows = 1
+    window_h = 0
+    avail = _preview_available_h()
+    for _ in range(3):
+        rows = sum(1 for r in _pack_preview_controls(disp_w) if r)
+        window_h = disp_h + PREVIEW_CONTENT_CHROME_H + (rows - 1) * PREVIEW_FLOW_ROW_STEP_H
+        if not avail or window_h <= avail:
+            break
+        # taller than the screen: shrink the video (letterbox on the sides)
+        video_avail = max(
+            120, avail - PREVIEW_CONTENT_CHROME_H - (rows - 1) * PREVIEW_FLOW_ROW_STEP_H
+        )
+        if video_avail >= disp_h:
+            break
+        disp_h = video_avail
+        disp_w = max(200, int(disp_h * tex_w / tex_h))
+    if (disp_w, disp_h, disp_w) != _preview_layout:
+        _preview_layout = (disp_w, disp_h, disp_w)
+        if dpg.does_item_exist(PREVIEW_IMAGE_TAG):
+            dpg.configure_item(PREVIEW_IMAGE_TAG, width=disp_w, height=disp_h)
+        _layout_preview_transport(disp_w)
+        if dpg.does_item_exist(PREVIEW_STATUS_TAG):
+            dpg.configure_item(PREVIEW_STATUS_TAG, wrap=max(200, disp_w))
+    h_now = int(dpg.get_item_height(PREVIEW_WINDOW_TAG) or 0)
+    if h_now and window_h and window_h != h_now:
+        dpg.configure_item(PREVIEW_WINDOW_TAG, height=window_h)
 
 
 def _on_preview_window_resize(
@@ -3303,6 +3333,7 @@ def _open_preview_window(target_id: str, message: str | None = None) -> None:
             width=w,
             height=h,
             pos=(x, y),
+            no_scrollbar=True,  # the height hugs the content: nothing ever scrolls
         ):
             with dpg.group(tag=PREVIEW_VIDEO_SLOT_TAG):
                 dpg.add_text("Connecting...", tag=PREVIEW_WAIT_TAG)
