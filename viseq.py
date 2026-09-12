@@ -40,6 +40,8 @@ from viseqapp.constants import (
     BEAT_SOURCE_LABELS,
     BEAT_SOURCE_MANUAL,
     BEAT_SOURCE_MIDI,
+    CLOCK_DEFAULT,
+    CLOCK_SOURCES,
     DEFAULT_MANUAL_BPM,
     DEFAULT_PALETTE,
     DEST_MIDI,
@@ -154,7 +156,11 @@ from viseqapp.constants import (
     PROJECT_FORMAT,
     PROJECT_VERSION,
     RECENT_PROJECTS_MAX,
+    ROUTE_CONST_VALUE_DEFAULT,
+    ROUTE_CONST_VALUE_MAX,
+    ROUTE_CONST_VALUE_MIN,
     ROUTE_DEFAULT_CADENCE_MS,
+    ROUTE_DIRECTIONS,
     ROUTE_MIN_CADENCE_MS,
     ROUTE_STEPS_CONTINUOUS,
     ROUTE_TICK_INTERVAL_S,
@@ -5104,6 +5110,17 @@ def _emit_route(route: dict[str, Any], value: float) -> None:
     )
 
 
+def _route_clock_lookup(kind: str) -> float | None:
+    """The live transport/app value of a Clock Origin (e40s02)."""
+    if kind == "bpm":
+        return float(state.current_bpm)
+    if kind == "step":
+        return float(state.current_step) if state.current_step >= 0 else None
+    if kind == "playing":
+        return 1.0 if state.is_playing else 0.0
+    return None
+
+
 def tick_routes(now: float | None = None) -> None:
     """Emit the changed Route values, capped at ROUTE_TICK_INTERVAL_S (e40s01)."""
     global _routes_last_tick
@@ -5116,7 +5133,12 @@ def tick_routes(now: float | None = None) -> None:
     live_ids = {int(m["id"]) for m in state.mapper_mappings}
     routeengine.prune_book(state.route_book, state.route_values, live_ids)
     for route, value in routeengine.plan_emissions(
-        state.mapper_mappings, _route_props_lookup, state.route_book, state.route_values, now
+        state.mapper_mappings,
+        _route_props_lookup,
+        state.route_book,
+        state.route_values,
+        now,
+        clock_lookup=_route_clock_lookup,
     ):
         _emit_route(route, value)
 
@@ -6229,45 +6251,91 @@ def open_route_editor(sender: Any = None, app_data: Any = None, user_data: Any =
     _open_route_editor(int(user_data))
 
 
+def on_route_origin_change(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Origin combo in the Route editor: reveal only the chosen Origin fields (e40s02)."""
+    origin = str(app_data or ORIGIN_STATE)
+    dpg.configure_item("route_state_fields", show=origin == ORIGIN_STATE)
+    dpg.configure_item("route_clock_fields", show=origin == ORIGIN_CLOCK)
+    dpg.configure_item("route_const_fields", show=origin == ORIGIN_CONST)
+
+
 def _open_route_editor(route_id: int) -> None:
-    """Edit one Route: Origin (source/property/cadence) + Destination + steps."""
+    """Edit one Route: Origin (state/clock/constant) + MIDI Destination + steps.
+
+    Control Origins are not edited here (their cards live in the Control band);
+    the Origin combo shows only the source-less/State kinds. The Origin window is
+    reseeded at confirm, so a cancel leaves the Route untouched.
+    """
     route = mapper.find_mapping(route_id)
     if route is None:
         return
     if dpg.does_item_exist("mapper_route_window"):
         dpg.delete_item("mapper_route_window")
+    origin = mapper.origin_of(route)
+    if origin == ORIGIN_CONTROL:
+        return
     spec = route.get("destination_spec") or {}
     ports = [str(c.get("port", "")) for c in midi_controllers if c.get("port")]
+    clock = str((route.get("origin_spec") or {}).get("clock") or CLOCK_DEFAULT)
+    const = float((route.get("origin_spec") or {}).get("value", ROUTE_CONST_VALUE_DEFAULT))
     with dpg.window(
         label="Edit Route",
         tag="mapper_route_window",
         modal=True,
-        width=430,
-        height=380,
+        width=450,
+        height=420,
         no_resize=True,
     ):
-        themed_text("Source", slot="text_dim")
+        themed_text("Origin", slot="text_dim")
         dpg.add_combo(
-            items=list(mapper.row_targets()),
-            default_value=str(route.get("target_id") or ""),
+            items=[ORIGIN_STATE, ORIGIN_CLOCK, ORIGIN_CONST],
+            default_value=origin,
             width=280,
-            tag="route_source_combo",
+            tag="route_origin_combo",
+            callback=on_route_origin_change,
         )
-        themed_text("Property", slot="text_dim")
-        dpg.add_combo(
-            items=mapper.mappable_properties(),
-            default_value=str(route["property"]),
-            width=280,
-            tag="route_property_combo",
-        )
-        themed_text("Cadence (ms)", slot="text_dim")
-        dpg.add_drag_int(
-            default_value=int(route.get("cadence") or ROUTE_DEFAULT_CADENCE_MS),
-            min_value=ROUTE_MIN_CADENCE_MS,
-            max_value=60_000,
-            width=160,
-            tag="route_cadence",
-        )
+        with dpg.group(tag="route_state_fields", show=origin == ORIGIN_STATE):
+            themed_text("Source", slot="text_dim")
+            dpg.add_combo(
+                items=list(mapper.row_targets()),
+                default_value=str(route.get("target_id") or ""),
+                width=280,
+                tag="route_source_combo",
+            )
+            themed_text("Property", slot="text_dim")
+            dpg.add_combo(
+                items=mapper.mappable_properties(),
+                default_value=str(route["property"]),
+                width=280,
+                tag="route_property_combo",
+            )
+            themed_text("Cadence (ms)", slot="text_dim")
+            dpg.add_drag_int(
+                default_value=int(route.get("cadence") or ROUTE_DEFAULT_CADENCE_MS),
+                min_value=ROUTE_MIN_CADENCE_MS,
+                max_value=60_000,
+                width=160,
+                tag="route_cadence",
+            )
+        with dpg.group(tag="route_clock_fields", show=origin == ORIGIN_CLOCK):
+            themed_text("Clock", slot="text_dim")
+            dpg.add_combo(
+                items=list(CLOCK_SOURCES),
+                default_value=clock,
+                width=160,
+                tag="route_clock_combo",
+            )
+        with dpg.group(tag="route_const_fields", show=origin == ORIGIN_CONST):
+            themed_text("Value", slot="text_dim")
+            dpg.add_drag_float(
+                default_value=const,
+                min_value=ROUTE_CONST_VALUE_MIN,
+                max_value=ROUTE_CONST_VALUE_MAX,
+                width=160,
+                format="%.3f",
+                speed=0.01,
+                tag="route_const_value",
+            )
         themed_text("Controller", slot="text_dim")
         dpg.add_combo(
             items=ports,
@@ -6319,30 +6387,49 @@ def _open_route_editor(route_id: int) -> None:
 
 
 def route_editor_confirm(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Store the edited Route fields, reseeding the Origin window, and rebuild (e40s01)."""
+    """Store the edited Route fields, reseed the Origin window and rebuild (e40s02)."""
     route = mapper.find_mapping(int(user_data))
     if route is None:
         return
-    prop = str(dpg.get_value("route_property_combo"))
-    entry = catalog.PROPERTY_CATALOG.get(prop)
-    if entry is not None:
-        route["property"] = prop
-        if len(entry["components"]) > 1:
-            route["component"] = entry["components"][0]["key"]
-        else:
-            route["component"] = None
-        if mapper.origin_of(route) == ORIGIN_STATE:
+    origin = str(dpg.get_value("route_origin_combo"))
+    if origin not in (ORIGIN_STATE, ORIGIN_CLOCK, ORIGIN_CONST):
+        origin = ORIGIN_STATE
+    destination = mapper.destination_of(route)
+    if destination not in ROUTE_DIRECTIONS[origin]:  # v1 direction rule
+        destination = ROUTE_DIRECTIONS[origin][0]
+    route["origin"] = origin
+    route["destination"] = destination
+    route["cadence"] = None
+    if origin == ORIGIN_STATE:
+        route["target_id"] = str(dpg.get_value("route_source_combo")) or None
+        prop = str(dpg.get_value("route_property_combo"))
+        entry = catalog.PROPERTY_CATALOG.get(prop)
+        in_from, in_to = 0.0, 1.0
+        if entry is not None:
+            route["property"] = prop
             comp = entry["components"][0]
-            mapper.set_mapping_input(route["id"], float(comp["min"]), float(comp["max"]))
-    route["target_id"] = str(dpg.get_value("route_source_combo")) or None
-    route["cadence"] = max(ROUTE_MIN_CADENCE_MS, int(dpg.get_value("route_cadence")))
+            route["component"] = comp["key"] if len(entry["components"]) > 1 else None
+            in_from, in_to = float(comp["min"]), float(comp["max"])
+        route["origin_spec"] = {}
+        route["cadence"] = max(ROUTE_MIN_CADENCE_MS, int(dpg.get_value("route_cadence")))
+    elif origin == ORIGIN_CLOCK:
+        clock = str(dpg.get_value("route_clock_combo"))
+        route["origin_spec"] = {"clock": clock}
+        route["target_id"] = None
+        in_from, in_to = CLOCK_SOURCES.get(clock, (0.0, 1.0))
+    else:
+        route["origin_spec"] = {"value": float(dpg.get_value("route_const_value"))}
+        route["target_id"] = None
+        in_from, in_to = 0.0, 1.0
+    mapper.set_mapping_input(route["id"], float(in_from), float(in_to))
     route["steps"] = max(ROUTE_STEPS_CONTINUOUS, int(dpg.get_value("route_steps")))
-    route["destination_spec"] = {
-        "controller_port": str(dpg.get_value("route_controller_combo")),
-        "channel": int(dpg.get_value("route_channel")),
-        "type": str(dpg.get_value("route_type_combo")),
-        "number": int(dpg.get_value("route_number")),
-    }
+    if destination == DEST_MIDI:
+        route["destination_spec"] = {
+            "controller_port": str(dpg.get_value("route_controller_combo")),
+            "channel": int(dpg.get_value("route_channel")),
+            "type": str(dpg.get_value("route_type_combo")),
+            "number": int(dpg.get_value("route_number")),
+        }
     if dpg.does_item_exist("mapper_route_window"):
         dpg.delete_item("mapper_route_window")
     refresh_mapper_ui()

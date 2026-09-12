@@ -596,6 +596,17 @@ ROUTE_OSC_EMIT_EPSILON = 1e-4  # a float OSC argument needs a real change
 MIDI_KIND_NOTE = "note"
 MIDI_KIND_CC = "cc"
 ROUTE_STEPS_CONTINUOUS = 1  # quantisation steps <= 1 means no quantisation
+# e40s02: the source-less Clock Origins and their natural value windows (the
+# seeded Origin window; the value comes from the live transport/app state).
+CLOCK_SOURCES: dict[str, tuple[float, float]] = {
+    "bpm": (0.0, 300.0),
+    "step": (0.0, 7.0),  # sequencer column, NUM_STEPS - 1
+    "playing": (0.0, 1.0),  # transport flag as a value
+}
+CLOCK_DEFAULT = "bpm"
+ROUTE_CONST_VALUE_MIN = -10.0
+ROUTE_CONST_VALUE_MAX = 10.0
+ROUTE_CONST_VALUE_DEFAULT = 0.5
 ROUTE_DIRECTIONS: dict[str, tuple[str, ...]] = {
     ORIGIN_CONTROL: (DEST_VIMIX,),  # v1: a Control Origin keeps writing Vimix
     ORIGIN_STATE: (DEST_MIDI, DEST_OSC),

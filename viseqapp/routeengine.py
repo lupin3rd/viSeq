@@ -13,7 +13,13 @@ from collections.abc import Callable
 from typing import Any
 
 from viseqapp import mapper
-from viseqapp.constants import ORIGIN_STATE, ROUTE_RESYNC_EPSILON
+from viseqapp.constants import (
+    CLOCK_DEFAULT,
+    ORIGIN_CLOCK,
+    ORIGIN_CONST,
+    ORIGIN_STATE,
+    ROUTE_RESYNC_EPSILON,
+)
 
 
 def state_subscriptions(routes: list[dict[str, Any]]) -> dict[str, list[str]]:
@@ -78,21 +84,60 @@ def refresh_state_routes(
     return out
 
 
+def origin_raw_value(
+    route: dict[str, Any],
+    props_lookup: Callable[[str], dict[str, Any] | None],
+    book: dict[int, dict[str, Any]],
+    now: float,
+    clock_lookup: Callable[[str], float | None] | None = None,
+) -> float | None:
+    """The current raw Origin value of ANY Route (e40s02).
+
+    State -> the live source property (dead-reckoned); Clock -> the live
+    transport/app quantity from ``clock_lookup``; Constant -> the fixed
+    ``origin_spec['value']``. None when the value is unavailable (no state, no
+    clock lookup, malformed constant).
+    """
+    origin = mapper.origin_of(route)
+    if origin == ORIGIN_STATE:
+        props = props_lookup(str(route.get("target_id") or ""))
+        if not props:
+            return None
+        return route_raw_value(route, props, book, now)
+    if origin == ORIGIN_CLOCK:
+        if clock_lookup is None:
+            return None
+        spec = route.get("origin_spec") or {}
+        return clock_lookup(str(spec.get("clock") or CLOCK_DEFAULT))
+    if origin == ORIGIN_CONST:
+        value = (route.get("origin_spec") or {}).get("value", 0.0)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value)
+    return None
+
+
 def plan_emissions(
     routes: list[dict[str, Any]],
     props_lookup: Callable[[str], dict[str, Any] | None],
     book: dict[int, dict[str, Any]],
     last_values: dict[int, float],
     now: float,
+    clock_lookup: Callable[[str], float | None] | None = None,
 ) -> list[tuple[dict[str, Any], float]]:
     """(route, destination_value) for every enabled Route whose value changed.
 
-    Folds the state refresh, the pure Destination remap and the per-Destination
-    epsilon dedupe, updating ``last_values`` in place. The caller performs the
-    I/O: the engine never talks to a device (HIGH-1).
+    Folds the Origin read (State/Clock/Constant), the pure Destination remap and
+    the per-Destination epsilon dedupe, updating ``last_values`` in place. The
+    caller performs the I/O: the engine never talks to a device (HIGH-1).
     """
     out: list[tuple[dict[str, Any], float]] = []
-    for route, raw in refresh_state_routes(routes, props_lookup, book, now):
+    for route in routes:
+        if not route.get("enabled"):
+            continue
+        raw = origin_raw_value(route, props_lookup, book, now, clock_lookup)
+        if raw is None:
+            continue
         value = mapper.route_output_value(route, raw)
         route_id = int(route["id"])
         previous = last_values.get(route_id)

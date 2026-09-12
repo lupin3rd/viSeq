@@ -13,6 +13,8 @@ from typing import Any
 
 from viseqapp import catalog, leap, state
 from viseqapp.constants import (
+    CLOCK_DEFAULT,
+    CLOCK_SOURCES,
     DEST_MIDI,
     DEST_OSC,
     DEST_VIMIX,
@@ -580,6 +582,7 @@ def add_route(
     target_id: str | None = None,
     prop: str = "alpha",
     destination_spec: dict[str, Any] | None = None,
+    origin_spec: dict[str, Any] | None = None,
     cadence: int | None = None,
     steps: int = ROUTE_STEPS_CONTINUOUS,
 ) -> dict[str, Any]:
@@ -587,8 +590,10 @@ def add_route(
 
     ``add_mapping`` remains the factory for the Control -> Vimix shape (its
     control kind is meaningful there); this one covers State/Clock/Constant
-    Origins writing a MIDI/OSC Destination. ``destination_spec`` is kept as an
-    opaque persisted dict (validated by the UI/transport that consumes it).
+    Origins writing a MIDI/OSC Destination. ``destination_spec`` and
+    ``origin_spec`` are kept as opaque persisted dicts (validated by the UI and
+    the engine that consume them); a Clock Origin seeds its Origin window from
+    CLOCK_SOURCES.
     """
     _validate_route(origin, destination)
     state.mapper_counter += 1
@@ -602,6 +607,11 @@ def add_route(
     )
     if isinstance(destination_spec, dict):
         mapping["destination_spec"] = dict(destination_spec)
+    if isinstance(origin_spec, dict):
+        mapping["origin_spec"] = dict(origin_spec)
+    if origin == ORIGIN_CLOCK:
+        clock = str(mapping["origin_spec"].get("clock") or CLOCK_DEFAULT)
+        mapping["input_from"], mapping["input_to"] = CLOCK_SOURCES.get(clock, (0.0, 1.0))
     if origin == ORIGIN_STATE and cadence is not None:
         mapping["cadence"] = max(ROUTE_MIN_CADENCE_MS, int(cadence))
     mapping["steps"] = max(ROUTE_STEPS_CONTINUOUS, int(steps))
@@ -710,6 +720,7 @@ def sanitize_mapping(raw: Any) -> dict[str, Any] | None:
         mapping["input_to"] = _to_float_or(raw.get("input_to"), seed_to)
     elif origin != ORIGIN_CONTROL:
         # State/Clock/Constant: keep the Origin window seeded by _build_mapping
+        # (a Clock Origin reseeds from CLOCK_SOURCES below)
         mapping["input_from"] = _to_float_or(raw.get("input_from"), mapping["input_from"])
         mapping["input_to"] = _to_float_or(raw.get("input_to"), mapping["input_to"])
     out_from, out_to = _default_output_range(destination, spec)
@@ -719,6 +730,11 @@ def sanitize_mapping(raw: Any) -> dict[str, Any] | None:
     mapping["destination_spec"] = dict(dest_spec) if isinstance(dest_spec, dict) else {}
     origin_spec = raw.get("origin_spec")
     mapping["origin_spec"] = dict(origin_spec) if isinstance(origin_spec, dict) else {}
+    if origin == ORIGIN_CLOCK and (raw.get("input_from") is None or raw.get("input_to") is None):
+        # the clock kind's natural window wins when the row carries no explicit
+        # input range (a hand-edited window is respected)
+        clock = str(mapping["origin_spec"].get("clock") or CLOCK_DEFAULT)
+        mapping["input_from"], mapping["input_to"] = CLOCK_SOURCES.get(clock, (0.0, 1.0))
     if origin == ORIGIN_STATE:
         cadence = _to_float_or(raw.get("cadence"), ROUTE_DEFAULT_CADENCE_MS)
         mapping["cadence"] = max(ROUTE_MIN_CADENCE_MS, int(cadence))
@@ -801,21 +817,34 @@ def prune_mappings(live_ids: set[str]) -> list[dict[str, Any]]:
     Returns the removed entries (the L-1 live-sources prune in
     ``update_vimix_sources_ui`` so a removed source takes its input mappings
     with it automatically). e40s01 orphan policy (ADR-route-model): an orphan
-    State Route keeps its setup and is DISABLED instead of deleted, so a source
-    that comes back resumes its LED; source-less Routes (Clock/Constant,
-    target_id None) are never affected.
+    State Route keeps its setup and is DISABLED instead of deleted; it is
+    re-enabled automatically when the source comes back (the disabled ids are
+    tracked in state.route_orphans, so a user-disarmed Route is never re-armed).
+    Source-less Routes (Clock/Constant, target_id None) are never affected.
     """
     removed: list[dict[str, Any]] = []
     for mapping in state.mapper_mappings:
-        if mapping["target_id"] in live_ids or mapping["target_id"] is None:
+        if mapping["target_id"] is None:
+            continue
+        if mapping["target_id"] in live_ids:
+            # e40s02: a Route the orphan policy disabled resumes when its source
+            # comes back (only if the prune itself disabled it, never a user arm)
+            if int(mapping["id"]) in state.route_orphans:
+                mapping["enabled"] = True
+                state.route_orphans.discard(int(mapping["id"]))
             continue
         if origin_of(mapping) == ORIGIN_CONTROL:
             removed.append(mapping)
         else:
-            mapping["enabled"] = False
+            if mapping.get("enabled"):
+                mapping["enabled"] = False
+                state.route_orphans.add(int(mapping["id"]))
     if removed:
         removed_ids = {m["id"] for m in removed}
         state.mapper_mappings[:] = [m for m in state.mapper_mappings if m["id"] not in removed_ids]
+        for mapping_id in list(state.route_orphans):
+            if mapping_id not in {m["id"] for m in state.mapper_mappings}:
+                state.route_orphans.discard(mapping_id)
     return removed
 
 

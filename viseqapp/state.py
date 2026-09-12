@@ -402,3 +402,6 @@ route_values: dict[int, float] = {}
 # e40s01: the /viosc/monitor subscriptions the live routes currently hold, so the
 # tick only re-issues them when the desired set changes.
 route_subscriptions: dict[str, list[str]] = {}
+# e40s02: Routes the orphan policy disabled (their source is gone); they are
+# re-enabled automatically when the source comes back.
+route_orphans: set[int] = set()
