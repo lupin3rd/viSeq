@@ -5853,15 +5853,34 @@ def _route_destination_label(route: dict[str, Any]) -> str:
 
 
 def _route_origin_label(route: dict[str, Any]) -> str:
-    """Short Origin summary of a Route row readout (e40s01)."""
+    """Short Origin summary of a Route row readout (e40s01).
+
+    e40s08: a State Route renders inside its Source's band, so the Source name
+    is redundant there — the row names only the Property.
+    """
     origin = mapper.origin_of(route)
     if origin == ORIGIN_STATE:
-        return f"{route.get('target_id') or '?'}.{route['property']}"
+        return str(route["property"])
     if origin == ORIGIN_CLOCK:
         return f"clock {route.get('origin_spec', {}).get('clock', 'beat')}"
     if origin == ORIGIN_CONST:
         return f"const {route.get('origin_spec', {}).get('value', 0.0)}"
     return str(route["property"])
+
+
+def _route_enable_label(route: dict[str, Any]) -> str:
+    """The arm checkbox caption of one Route row (e40s08).
+
+    Mirrors the control cards' 'Enable mapper' wording per Origin kind, so a
+    State row reads 'Enable state' instead of a generic 'Enable route' (and the
+    source-less rows name their own Origin).
+    """
+    origin = mapper.origin_of(route)
+    if origin == ORIGIN_STATE:
+        return "Enable state"
+    if origin == ORIGIN_CLOCK:
+        return "Enable clock"
+    return "Enable constant"
 
 
 def _render_route_row(route: dict[str, Any], parent: Any) -> None:
@@ -5890,6 +5909,7 @@ def _render_route_row(route: dict[str, Any], parent: Any) -> None:
             slot="text_dim",
         )
         dpg.add_checkbox(
+            label=_route_enable_label(route),
             tag=f"route_enable_{rid}",
             default_value=bool(route.get("enabled", False)),
             callback=on_route_enable,
@@ -5913,6 +5933,7 @@ def _render_route_row(route: dict[str, Any], parent: Any) -> None:
                 {"route_id": rid},
                 parent=tag,
                 tag=f"route_mk_{rid}",
+                tooltip=f"Map: {_route_enable_label(route)}",
             )
 
 
@@ -6402,7 +6423,14 @@ def refresh_mapper_ui() -> None:
                     tag=f"mapper_mk_line_{target_id}",
                 )
         if show_state_box:
-            _render_state_box(target_id, routes, parent=block, line_index=row_no - 1)
+            # e40s08: the box starts where the cards start — after the row lead
+            # (line number + thumbnail), so the Control cards and the State band
+            # share the same left edge.
+            state_line = dpg.add_group(
+                horizontal=True, parent=block, tag=f"mapper_state_line_{target_id}"
+            )
+            dpg.add_spacer(width=_mapper_row_lead_px(), parent=state_line)
+            _render_state_box(target_id, routes, parent=state_line, line_index=row_no - 1)
     # e35s03/UAT: rebuilt cards relabel their running triggers and progress
     # readouts (the caches are stale after the body rebuild — re-seed in one pass)
     state.cue_trigger_label_cache.clear()
