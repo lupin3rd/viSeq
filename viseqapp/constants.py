@@ -587,6 +587,7 @@ DESTINATIONS: tuple[str, ...] = (DEST_VIMIX, DEST_MIDI, DEST_OSC)
 # The default state Origin cadence: viOSC's sync_interval default (ADR: it stays 2 s).
 ROUTE_DEFAULT_CADENCE_MS = 2000
 ROUTE_MIN_CADENCE_MS = 20  # sanity floor for a per-Route cadence
+ROUTE_RESYNC_EPSILON = 1e-6  # a live state change below this is not a resync
 ROUTE_STEPS_CONTINUOUS = 1  # quantisation steps <= 1 means no quantisation
 ROUTE_DIRECTIONS: dict[str, tuple[str, ...]] = {
     ORIGIN_CONTROL: (DEST_VIMIX,),  # v1: a Control Origin keeps writing Vimix

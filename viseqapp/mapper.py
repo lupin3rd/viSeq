@@ -360,6 +360,64 @@ def shift_cue_row_level(cue: dict[str, Any], index: int, delta: int) -> int | No
     return level
 
 
+def quantize_unit(unit: float, steps: int) -> float:
+    """Quantise a 0..1 unit into ``steps`` segments (e40s01, ADR decision 6).
+
+    ``steps <= 1`` is continuous (the unit is only clamped); ``2`` is on/off;
+    ``N`` yields N evenly spaced levels, so an LED bar can be lit segment by
+    segment without the user touching epsilon or the rate cap.
+    """
+    clamped = _clamp(float(unit), 0.0, 1.0)
+    if int(steps) <= ROUTE_STEPS_CONTINUOUS:
+        return clamped
+    segments = int(steps) - 1
+    return round(clamped * segments) / segments
+
+
+def route_output_value(route: dict[str, Any], raw: float) -> float:
+    """The Destination value a raw Origin value maps to (pure, no send, e40s01).
+
+    Mirrors the dispatch math (``_raw_unit`` zone ownership + quantisation +
+    output range); a value outside the Origin window HOLDS the current value.
+    """
+    unit = _raw_unit(route, raw)
+    if unit is None:
+        return float(route["value"])
+    unit = quantize_unit(unit, int(route.get("steps", ROUTE_STEPS_CONTINUOUS)))
+    out_from, out_to = float(route["output_from"]), float(route["output_to"])
+    return out_from + unit * (out_to - out_from)
+
+
+def prop_flag(value: Any) -> bool:
+    """A live property read as a boolean (play/lock are 0/1 floats or strings)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return float(value) > 0.5
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return False
+
+
+def dead_reckon(
+    route: dict[str, Any], last_value: float, elapsed_s: float, props: dict[str, Any]
+) -> float:
+    """Extrapolate a derivable State Origin between refreshes (e40s01).
+
+    ADR decision 5: the catalog marks the properties viseq may extrapolate
+    (``seek`` is a linear timeline position). While the source plays, the value
+    advances by ``speed * elapsed`` from the last REAL value, clamped to the
+    Origin window; a paused source, a non-derivable property and a negative
+    elapsed all return the last value unchanged.
+    """
+    if not catalog.is_derivable(str(route["property"])) or not prop_flag(props.get("play")):
+        return float(last_value)
+    speed = props.get("speed")
+    speed = float(speed) if isinstance(speed, (int, float)) else 1.0
+    lo, hi = _input_window(float(route["input_from"]), float(route["input_to"]))
+    return _clamp(float(last_value) + speed * max(0.0, float(elapsed_s)), lo, hi)
+
+
 def origin_of(mapping: dict[str, Any]) -> str:
     """The Route Origin of a mapping; a legacy row (no key) is Control (e40s01)."""
     origin = mapping.get("origin", ORIGIN_CONTROL)
