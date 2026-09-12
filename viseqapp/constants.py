@@ -561,7 +561,39 @@ MAPPER_PERSISTED_KEYS: tuple[str, ...] = (
     "input_to",
     "enabled",
     "cue",  # e35s01: the per-mapping cue macro (rows + gap_ms), inert for non-cue-list controls
+    # e40s01: a Mapping is a Route (Origin -> Remap -> Destination). Legacy rows
+    # carry none of these keys and hydrate to Control -> Vimix, so old project
+    # files load unchanged; the new keys are additive.
+    "origin",
+    "destination",
+    "destination_spec",
+    "origin_spec",
+    "cadence",
+    "steps",
 )
+
+
+# e40s01: the Route discriminators (ADR-route-model). Origin = where the value
+# comes from; Destination = where it goes.
+ORIGIN_CONTROL = "control"  # a physical control / band / MIDI / Leap drives the value
+ORIGIN_STATE = "state"  # a live Vimix property of a source is read
+ORIGIN_CLOCK = "clock"  # a transport/app quantity (beat, BPM, step, cue progress)
+ORIGIN_CONST = "const"  # a fixed value
+ORIGINS: tuple[str, ...] = (ORIGIN_CONTROL, ORIGIN_STATE, ORIGIN_CLOCK, ORIGIN_CONST)
+DEST_VIMIX = "vimix"  # writes /vimix/<source>/<property>
+DEST_MIDI = "midi"  # writes a MIDI note/CC to a controller output port
+DEST_OSC = "osc"  # writes an OSC message to a third-party host/port/address
+DESTINATIONS: tuple[str, ...] = (DEST_VIMIX, DEST_MIDI, DEST_OSC)
+# The default state Origin cadence: viOSC's sync_interval default (ADR: it stays 2 s).
+ROUTE_DEFAULT_CADENCE_MS = 2000
+ROUTE_MIN_CADENCE_MS = 20  # sanity floor for a per-Route cadence
+ROUTE_STEPS_CONTINUOUS = 1  # quantisation steps <= 1 means no quantisation
+ROUTE_DIRECTIONS: dict[str, tuple[str, ...]] = {
+    ORIGIN_CONTROL: (DEST_VIMIX,),  # v1: a Control Origin keeps writing Vimix
+    ORIGIN_STATE: (DEST_MIDI, DEST_OSC),
+    ORIGIN_CLOCK: (DEST_MIDI, DEST_OSC),
+    ORIGIN_CONST: (DEST_MIDI, DEST_OSC),
+}
 
 
 # e28s01: restore cap for the mapper section of a project file — a corrupted or
