@@ -223,6 +223,15 @@ def is_trigger(prop: str) -> bool:
     return family_of(prop) == FAMILY_TRIGGER
 
 
+def trigger_carries_value(prop: str) -> bool:
+    """True for trigger properties whose OSC message takes an argument.
+
+    Only ``flag`` carries one (its target id; -1 advances to the next flag);
+    replay/reset/reload fire with no argument (compose_send_args).
+    """
+    return prop == "flag"
+
+
 def is_enum(prop: str) -> bool:
     return family_of(prop) == FAMILY_ENUM
 
@@ -318,7 +327,7 @@ def compose_send_args(
         else:
             args = list(values) if values is not None else default_components(prop)
     elif family == FAMILY_TRIGGER:
-        args = [value] if prop == "flag" and value is not None else []
+        args = [value] if trigger_carries_value(prop) and value is not None else []
     else:  # set_scalar, rate scalar, toggle, enum
         neutral = entry["components"][0]["neutral"]
         scalar = value

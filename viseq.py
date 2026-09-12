@@ -6322,6 +6322,23 @@ def cue_row_delete(sender: Any = None, app_data: Any = None, user_data: Any = No
     _safe_refresh_cue_rows(mid)
 
 
+# Cue row dialog geometry (BUG-2026-09-12T191000): the window must FIT its
+# editors — corner renders 8 components + ms (9 rows) and overflowed the old
+# fixed 470 px height, hiding the OK/Cancel row.
+CUE_DLG_DEFAULT_HEIGHT = 470
+CUE_DLG_BASE_HEIGHT = 150  # kind + property pickers, separator, OK/Cancel
+CUE_DLG_EDITOR_ROW_HEIGHT = 45  # one labelled drag row
+CUE_DLG_MAX_HEIGHT = 640  # cap; taller content scrolls
+# A no-argument trigger fires without a value, so the row dialog shows a hint
+# instead of an editor whose content compose_send_args would discard.
+CUE_DLG_FIRE_HINT = "Fire (no value: this message takes no argument)"
+# The property and burst groups SHARE these fixed editor tags, so only the
+# active kind may hold them (BUG-2026-09-12T191000: a cleanup loop that reused
+# the renderer's ``container`` parameter sent every editor to the hidden burst
+# group, so the property kind never showed its value editors).
+CUE_DLG_VALUE_CONTAINERS = ("cue_prop_values", "cue_burst_values")
+
+
 def on_cue_kind_change(sender: Any, app_data: Any, user_data: Any = None) -> None:
     """Row-dialog kind combo: reveal ONLY the fields of the chosen kind
     (e35s04 + e36s05: a 'burst' kind runs one bounded rate message).
@@ -6363,9 +6380,32 @@ def _cue_dlg_render_kind_editors(kind: str) -> None:
             dpg.set_value("cue_dlg_burst_combo", prop)
         _cue_dlg_render_values("cue_burst_values", prop)
     else:
-        for container in ("cue_prop_values", "cue_burst_values"):
-            if dpg.does_item_exist(container):
-                dpg.delete_item(container, children_only=True)
+        _cue_dlg_clear_editors()
+        _cue_dlg_fit_height(None)
+
+
+def _cue_dlg_clear_editors() -> None:
+    """Drop the shared editor widgets so the next kind renders clean tags."""
+    for shared_tag in CUE_DLG_VALUE_CONTAINERS:
+        if dpg.does_item_exist(shared_tag):
+            dpg.delete_item(shared_tag, children_only=True)
+
+
+def _cue_dlg_fit_height(prop: str | None) -> None:
+    """Fit the row dialog to the active property's editors (BUG-2026-09-12T191000).
+
+    corner renders 8 components + ms = 9 editor rows, which the fixed 470 px
+    window pushed below the visible area; a small property keeps the default
+    height and a named cap keeps the modal sane (taller content scrolls).
+    """
+    rows = 0
+    if prop is not None:
+        entry = catalog.PROPERTY_CATALOG[prop]
+        rows = len(entry["components"]) + (1 if entry["ms"] else 0)
+    height = CUE_DLG_BASE_HEIGHT + rows * CUE_DLG_EDITOR_ROW_HEIGHT
+    height = max(CUE_DLG_DEFAULT_HEIGHT, min(height, CUE_DLG_MAX_HEIGHT))
+    if dpg.does_item_exist("cue_dialog"):
+        dpg.configure_item("cue_dialog", height=height)
 
 
 def _dlg_float(tag: str, default: float) -> float:
@@ -6390,22 +6430,37 @@ def _cue_dlg_render_values(
     container: str, prop: str, prefilled: list[float] | None = None, ms_value: float = 0.0
 ) -> None:
     """Render the value/component + optional ms editors of a row property into
-    the given container (e36s05): one drag for a single-value property (tag
+    the given container (e36s05): one editor for a single-value property (tag
     cue_dlg_value), one labelled drag per component for multi-value properties
     (tags cue_dlg_v0..), plus an 'Animate (ms)' drag on ms-capable properties.
 
-    e36s06 real-DPG fix: the property and burst containers SHARE the fixed
-    editor tags, so both are cleared before rendering (a stale second set
-    would duplicate tags — real DPG raises) and the labels use themed_text:
-    raw dpg.add_text has no ``slot`` keyword, which raised and killed the
-    value area (user report: the Add cue row dialog cannot insert values).
+    The shared editor tags mean both containers are cleared first and the
+    labels use themed_text (raw dpg.add_text has no ``slot`` keyword, e36s06).
+    BUG-2026-09-12T191000: the cleanup loop must NOT reuse this function's
+    ``container`` parameter — doing so parented every editor to the hidden
+    burst group, so the property kind never showed its value. Family-aware
+    editors: an enum offers its named options, a no-argument trigger shows a
+    'fire' hint, everything else a drag.
     """
-    for container in ("cue_prop_values", "cue_burst_values"):
-        if dpg.does_item_exist(container):
-            dpg.delete_item(container, children_only=True)
+    _cue_dlg_clear_editors()
     entry = catalog.PROPERTY_CATALOG[prop]
     comps = entry["components"]
     pre = prefilled or [float(c["neutral"]) for c in comps]
+    if entry["family"] == catalog.FAMILY_TRIGGER and not catalog.trigger_carries_value(prop):
+        themed_text(CUE_DLG_FIRE_HINT, slot="text_dim", parent=container)
+    elif entry["family"] == catalog.FAMILY_ENUM:
+        _cue_dlg_add_enum_editor(container, entry, pre)
+    else:
+        _cue_dlg_add_component_editors(container, comps, pre)
+    if entry["ms"]:
+        _cue_dlg_add_ms_editor(container, ms_value)
+    _cue_dlg_fit_height(prop)
+
+
+def _cue_dlg_add_component_editors(
+    container: str, comps: list[dict[str, Any]], pre: list[float]
+) -> None:
+    """One labelled drag per component under the fixed editor tags."""
     if len(comps) == 1:
         comp = comps[0]
         themed_text("Value", slot="text_dim", parent=container)
@@ -6419,49 +6474,78 @@ def _cue_dlg_render_values(
             speed=0.01,
             tag="cue_dlg_value",
         )
-    else:
-        for i, comp in enumerate(comps):
-            themed_text(f"{comp['label']}", slot="text_dim", parent=container)
-            dpg.add_drag_float(
-                parent=container,
-                default_value=pre[i] if i < len(pre) else float(comp["neutral"]),
-                min_value=float(comp["min"]),
-                max_value=float(comp["max"]),
-                width=140,
-                format="%.2f",
-                speed=0.01,
-                tag=f"cue_dlg_v{i}",
-            )
-    if entry["ms"]:
-        themed_text("Animate (ms)", slot="text_dim", parent=container)
+        return
+    for i, comp in enumerate(comps):
+        themed_text(str(comp["label"]), slot="text_dim", parent=container)
         dpg.add_drag_float(
             parent=container,
-            default_value=ms_value if ms_value > 0 else 0.0,
+            default_value=pre[i] if i < len(pre) else float(comp["neutral"]),
+            min_value=float(comp["min"]),
+            max_value=float(comp["max"]),
             width=140,
-            format="%.0f",
-            speed=10.0,
-            min_value=0.0,
-            max_value=60_000.0,
-            tag="cue_dlg_ms",
+            format="%.2f",
+            speed=0.01,
+            tag=f"cue_dlg_v{i}",
         )
+
+
+def _cue_dlg_add_enum_editor(container: str, entry: dict[str, Any], pre: list[float]) -> None:
+    """An enum row picks its named option; the payload stores the index."""
+    options = [str(o) for o in entry["options"] or []]
+    index = max(0, min(round(pre[0]), len(options) - 1)) if options else 0
+    themed_text("Value", slot="text_dim", parent=container)
+    dpg.add_combo(
+        items=options,
+        default_value=options[index] if options else "",
+        width=140,
+        tag="cue_dlg_value",
+        parent=container,
+    )
+
+
+def _cue_dlg_add_ms_editor(container: str, ms_value: float) -> None:
+    """The optional native-animation duration of an ms-capable property."""
+    themed_text("Animate (ms)", slot="text_dim", parent=container)
+    dpg.add_drag_float(
+        parent=container,
+        default_value=ms_value if ms_value > 0 else 0.0,
+        width=140,
+        format="%.0f",
+        speed=10.0,
+        min_value=0.0,
+        max_value=60_000.0,
+        tag="cue_dlg_ms",
+    )
 
 
 def _cue_dlg_read_payload(prop: str) -> dict[str, Any]:
     """Read the value/ms fields rendered by _cue_dlg_render_values into the
-    model payload shape {property, value|values, ms?} (e36s05)."""
+    model payload shape {property, value|values, ms?} (e36s05). A no-argument
+    trigger carries no value: compose_send_args fires [] regardless."""
     entry = catalog.PROPERTY_CATALOG[prop]
     payload: dict[str, Any] = {"property": prop}
+    if entry["family"] == catalog.FAMILY_TRIGGER and not catalog.trigger_carries_value(prop):
+        return payload
     if len(entry["components"]) > 1:
         payload["values"] = [
             _dlg_float(f"cue_dlg_v{i}", float(c["neutral"]))
             for i, c in enumerate(entry["components"])
         ]
     else:
-        payload["value"] = _dlg_float("cue_dlg_value", 0.0)
+        payload["value"] = _cue_dlg_read_single_value(entry)
     ms = _dlg_float("cue_dlg_ms", 0.0)
     if ms > 0 and entry["ms"]:
         payload["ms"] = ms
     return payload
+
+
+def _cue_dlg_read_single_value(entry: dict[str, Any]) -> float:
+    """The single-value editor: an enum combo maps its option label to the index."""
+    options = [str(o) for o in entry["options"] or []]
+    if entry["family"] == catalog.FAMILY_ENUM and options:
+        label = str(dpg.get_value("cue_dlg_value"))
+        return float(options.index(label)) if label in options else 0.0
+    return _dlg_float("cue_dlg_value", 0.0)
 
 
 def _open_cue_row_dialog(mid: int, insert_after: int = -1, edit_index: int | None = None) -> None:
@@ -6493,7 +6577,7 @@ def _open_cue_row_dialog(mid: int, insert_after: int = -1, edit_index: int | Non
         tag="cue_dialog",
         modal=True,
         width=360,
-        height=470,
+        height=CUE_DLG_DEFAULT_HEIGHT,
         no_resize=True,
     ):
         themed_text("Kind", slot="text_dim")
