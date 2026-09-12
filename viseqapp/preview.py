@@ -29,11 +29,23 @@ from viseqapp.constants import (
     PREVIEW_MAX_FPS,
     PREVIEW_PATH_PREFIX,
     PREVIEW_PORT,
+    PREVIEW_SPEED_DEFAULT,
+    PREVIEW_SPEED_MAX,
+    PREVIEW_SPEED_MIN,
 )
 
 # The av package ships no type stubs; mypy runs with ignore_missing_imports.
 
 _DEFAULT_CAP = (PREVIEW_CAP_WIDTH, PREVIEW_CAP_HEIGHT)
+
+
+def clamp_preview_speed(rate: Any) -> float:
+    """Clamp a requested playback rate into the legal range (default on garbage)."""
+    try:
+        value = float(rate)
+    except (TypeError, ValueError):
+        return PREVIEW_SPEED_DEFAULT
+    return max(PREVIEW_SPEED_MIN, min(PREVIEW_SPEED_MAX, value))
 
 
 def preview_file_url(host: str, port: int, source_name: str) -> str:
@@ -81,9 +93,11 @@ class PreviewPlayer:
     onto ``state.preview_frames``. Playback: start() begins playing; pause() /
     resume() gate the loop; seek(fraction) jumps and — when paused — publishes
     exactly one frame at the target so a scrub bar shows feedback; close()
-    stops and joins the thread. Frames are scaled down to the cap and pushed at
-    most ``fps_cap`` per second (pass ``fps_cap=0`` to disable the gate, e.g.
-    in tests). ``position()`` is the seconds of the most recent decoded frame;
+    stops and joins the thread. Frames are scaled down to the cap, paced
+    against the wall clock from their PTS at the current ``speed`` (1.0 = real
+    time; ``set_speed``/``speed``) and pushed at most ``fps_cap`` per second of
+    MEDIA time (pass ``fps_cap=0`` to disable the gate, e.g. in tests).
+    ``position()`` is the seconds of the most recent published frame;
     ``error``/``done`` report terminal state.
     """
 
@@ -97,19 +111,27 @@ class PreviewPlayer:
         fps_cap: float = PREVIEW_MAX_FPS,
         cap: tuple[int, int] = _DEFAULT_CAP,
         autoplay: bool = True,
+        speed: float = PREVIEW_SPEED_DEFAULT,
     ) -> None:
         self.source_name = source_name
         self.url = url or preview_file_url(host or "127.0.0.1", port or PREVIEW_PORT, source_name)
         self._fps_cap = float(fps_cap or 0.0)
         self._cap = cap
         self._autoplay = autoplay
+        self._speed = clamp_preview_speed(speed)
 
         self._thread: threading.Thread | None = None
         self._running = False
         self._paused = not autoplay
         self._seek_frac: float | None = None  # pending seek (worker consumes)
-        self._position = 0.0  # seconds of the last decoded frame (worker writes)
+        self._pending_speed: float | None = None  # speed change (worker consumes)
+        self._position = 0.0  # seconds of the last published frame (worker writes)
         self._duration = 0.0  # seconds, resolved at open
+        # PTS pacing anchors: the wall clock and media seconds of the last
+        # published frame; the next frame sleeps until its PTS is due.
+        self._anchor_wall: float | None = None
+        self._anchor_pts = 0.0
+        self._last_media: float | None = None  # media seconds of the last push (fps cap)
         self.error: str | None = None  # terminal open/decode failure message
         self.done = False  # True once the thread has exited
 
@@ -129,6 +151,17 @@ class PreviewPlayer:
 
     def resume(self) -> None:
         self._paused = False
+        # re-anchor to "now": a long pause must not release a catch-up burst
+        self._anchor_wall = time.monotonic()
+        self._anchor_pts = self._position
+
+    def set_speed(self, rate: float) -> None:
+        """Request a playback rate (clamped); the worker applies it re-anchored."""
+        self._pending_speed = clamp_preview_speed(rate)
+
+    def speed(self) -> float:
+        """The requested/effective playback rate (1.0 = real time)."""
+        return self._pending_speed if self._pending_speed is not None else self._speed
 
     def seek(self, fraction: float) -> None:
         """Request a seek to a fraction (0..1) of the playable duration.
@@ -154,7 +187,7 @@ class PreviewPlayer:
     # -- internals ----------------------------------------------------------
 
     def _publish(self, frame: Any, tb: float) -> None:
-        """Scale + convert one decoded frame and push it onto the queue."""
+        """Scale + convert one decoded frame, push it, re-anchor the pacing."""
         arr = frame.to_ndarray(format="rgb24")  # (h, w, 3) uint8
         img = Image.fromarray(arr).convert("RGBA")
         if img.width > self._cap[0] or img.height > self._cap[1]:
@@ -163,7 +196,27 @@ class PreviewPlayer:
         state.preview_frames.put((self.source_name, rgba))
         pts = frame.pts
         if pts is not None:
-            self._position = pts * tb
+            media_s = float(pts) * tb
+            self._position = media_s
+            self._last_media = media_s
+            self._anchor_pts = media_s
+            self._anchor_wall = time.monotonic()
+
+    def _wait_until(self, target: float) -> bool:
+        """Sleep until the wall clock reaches ``target``.
+
+        Returns False when the wait must be abandoned (stopped, paused, or a
+        seek/speed command arrived), so the caller re-enters the command path.
+        """
+        while True:
+            remaining = target - time.monotonic()
+            if remaining <= 0:
+                return True
+            if not self._running or self._paused or self._seek_frac is not None:
+                return False
+            if self._pending_speed is not None:
+                return False
+            time.sleep(min(remaining, 0.05))
 
     def _run(self) -> None:
         try:
@@ -176,7 +229,6 @@ class PreviewPlayer:
             tb_base = stream.time_base
             tb = float(tb_base) if tb_base is not None else 1.0
             frames: Any = None  # decode generator — created lazily, fresh after every seek
-            last_push = 0.0  # wall time of the last pushed frame (fps gate)
 
             while self._running:
                 # 1) a pending seek is served before anything else: seek, then
@@ -195,14 +247,21 @@ class PreviewPlayer:
                         if pts * tb >= target - 0.5:
                             self._publish(frame, tb)
                             break
-                    last_push = time.monotonic()
                     if self._paused:
                         continue
-                # 2) paused: idle until a command arrives
+                # 2) apply a pending speed change re-anchored at the current
+                #    position, so the new rate starts from now (no time jump)
+                pending = self._pending_speed
+                if pending is not None:
+                    self._pending_speed = None
+                    self._speed = pending
+                    self._anchor_wall = time.monotonic()
+                    self._anchor_pts = self._position
+                # 3) paused: idle until a command arrives
                 if self._paused:
                     time.sleep(0.02)
                     continue
-                # 3) playing: decode the next frame
+                # 4) playing: decode the next frame
                 if frames is None:
                     frames = container.decode(stream)
                 frame = next(frames, None)
@@ -210,12 +269,23 @@ class PreviewPlayer:
                     # end of stream: restart from the beginning (preview loop)
                     self._seek_frac = 0.0
                     continue
-                if frame.pts is not None:
-                    self._position = frame.pts * tb
-                if self._fps_cap and time.monotonic() - last_push < 1.0 / self._fps_cap:
-                    continue  # frame dropped (decoded but not pushed)
+                media_s = float(frame.pts) * tb if frame.pts is not None else None
+                # fps cap in MEDIA time: drop a frame whose PTS is too close to
+                # the last pushed one, so a high-fps source is thinned — never
+                # sped up (the cap must not compress the timeline)
+                if (
+                    media_s is not None
+                    and self._fps_cap
+                    and self._last_media is not None
+                    and media_s - self._last_media + 1e-6 < 1.0 / self._fps_cap
+                ):
+                    continue
+                # PTS pacing: sleep until this frame is due at the chosen speed
+                if media_s is not None and self._anchor_wall is not None:
+                    due = self._anchor_wall + (media_s - self._anchor_pts) / self._speed
+                    if not self._wait_until(due):
+                        continue
                 self._publish(frame, tb)
-                last_push = time.monotonic()
         except Exception as e:
             self.error = str(e)
         finally:

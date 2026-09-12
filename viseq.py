@@ -129,6 +129,10 @@ from viseqapp.constants import (
     NUM_STEPS,
     NUM_TRACKS,
     PREVIEW_PORT,
+    PREVIEW_SPEED_DEFAULT,
+    PREVIEW_SPEED_MAX,
+    PREVIEW_SPEED_MIN,
+    PREVIEW_SPEED_STEP,
     PROJECT_FILE_EXTENSION,
     PROJECT_FORMAT,
     PROJECT_VERSION,
@@ -3080,9 +3084,14 @@ PREVIEW_IMAGE_TAG = "preview_img"
 PREVIEW_TIME_TAG = "preview_time"
 PREVIEW_SEEK_TAG = "preview_seek"
 PREVIEW_PLAYBTN_TAG = "preview_play_btn"
+PREVIEW_SPEED_TAG = "preview_speed"
+PREVIEW_SPEED_RESET_TAG = "preview_speed_reset"
 PREVIEW_WAIT_TAG = "preview_wait_text"
 PREVIEW_STATUS_TAG = "preview_status_text"
 PREVIEW_MSG_TEXT_TAG = "preview_msg_text"
+# px of fixed chrome in the transport row (play button, timecode, Speed field +
+# label + 1x reset, Close); the seek slider takes the remaining window width.
+PREVIEW_TRANSPORT_CHROME_W = 480
 
 # Default window geometry when no remembered rect exists yet (a session rect
 # is remembered while the app runs and reused for the next preview).
@@ -3173,7 +3182,7 @@ def _layout_preview_content() -> None:
     h = max(200, int(dpg.get_item_height(PREVIEW_WINDOW_TAG) or 0) or PREVIEW_WIN_H)
     # transport row: fixed buttons/time, the seek slider takes the rest
     if dpg.does_item_exist(PREVIEW_SEEK_TAG):
-        dpg.configure_item(PREVIEW_SEEK_TAG, width=max(80, w - 330))
+        dpg.configure_item(PREVIEW_SEEK_TAG, width=max(80, w - PREVIEW_TRANSPORT_CHROME_W))
     if dpg.does_item_exist(PREVIEW_STATUS_TAG):
         dpg.configure_item(PREVIEW_STATUS_TAG, wrap=max(200, w - 24))
     # the video fills the width and keeps its aspect, leaving room for the
@@ -3214,7 +3223,8 @@ def _open_preview_window(target_id: str, message: str | None = None) -> None:
             dpg.add_button(label="Close", width=90, callback=close_source_preview)
     else:
         with dpg.window(
-            label=f"Preview — {target_id}",
+            # ASCII separator: window titles use the default font, which has no glyph for "—"
+            label=f"Preview - {target_id}",
             tag=PREVIEW_WINDOW_TAG,
             width=w,
             height=h,
@@ -3233,11 +3243,28 @@ def _open_preview_window(target_id: str, message: str | None = None) -> None:
                     default_value=0.0,
                     min_value=0.0,
                     max_value=1.0,
-                    width=max(80, w - 330),
+                    width=max(80, w - PREVIEW_TRANSPORT_CHROME_W),
                     tag=PREVIEW_SEEK_TAG,
                     callback=on_preview_seek,
                 )
                 themed_text("0:00 / 0:00", slot="text", tag=PREVIEW_TIME_TAG)
+                themed_text("Speed", slot="text_dim")
+                dpg.add_drag_float(
+                    default_value=PREVIEW_SPEED_DEFAULT,
+                    min_value=PREVIEW_SPEED_MIN,
+                    max_value=PREVIEW_SPEED_MAX,
+                    speed=PREVIEW_SPEED_STEP,
+                    format="%.2fx",
+                    width=64,
+                    tag=PREVIEW_SPEED_TAG,
+                    callback=on_preview_speed,
+                )
+                dpg.add_button(
+                    label="1x",
+                    width=30,
+                    tag=PREVIEW_SPEED_RESET_TAG,
+                    callback=on_preview_speed_reset,
+                )
                 dpg.add_button(label="Close", width=60, callback=close_source_preview)
             themed_text("", slot="text_dim", tag=PREVIEW_STATUS_TAG)
     # window resize handler: inner content follows the window size
@@ -3347,6 +3374,24 @@ def on_preview_play_button(sender: Any = None, app_data: Any = None, user_data: 
         state.preview_playing = True
         if dpg.does_item_exist(PREVIEW_PLAYBTN_TAG):
             dpg.set_item_label(PREVIEW_PLAYBTN_TAG, "Pause")
+
+
+def on_preview_speed(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Speed field changed (e38 BUG-2026-09-12): clamp, drive the transport,
+    and reflect the clamped value back into the widget."""
+    rate = preview.clamp_preview_speed(app_data)
+    if _preview_player is not None:
+        _preview_player.set_speed(rate)
+    if dpg.does_item_exist(PREVIEW_SPEED_TAG):
+        dpg.set_value(PREVIEW_SPEED_TAG, rate)
+
+
+def on_preview_speed_reset(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """One-click reset of the playback rate to real time (the default)."""
+    if _preview_player is not None:
+        _preview_player.set_speed(PREVIEW_SPEED_DEFAULT)
+    if dpg.does_item_exist(PREVIEW_SPEED_TAG):
+        dpg.set_value(PREVIEW_SPEED_TAG, PREVIEW_SPEED_DEFAULT)
 
 
 def on_preview_seek(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:

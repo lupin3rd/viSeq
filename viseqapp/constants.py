@@ -274,6 +274,13 @@ PREVIEW_CAP_WIDTH = 640  # px texture-cap width (measured budget, SPIKE-source-p
 PREVIEW_CAP_HEIGHT = 360  # px texture-cap height
 PREVIEW_MAX_FPS = 30.0  # decoded/pushed frame ceiling
 PREVIEW_HTTP_TIMEOUT = 10.0  # s: av.open + meta request timeout
+# e38 BUG-2026-09-12: playback rate. The transport is paced against the wall
+# clock from the frame PTS; 1.0 is real time (the default). The control lets the
+# user speed up/slow down and reset to the default.
+PREVIEW_SPEED_DEFAULT = 1.0  # real-time playback (the reset target)
+PREVIEW_SPEED_MIN = 0.25  # slowest selectable rate (~4x longer)
+PREVIEW_SPEED_MAX = 4.0  # fastest selectable rate
+PREVIEW_SPEED_STEP = 0.05  # drag speed of the Speed field
 
 
 # Palette slots drive every chrome color: the global theme, the per-item themes, explicit
