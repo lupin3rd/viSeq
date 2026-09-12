@@ -21,6 +21,7 @@ from viseqapp.constants import (
     MIDI_ACTION_MAPPER_LINE,
     MIDI_ACTION_MAPPER_MAPPING,
     MIDI_ACTION_MAPPER_RESET,
+    MIDI_ACTION_MONITOR_TOGGLE,
     MIDI_ACTION_NUDGE_BACK,
     MIDI_ACTION_NUDGE_FORWARD,
     MIDI_ACTION_REGEN_SELECTED,
@@ -43,6 +44,9 @@ CATEGORY_MAPPER = "mapper"
 
 # e33s04: Mediagrid actions (source browsing + tile-anchored context rows).
 CATEGORY_MEDIAGRID = "mediagrid"
+
+# e39s01: diagnostic window actions (MIDI Monitor show/hide).
+CATEGORY_MONITOR = "monitor"
 
 # Kinds describe how the incoming MIDI value maps onto the action.
 KIND_MOMENTARY = "momentary"  # note edges trigger; CC fires at the >=64 threshold
@@ -140,6 +144,9 @@ ACTION_SPECS: dict[str, ActionSpec] = {
         "Enable color correction",
         CATEGORY_MEDIAGRID,
         KIND_MOMENTARY,
+    ),
+    MIDI_ACTION_MONITOR_TOGGLE: ActionSpec(
+        MIDI_ACTION_MONITOR_TOGGLE, "MIDI Monitor window", CATEGORY_MONITOR, KIND_MOMENTARY
     ),
 }
 

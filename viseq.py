@@ -21,7 +21,7 @@ from PIL import Image
 from pythonosc import dispatcher, udp_client
 
 import viseqapp  # noqa: F401  scaffold hook (REFACTOR_LATEST.md commit 1): proves the package import path works at boot
-from viseqapp import actions, catalog, cue, leap, mapper, preview, state
+from viseqapp import actions, catalog, cue, leap, mapper, midimonitor, preview, state
 from viseqapp.audio import (
     _set_band_variable,
     apply_spectrum_agc,
@@ -102,6 +102,7 @@ from viseqapp.constants import (
     MIDI_ACTION_MAPPER_LINE,
     MIDI_ACTION_MAPPER_MAPPING,
     MIDI_ACTION_MAPPER_RESET,
+    MIDI_ACTION_MONITOR_TOGGLE,
     MIDI_ACTION_NUDGE_BACK,
     MIDI_ACTION_NUDGE_FORWARD,
     MIDI_ACTION_REGEN_SELECTED,
@@ -118,6 +119,11 @@ from viseqapp.constants import (
     MIDI_CC_TRIGGER_THRESHOLD,
     MIDI_CLOCK_PULSES_PER_BEAT,
     MIDI_LEARN_TIMEOUT_SECONDS,
+    MIDI_MONITOR_OUTCOME_LEARN,
+    MIDI_MONITOR_OUTCOME_MATCH,
+    MIDI_MONITOR_OUTCOME_NOBIND,
+    MIDI_MONITOR_OUTCOME_NOMATCH,
+    MIDI_MONITOR_REFRESH_INTERVAL,
     MIDI_OPEN_RETRY_COOLDOWN_SECONDS,
     MONITOR_ALPHA_W,
     MONITOR_DISC_R,
@@ -4049,6 +4055,8 @@ _MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
     MIDI_ACTION_SEQ_ROW_ENABLE: _exec_seq_row_active_true,
     MIDI_ACTION_SEQ_ROW_DISABLE: _exec_seq_row_active_false,
     MIDI_ACTION_ENABLE_CORRECTION: _exec_enable_correction,
+    # e39s01: the MIDI Monitor window toggle (mappable per the e33 rule)
+    MIDI_ACTION_MONITOR_TOGGLE: lambda p, v: _exec_monitor_toggle(p, v),
 }
 
 _last_unknown_action_log: dict[str, float] = {}  # action id -> last log time (throttle)
@@ -4113,12 +4121,59 @@ def _log_first_midi_message(msg: Any, port_name: str) -> None:
         append_log("MIDI", f"first msg on {port_name}: {msg_type} {number} val {value}")
 
 
+def _monitor_outcome_for(action: str, params: dict[str, Any], value: int) -> tuple[str, str]:
+    """The MIDI Monitor's (outcome, detail) for one resolved binding (e39s01).
+
+    A Mapper value binding reports the mapping-level result through the pure
+    preview (SENT / HOLD / MUTED) WITHOUT sending OSC; every other action
+    reports MATCH with its id and raw value.
+    """
+    if action == MIDI_ACTION_MAPPER_MAPPING:
+        mapping_id = int(params.get("mapping_id", 0))
+        mapping = mapper.find_mapping(mapping_id)
+        if mapping is not None:
+            effective, tag = mapper.preview_mapping_value(mapping, float(value))
+            prop = str(mapping.get("property", "?"))
+            return tag, f"mapping #{mapping_id} {prop} -> {effective:.2f}"
+    return MIDI_MONITOR_OUTCOME_MATCH, f"{action} v={value}"
+
+
+def _record_monitor_rx(
+    port_name: str,
+    msg_type: str | None,
+    channel: int,
+    number: int,
+    value: int,
+    outcome: str,
+    detail: str,
+) -> None:
+    """Report one parsed message to the MIDI Monitor (e39s01) — observation only.
+
+    Release edges (note_off / note_on velocity 0) parse to msg_type None and are
+    not messages: they are skipped.
+    """
+    if msg_type is None:
+        return
+    midimonitor.record_rx(
+        port_name, str(msg_type), int(channel), int(number), float(value), outcome, detail
+    )
+
+
 def handle_midi_message(msg: Any, port_name: str) -> None:
-    """Route one incoming message (worker thread): learn capture first, then dispatch."""
+    """Route one incoming message (main thread): learn capture first, then dispatch.
+
+    e39s01: every parsed message is also reported to the MIDI Monitor with its
+    resolution outcome — observation only, the dispatch below is unchanged.
+    """
     _log_first_midi_message(msg, port_name)
+    msg_type, number, raw = _parse_midi_msg(msg)
+    channel = int(getattr(msg, "channel", 0))
     if state.midi_learn_pending is not None:
         source = binding_source_from_message(msg, port_name)
         if source is not None:
+            _record_monitor_rx(
+                port_name, msg_type, channel, number, raw, MIDI_MONITOR_OUTCOME_LEARN, "captured"
+            )
             ui_task(lambda: midi_learn_complete(source, port_name))
             return
     controller = find_controller_by_port(port_name)
@@ -4128,12 +4183,15 @@ def handle_midi_message(msg: Any, port_name: str) -> None:
         )
     else:
         bindings = None  # legacy flat lists (pre-e14 paths/tests)
-    resolved = False
+    outcome = MIDI_MONITOR_OUTCOME_NOBIND if bindings is None else MIDI_MONITOR_OUTCOME_NOMATCH
+    details: list[str] = []
     for action, params, value in resolve_midi_message(msg, port_name, bindings):
-        resolved = True
         _midi_enqueue_execute(action, params, value)
-    if not resolved and bindings is not None:
+        outcome, detail = _monitor_outcome_for(action, params, value)
+        details.append(detail)
+    if not details and bindings is not None:
         _log_unmatched_midi(msg, port_name)
+    _record_monitor_rx(port_name, msg_type, channel, number, raw, outcome, "; ".join(details))
 
 
 def _exit_midi_learn() -> None:
@@ -4164,6 +4222,7 @@ def _refresh_learn_surfaces() -> None:
     _sync_media_learn_bar()
     _sync_sequencer_learn_strip()
     _sync_seq_row_learn_strip()
+    _sync_monitor_learn_marker()
 
 
 def learn_marker(
@@ -4631,6 +4690,331 @@ def show_midi_window(sender: Any = None, app_data: Any = None, user_data: Any = 
     render_controllers_ui()
     dpg.show_item("midi_window")
     dpg.focus_item("midi_window")  # e17: a shown window must come to the front
+
+
+# --- MIDI MONITOR (e39s01) ---------------------------------------------------
+# Diagnostic window: the incoming MIDI stream WITH the resolution outcome plus a
+# per-control calibration table. NOT in LAYOUT_WINDOW_TAGS — a saved layout must
+# never pop a debug window at boot; geometry is session-only.
+MIDI_MONITOR_WINDOW_WIDTH = 980
+MIDI_MONITOR_WINDOW_HEIGHT = 620
+MIDI_MONITOR_TEXT_HEIGHT = 250
+MIDI_MONITOR_ALL_PORTS = "All ports"
+
+_midi_monitor_paused = False
+_midi_monitor_port: str | None = None
+_midi_monitor_ports: list[str] = []
+_midi_monitor_filter_control: tuple[str, str, int, int] | None = None
+_midi_monitor_control_items: dict[str, tuple[str, str, int, int]] = {}
+_midi_monitor_mapping_items: dict[str, int] = {}
+_midi_monitor_last_revision = -1
+_midi_monitor_last_refresh = 0.0
+
+
+def _midi_monitor_port_options() -> list[str]:
+    """The port-filter options: 'All ports' plus every port seen or configured."""
+    ports = {str(row["port"]) for row in midimonitor.snapshot_controls()}
+    ports.update(str(c.get("port", "")) for c in midi_controllers if c.get("port"))
+    return [MIDI_MONITOR_ALL_PORTS, *sorted(p for p in ports if p)]
+
+
+def _monitor_sync_ports() -> None:
+    """Keep the port combo in sync with the ports seen/configured (e39s01).
+
+    Tracks the last rendered option list in a module global instead of reading
+    the widget: a reconfigure happens only when the set actually changed.
+    """
+    global _midi_monitor_ports
+    options = _midi_monitor_port_options()
+    if options == _midi_monitor_ports:
+        return
+    _midi_monitor_ports = options
+    if dpg.does_item_exist("midi_monitor_port"):
+        dpg.configure_item("midi_monitor_port", items=options)
+
+
+def _control_label(control: tuple[str, str, int, int]) -> str:
+    """Picker label of one control: 'cc ch0 #7 @port'."""
+    port, msg_type, channel, number = control
+    return f"{msg_type} ch{int(channel)} #{int(number)} @{port}"
+
+
+def _mapping_label(mapping: dict[str, Any]) -> str:
+    """Picker label of one Mapper mapping: '#3 speed (clipA)'."""
+    return f"#{int(mapping['id'])} {mapping.get('property', '?')} ({mapping.get('target_id', '?')})"
+
+
+def _monitor_sync_controls() -> None:
+    """Keep the control + mapping pickers in sync (e39s03).
+
+    Tracks the last rendered items in module globals and reconfigures only when
+    the sets changed, so a selected value is never reset per refresh.
+    """
+    global _midi_monitor_control_items, _midi_monitor_mapping_items
+    controls = {
+        _control_label(tuple(row["key"])): tuple(row["key"])
+        for row in midimonitor.snapshot_controls()
+    }
+    if controls != _midi_monitor_control_items:
+        _midi_monitor_control_items = controls
+        if dpg.does_item_exist("midi_monitor_control_combo"):
+            dpg.configure_item("midi_monitor_control_combo", items=list(controls))
+    mappings = {_mapping_label(m): int(m["id"]) for m in state.mapper_mappings}
+    if mappings != _midi_monitor_mapping_items:
+        _midi_monitor_mapping_items = mappings
+        if dpg.does_item_exist("midi_monitor_mapping_combo"):
+            dpg.configure_item("midi_monitor_mapping_combo", items=list(mappings))
+
+
+def show_midi_monitor(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Open (or raise) the MIDI Monitor diagnostic window (e39s01)."""
+    if dpg.does_item_exist("midi_monitor_window"):
+        dpg.show_item("midi_monitor_window")
+        dpg.focus_item("midi_monitor_window")
+        return
+    _build_midi_monitor_window()
+
+
+def _build_midi_monitor_window() -> None:
+    """Build the monitor window (toolbar + stream/controls panes, e39s01)."""
+    with dpg.window(
+        label="MIDI Monitor",
+        tag="midi_monitor_window",
+        width=MIDI_MONITOR_WINDOW_WIDTH,
+        height=MIDI_MONITOR_WINDOW_HEIGHT,
+        pos=(60, 60),
+    ):
+        with dpg.group(horizontal=True):
+            dpg.add_button(
+                label="Pause", tag="midi_monitor_pause", callback=toggle_midi_monitor_pause
+            )
+            dpg.add_button(label="Clear", callback=clear_midi_monitor)
+            dpg.add_button(label="Reset stats", callback=reset_midi_monitor_stats)
+            dpg.add_button(label="Copy report", callback=copy_midi_monitor_report)
+            themed_text("Port", slot="text_dim")
+            dpg.add_combo(
+                items=_midi_monitor_port_options(),
+                default_value=MIDI_MONITOR_ALL_PORTS,
+                width=220,
+                tag="midi_monitor_port",
+                callback=on_midi_monitor_port,
+            )
+            dpg.add_group(tag="midi_monitor_learn_slot", horizontal=True)
+        with dpg.group(horizontal=True):
+            themed_text("Control", slot="text_dim")
+            dpg.add_combo(items=[], width=240, tag="midi_monitor_control_combo")
+            dpg.add_button(label="Filter", callback=filter_midi_monitor_control)
+            dpg.add_button(label="Copy id", callback=copy_midi_monitor_control_id)
+            themed_text("Mapping", slot="text_dim")
+            dpg.add_combo(items=[], width=240, tag="midi_monitor_mapping_combo")
+            dpg.add_button(label="Assign", callback=assign_midi_monitor_control)
+        themed_text("Stream (newest first)", slot="text_dim")
+        dpg.add_input_text(
+            tag="midi_monitor_stream_text",
+            multiline=True,
+            readonly=True,
+            width=-1,
+            height=MIDI_MONITOR_TEXT_HEIGHT,
+            default_value="No MIDI input yet.",
+        )
+        themed_text("Controls", slot="text_dim")
+        dpg.add_input_text(
+            tag="midi_monitor_controls_text",
+            multiline=True,
+            readonly=True,
+            width=-1,
+            height=MIDI_MONITOR_TEXT_HEIGHT,
+            default_value="No control seen yet.",
+        )
+    _sync_monitor_learn_marker()
+    refresh_midi_monitor()
+
+
+def toggle_midi_monitor_window(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Show / close the MIDI Monitor window (MIDI_MONITOR_TOGGLE executor, e39s01)."""
+    if dpg.does_item_exist("midi_monitor_window"):
+        dpg.delete_item("midi_monitor_window")
+        return
+    show_midi_monitor()
+
+
+def _exec_monitor_toggle(params: dict[str, Any], value: int) -> None:
+    """e39s01: a momentary press (CC >= 64 / note) shows or closes the monitor."""
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    toggle_midi_monitor_window()
+
+
+def _sync_monitor_learn_marker() -> None:
+    """(Re)render the monitor toggle's learn marker (e39s01, e33 rule).
+
+    Markers exist only while learn mode is on; _refresh_learn_surfaces calls
+    this on every learn transition (the slot lives in the window toolbar).
+    """
+    if not dpg.does_item_exist("midi_monitor_learn_slot"):
+        return
+    dpg.delete_item("midi_monitor_learn_slot", children_only=True)
+    if state.midi_learn_mode:
+        learn_marker(
+            MIDI_ACTION_MONITOR_TOGGLE,
+            {},
+            parent="midi_monitor_learn_slot",
+            tag="midi_monitor_mk_toggle",
+            tooltip="Map: MIDI Monitor window",
+        )
+
+
+def on_midi_monitor_port(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Port-filter combo: 'All ports' clears the filter, any port narrows both panes."""
+    global _midi_monitor_port
+    value = str(app_data or MIDI_MONITOR_ALL_PORTS)
+    _midi_monitor_port = None if value == MIDI_MONITOR_ALL_PORTS else value
+    refresh_midi_monitor()
+
+
+def toggle_midi_monitor_pause(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Pause freezes the view (recording continues); resume repaints at once."""
+    global _midi_monitor_paused
+    _midi_monitor_paused = not _midi_monitor_paused
+    if dpg.does_item_exist("midi_monitor_pause"):
+        dpg.set_item_label("midi_monitor_pause", "Resume" if _midi_monitor_paused else "Pause")
+    if not _midi_monitor_paused:
+        refresh_midi_monitor()
+
+
+def clear_midi_monitor(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Drop both panes' data (Clear button, e39s01)."""
+    midimonitor.clear()
+    refresh_midi_monitor()
+
+
+def reset_midi_monitor_stats(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Zero the per-control envelopes/counters but keep the rows (e39s02)."""
+    midimonitor.reset_controls()
+    refresh_midi_monitor()
+
+
+def _midi_monitor_texts() -> tuple[str, str]:
+    """The current (stream, controls) pane texts under the active filters."""
+    port = _midi_monitor_port
+    stream = midimonitor.format_stream(
+        midimonitor.snapshot_stream(port=port, control=_midi_monitor_filter_control)
+    )
+    return stream, midimonitor.format_controls(midimonitor.snapshot_controls(port=port))
+
+
+def refresh_midi_monitor() -> None:
+    """Write both pane texts and remember the engine revision (e39s01)."""
+    global _midi_monitor_last_revision, _midi_monitor_last_refresh
+    if not dpg.does_item_exist("midi_monitor_window"):
+        return
+    _midi_monitor_last_revision = midimonitor.revision()
+    _midi_monitor_last_refresh = time.monotonic()
+    _monitor_sync_ports()
+    _monitor_sync_controls()
+    stream_text, controls_text = _midi_monitor_texts()
+    dpg.set_value("midi_monitor_stream_text", stream_text)
+    dpg.set_value("midi_monitor_controls_text", controls_text)
+
+
+def copy_midi_monitor_report(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Put the stream + controls snapshot on the clipboard (Copy report)."""
+    stream_text, controls_text = _midi_monitor_texts()
+    dpg.set_clipboard_text(midimonitor.format_report(stream_text, controls_text))
+
+
+def _midi_monitor_selected_control() -> tuple[str, str, int, int] | None:
+    """The control picked in the picker (None when nothing is selected)."""
+    return _midi_monitor_control_items.get(str(dpg.get_value("midi_monitor_control_combo")))
+
+
+def filter_midi_monitor_control(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Toggle the stream filter onto the picked control (e39s03)."""
+    global _midi_monitor_filter_control
+    control = _midi_monitor_selected_control()
+    if control is None:
+        return
+    _midi_monitor_filter_control = None if control == _midi_monitor_filter_control else control
+    refresh_midi_monitor()
+
+
+def copy_midi_monitor_control_id(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Put the picked control's id on the clipboard (e39s03)."""
+    control = _midi_monitor_selected_control()
+    if control is None:
+        return
+    dpg.set_clipboard_text(" ".join(str(part) for part in control))
+
+
+def assign_midi_monitor_control(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Bind the picked control to the picked Mapper mapping (e39s03)."""
+    control = _midi_monitor_selected_control()
+    mapping_id = _midi_monitor_mapping_items.get(str(dpg.get_value("midi_monitor_mapping_combo")))
+    if control is None or mapping_id is None:
+        return
+    assign_control_to_mapping(control, mapping_id)
+
+
+def assign_control_to_mapping(control: tuple[str, str, int, int], mapping_id: int) -> bool:
+    """Bind an already-seen control to a Mapper mapping immediately (e39s03).
+
+    The reverse of a learn session: the monitor already knows the source
+    (device/channel/type/number), so the dispatch binding lands on the owning
+    controller (or the legacy flat list) and the mapping's stored MIDI source
+    plus its 0..127 input range are set at once. An unknown mapping id is a
+    logged no-op.
+    """
+    port, msg_type, channel, number = control
+    if mapper.find_mapping(mapping_id) is None:
+        log_error("MIDI Monitor", f"no mapping {mapping_id}")
+        return False
+    source: dict[str, Any] = {
+        "device": port,
+        "channel": int(channel),
+        "type": msg_type,
+        "number": int(number),
+    }
+    binding = {**source, "action": MIDI_ACTION_MAPPER_MAPPING, "params": {"mapping_id": mapping_id}}
+    controller = find_controller_by_port(port)
+    if controller is not None:
+        controller.setdefault("bindings", []).append(binding)
+    else:
+        midi_bindings.append(binding)
+    save_midi_controllers()
+    mapper.set_mapping_midi(mapping_id, binding)
+    refresh_midi_mappings_ui()
+    refresh_mapper_ui()
+    return True
+
+
+def tick_midi_monitor() -> None:
+    """Refresh the MIDI Monitor panes at the capped cadence (e39s01).
+
+    Cheap no-op when the window is closed or the engine revision is unchanged;
+    a spinning wheel coalesces to at most one repaint per
+    MIDI_MONITOR_REFRESH_INTERVAL.
+    """
+    if not dpg.does_item_exist("midi_monitor_window") or _midi_monitor_paused:
+        return
+    if midimonitor.revision() == _midi_monitor_last_revision:
+        return
+    if time.monotonic() - _midi_monitor_last_refresh < MIDI_MONITOR_REFRESH_INTERVAL:
+        return
+    refresh_midi_monitor()
 
 
 def show_leap_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -8472,6 +8856,7 @@ with dpg.viewport_menu_bar():
         dpg.add_menu_item(label="New Monitor Player", callback=new_monitor_player)
         dpg.add_menu_item(label="Show Mapper", callback=show_mapper_window)  # e16
         dpg.add_menu_item(label="Show Logs", callback=show_logs_window)
+        dpg.add_menu_item(label="Show MIDI Monitor", callback=show_midi_monitor)  # e39s01
         dpg.add_menu_item(label="Show Info", callback=show_help_window)
         dpg.add_separator(parent="menu_windows")  # e17: open windows below the actions
         # the live window list is rebuilt by refresh_window_menu() (e17)
@@ -8537,6 +8922,8 @@ try:
         tick_project_dirty(time.time())  # e37s03: unsaved-changes marker cadence
 
         tick_cue_triggers()  # e35s03: cue-list card running labels (idle-cheap)
+
+        tick_midi_monitor()  # e39s01: MIDI Monitor panes (idle-cheap, revision-gated)
 
         tick_midi_learn_timeout()  # e18: expire stale MIDI Learn sessions (incl. mapper)
 

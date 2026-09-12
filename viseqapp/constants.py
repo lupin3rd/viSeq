@@ -452,6 +452,26 @@ MIDI_ACTION_SEQ_ROW_ASSIGN = "seq_row_assign"  # selected source -> a sequencer 
 MIDI_ACTION_SEQ_ROW_ENABLE = "seq_row_enable"  # activate every step of a sequencer row
 MIDI_ACTION_SEQ_ROW_DISABLE = "seq_row_disable"  # deactivate every step of a sequencer row
 MIDI_ACTION_ENABLE_CORRECTION = "enable_correction"  # arm the SELECTED source's CC block
+MIDI_ACTION_MONITOR_TOGGLE = "monitor_toggle"  # e39s01: show/hide the MIDI Monitor window
+
+
+# e39s01: MIDI Monitor (diagnostic window). The capture is bounded so a spinning
+# wheel can never grow memory; coalescing is for display only (one row per
+# control with last/min/max/count). The neutral centre is the app-wide CC/pitch
+# midpoint used by _parse_midi_msg; the outcome tags are what the stream and
+# controls panes render.
+MIDI_MONITOR_STREAM_LIMIT = 400  # newest stream entries kept
+MIDI_MONITOR_CONTROL_LIMIT = 256  # distinct controls tracked (oldest activity evicted)
+MIDI_MONITOR_NEUTRAL_CENTRE = 64
+MIDI_MONITOR_VALUE_MAX = 127.0
+MIDI_MONITOR_REFRESH_INTERVAL = 0.1  # s; UI text blocks refresh at most this often
+MIDI_MONITOR_OUTCOME_LEARN = "LEARN"
+MIDI_MONITOR_OUTCOME_MATCH = "MATCH"
+MIDI_MONITOR_OUTCOME_SENT = "SENT"
+MIDI_MONITOR_OUTCOME_HOLD = "HOLD"
+MIDI_MONITOR_OUTCOME_MUTED = "MUTED"
+MIDI_MONITOR_OUTCOME_NOMATCH = "NOMATCH"
+MIDI_MONITOR_OUTCOME_NOBIND = "NOBIND"
 
 
 # e33s02: momentary learn actions trigger at CC value >= this threshold (MIDI's

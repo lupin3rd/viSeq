@@ -12,7 +12,13 @@ import copy
 from typing import Any
 
 from viseqapp import catalog, leap, state
-from viseqapp.constants import MAPPER_MAX_MAPPINGS, MAPPER_PERSISTED_KEYS
+from viseqapp.constants import (
+    MAPPER_MAX_MAPPINGS,
+    MAPPER_PERSISTED_KEYS,
+    MIDI_MONITOR_OUTCOME_HOLD,
+    MIDI_MONITOR_OUTCOME_MUTED,
+    MIDI_MONITOR_OUTCOME_SENT,
+)
 from viseqapp.osc import osc_client
 from viseqapp.queues import append_log
 
@@ -882,6 +888,57 @@ def _input_window(in_from: float, in_to: float) -> tuple[float, float]:
     return min(in_from, in_to), max(in_from, in_to)
 
 
+def has_input_window(mapping: dict[str, Any]) -> bool:
+    """True when the mapping carries a usable input window (from != to)."""
+    in_from, in_to = mapping.get("input_from"), mapping.get("input_to")
+    return in_from is not None and in_to is not None and float(in_from) != float(in_to)
+
+
+def input_in_window(mapping: dict[str, Any], raw: float) -> bool:
+    """True when a raw source value falls inside the mapping's input window.
+
+    Inclusive on both edges (a single-message range matches); a mapping without
+    a usable window is never "in window" (callers treat it as undriven).
+    """
+    if not has_input_window(mapping):
+        return False
+    lo, hi = _input_window(float(mapping["input_from"]), float(mapping["input_to"]))
+    return lo <= float(raw) <= hi
+
+
+def _raw_unit(mapping: dict[str, Any], raw: float) -> float | None:
+    """Unit 0..1 for a raw value, or None when the mapping must HOLD.
+
+    A missing/degenerate input range yields unit 0.0 (output_from); a raw value
+    outside a real window yields None (the e23/e27 zone-ownership hold).
+    """
+    if not has_input_window(mapping):
+        return 0.0
+    if not input_in_window(mapping, raw):
+        return None
+    in_from, in_to = float(mapping["input_from"]), float(mapping["input_to"])
+    return _clamp((float(raw) - in_from) / (in_to - in_from), 0.0, 1.0)
+
+
+def preview_mapping_value(mapping: dict[str, Any], raw: float) -> tuple[float, str]:
+    """Pure diagnostic preview of what a raw value would do (e39s01).
+
+    Mirrors apply_input_value WITHOUT sending: disabled -> MUTED (value
+    unchanged), outside a real window -> HOLD (value unchanged), otherwise the
+    value the mapping would take. Returns (effective_value, tag). Used by the
+    MIDI Monitor; the dispatch path itself is untouched.
+    """
+    if not mapping.get("enabled", False):
+        return float(mapping["value"]), MIDI_MONITOR_OUTCOME_MUTED
+    unit = _raw_unit(mapping, raw)
+    if unit is None:
+        return float(mapping["value"]), MIDI_MONITOR_OUTCOME_HOLD
+    value = float(mapping["output_from"]) + unit * (
+        float(mapping["output_to"]) - float(mapping["output_from"])
+    )
+    return value, MIDI_MONITOR_OUTCOME_SENT
+
+
 def apply_input_value(mapping_id: int, raw: float) -> float:
     """Drive a mapping from a raw source value (band level / MIDI value, e23s02).
 
@@ -899,14 +956,9 @@ def apply_input_value(mapping_id: int, raw: float) -> float:
     mapping = find_mapping(mapping_id)
     if mapping is None:
         return 0.0
-    in_from, in_to = mapping["input_from"], mapping["input_to"]
-    if in_from is None or in_to is None or in_from == in_to:
-        unit = 0.0
-    else:
-        lo, hi = _input_window(float(in_from), float(in_to))
-        if not (lo <= float(raw) <= hi):
-            return float(mapping["value"])  # outside my window: hold (zone ownership)
-        unit = _clamp((float(raw) - float(in_from)) / (float(in_to) - float(in_from)), 0.0, 1.0)
+    unit = _raw_unit(mapping, raw)
+    if unit is None:
+        return float(mapping["value"])  # outside my window: hold (zone ownership)
     return apply_unit_value(mapping_id, unit)
 
 
