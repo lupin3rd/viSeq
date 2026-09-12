@@ -5867,8 +5867,11 @@ def _route_origin_label(route: dict[str, Any]) -> str:
 def _render_route_row(route: dict[str, Any], parent: Any) -> None:
     """One State/Global row: Origin -> Destination + arm/edit/delete + learn marker.
 
-    e40s08: every control carries an explicit height (MAPPER_STATE_BOX_ROW_H) so
-    the row is height-constant and the State box can compute its own height.
+    e40s08: the buttons carry an explicit height (MAPPER_STATE_BOX_ROW_H) so the
+    row is height-constant and the State box can compute its own height. The
+    checkbox does NOT: DearPyGui 2.3.1 add_checkbox rejects a height kwarg
+    (SystemError on the real rig, verified 2026-09-12) and it is shorter than
+    the buttons, so the rows dictate the height anyway.
     """
     rid = int(route["id"])
     tag = f"route_row_{rid}"
@@ -5888,7 +5891,6 @@ def _render_route_row(route: dict[str, Any], parent: Any) -> None:
         )
         dpg.add_checkbox(
             tag=f"route_enable_{rid}",
-            height=MAPPER_STATE_BOX_ROW_H,
             default_value=bool(route.get("enabled", False)),
             callback=on_route_enable,
             user_data=rid,
