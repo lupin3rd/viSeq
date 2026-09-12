@@ -106,6 +106,8 @@ from viseqapp.constants import (
     MIDI_ACTION_NUDGE_FORWARD,
     MIDI_ACTION_REGEN_SELECTED,
     MIDI_ACTION_SEQ_ROW_ASSIGN,
+    MIDI_ACTION_SEQ_ROW_DISABLE,
+    MIDI_ACTION_SEQ_ROW_ENABLE,
     MIDI_ACTION_SEQ_TOGGLE,
     MIDI_ACTION_SOURCE_NEXT,
     MIDI_ACTION_SOURCE_PREV,
@@ -1546,6 +1548,31 @@ def _set_step_active(row: int, col: int, active: bool) -> None:
     update_step_theme(row, col)
 
 
+def set_step_row_active(row: int, active: bool) -> None:
+    """Enable/disable every step of one sequencer row (mouse + MIDI share this).
+
+    e36s07: refreshes each cell's checkbox and theme in place; an out-of-range
+    row is a no-op so a stale binding can never raise into the UI.
+    """
+    if row < 0 or row >= NUM_TRACKS:
+        return
+    for col in range(NUM_STEPS):
+        tracks_data[row]["steps"][col]["active"] = bool(active)
+        if dpg.does_item_exist(f"seq_cb_{row}_{col}"):
+            dpg.set_value(f"seq_cb_{row}_{col}", bool(active))
+        update_step_theme(row, col)
+
+
+def enable_step_row(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Cell popup > Enable row: arm every step of the clicked row."""
+    set_step_row_active(int(user_data), True)
+
+
+def disable_step_row(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Cell popup > Disable row: disarm every step of the clicked row."""
+    set_step_row_active(int(user_data), False)
+
+
 def toggle_step_active(sender: Any, app_data: Any, user_data: Any) -> None:
     row, col = user_data
     _set_step_active(row, col, bool(app_data))
@@ -1676,6 +1703,10 @@ def update_step_ui(row: int, col: int) -> None:
             dpg.add_menu_item(
                 label="Paste to Row", callback=paste_step_to_row, user_data=(row, col)
             )
+            # e36s07: whole-row arm/disarm, kept at the bottom of the menu
+            dpg.add_separator()
+            dpg.add_menu_item(label="Enable row", callback=enable_step_row, user_data=row)
+            dpg.add_menu_item(label="Disable row", callback=disable_step_row, user_data=row)
 
     parsed_type = parse_step_token(step_data["type"])  # e36s04 (property, mode)
     if step_data["type"] == "AlphaV":
@@ -1884,6 +1915,23 @@ def update_step_ui(row: int, col: int) -> None:
                 tag=f"rand_v1_{row}_{col}",
                 parent=cell_tag,
                 indent=20,
+            )
+        elif mode == "fire" and prop == "flag":
+            # BUG-2026-09-12: flag is the one trigger that carries a value — the
+            # target flag id (-1 = next). Without this the step is a no-op with a
+            # single flag.
+            dpg.add_spacer(parent=cell_tag, height=5)
+            dpg.add_drag_int(
+                parent=cell_tag,
+                width=70,
+                default_value=int(step_data["v1"]),
+                min_value=int(lo),
+                max_value=int(hi),
+                speed=1,
+                format="%d",
+                tag=f"seq_flag_{row}_{col}",
+                callback=update_step_val,
+                user_data=(row, col, "v1"),
             )
         else:  # mode == "fire" and trigger family: no value to edit
             dpg.add_spacer(parent=cell_tag, height=5)
@@ -3919,6 +3967,30 @@ def _exec_seq_row_assign(params: dict[str, Any], value: int) -> None:
     assign_target_to_track(row, selected)
 
 
+def _exec_seq_row_active_true(params: dict[str, Any], value: int) -> None:
+    """e36s07: MIDI enable of a whole sequencer row ({row} slot param)."""
+    _exec_seq_row_active(params, value, True)
+
+
+def _exec_seq_row_active_false(params: dict[str, Any], value: int) -> None:
+    """e36s07: MIDI disable of a whole sequencer row ({row} slot param)."""
+    _exec_seq_row_active(params, value, False)
+
+
+def _exec_seq_row_active(params: dict[str, Any], value: int, active: bool) -> None:
+    """Shared MIDI body: the row is a stable slot; low CC and stale rows no-op."""
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    row = int(params.get("row", -1))
+    if row < 0 or row >= NUM_TRACKS:
+        _log_stale_midi_target(
+            MIDI_ACTION_SEQ_ROW_ENABLE if active else MIDI_ACTION_SEQ_ROW_DISABLE,
+            f"no track {row}",
+        )
+        return
+    set_step_row_active(row, active)
+
+
 def _exec_enable_correction(params: dict[str, Any], value: int) -> None:
     """e33s04: arm the color-correction block of the SELECTED source (1.0).
 
@@ -3966,6 +4038,8 @@ _MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
     # e33s04: selection-relative actions — never anchored to a volatile source
     MIDI_ACTION_REGEN_SELECTED: _exec_regen_selected,
     MIDI_ACTION_SEQ_ROW_ASSIGN: _exec_seq_row_assign,
+    MIDI_ACTION_SEQ_ROW_ENABLE: _exec_seq_row_active_true,
+    MIDI_ACTION_SEQ_ROW_DISABLE: _exec_seq_row_active_false,
     MIDI_ACTION_ENABLE_CORRECTION: _exec_enable_correction,
 }
 
@@ -4081,6 +4155,7 @@ def _refresh_learn_surfaces() -> None:
         refresh_mapper_ui()
     _sync_media_learn_bar()
     _sync_sequencer_learn_strip()
+    _sync_seq_row_learn_strip()
 
 
 def learn_marker(
@@ -4248,6 +4323,46 @@ def _sync_sequencer_learn_strip() -> None:
 def _strip_marker(strip: Any, action_id: str, params: dict[str, Any], tag: str) -> None:
     """One transport learn marker inside the sequencer strip."""
     learn_marker(action_id, params, parent=strip, tag=tag)
+
+
+def _sync_seq_row_learn_strip() -> None:
+    """Create or drop the sequencer ROW learn strip (e36s07).
+
+    While MIDI Learn is on, a strip below the transport markers offers one red-M
+    marker per row for Enable row and one for Disable row (params carry the
+    stable row slot), so the e33 rule holds for the new context actions. Leaving
+    learn mode removes the strip.
+    """
+    strip_tag = "seq_row_learn"
+    if dpg.does_item_exist(strip_tag):
+        dpg.delete_item(strip_tag)
+    if not state.midi_learn_mode:
+        return
+    if not dpg.does_item_exist("seq_table"):
+        return
+    with dpg.group(
+        parent="sequencer_window",
+        horizontal=True,
+        tag=strip_tag,
+        before="seq_table",
+    ) as strip:
+        for slot in range(1, NUM_TRACKS + 1):
+            learn_marker(
+                MIDI_ACTION_SEQ_ROW_ENABLE,
+                {"row": slot - 1},
+                parent=strip,
+                tag=f"seq_row_mk_en_{slot}",
+                tooltip=f"Map: enable sequencer line {slot}",
+            )
+        _learn_group_gap(strip)
+        for slot in range(1, NUM_TRACKS + 1):
+            learn_marker(
+                MIDI_ACTION_SEQ_ROW_DISABLE,
+                {"row": slot - 1},
+                parent=strip,
+                tag=f"seq_row_mk_dis_{slot}",
+                tooltip=f"Map: disable sequencer line {slot}",
+            )
 
 
 def midi_learn_complete(binding: dict[str, Any], port_name: str | None = None) -> None:

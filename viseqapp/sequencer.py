@@ -267,7 +267,16 @@ def execute_step(
             val = max(0.0, min(1.0, float(step_data.get("v1") or 0.0)))
             osc_client.send_message(target_addr, float(val))
             append_log("OUT", f"{target_addr} [{val:.2f}]")
-        else:  # trigger: replay/reset/reload no-arg; flag = next
+        elif prop == "flag":
+            # BUG-2026-09-12: flag carries an explicit id (-1 = next, per the
+            # OSC contract); the no-argument "next" form is a no-op with a
+            # single flag, so a Flag step must send its value.
+            lo, hi = _component_bounds(prop)
+            raw = step_data.get("v1")
+            flag_id = float(round(max(lo, min(hi, float(raw) if raw is not None else -1.0))))
+            osc_client.send_message(target_addr, flag_id)
+            append_log("OUT", f"{target_addr} [{flag_id:.0f}]")
+        else:  # trigger: replay/reset/reload no-arg
             osc_client.send_message(target_addr, [])
             append_log("OUT", f"{target_addr} (fire)")
 
