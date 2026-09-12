@@ -2042,7 +2042,7 @@ def _add_tile_context_items(target_id: str) -> None:
     with dpg.menu(label="Add to Mapper"):
         dpg.add_menu_item(
             label="new",
-            callback=open_new_mapping_dialog,
+            callback=open_line_mapping_creator,
             user_data=target_id,
         )
         for line_index in range(len(mapper.row_targets())):
@@ -4523,20 +4523,24 @@ def _exec_mapping_toggle(params: dict[str, Any], value: int) -> None:
 
 
 def _exec_mapping_add(params: dict[str, Any], value: int) -> None:
-    """e40s08: a momentary press adds a State Mapping to a Mapper source line.
+    """e40s08/e40s10: a momentary press opens the Mapping creator.
 
-    The line index (same vocabulary as MIDI_ACTION_MAPPER_LINE) resolves through
+    A ``line`` param anchors it to that Source line (resolved through
     mapper.row_targets() at TRIGGER time — a binding never captures a volatile
-    source id. A stale line index is a logged no-op.
+    source id); no ``line`` is the Global creator (every Type, the Source asked
+    when the Type needs one). A stale line index is a logged no-op.
     """
     if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    if "line" not in params:
+        open_global_mapping_creator()
         return
     line = int(params.get("line", -1))
     rows = mapper.row_targets()
     if line < 0 or line >= len(rows):
         _log_stale_midi_target(MIDI_ACTION_MAPPING_ADD, f"no line {line}")
         return
-    add_state_mapping(user_data=rows[line])
+    open_line_mapping_creator(user_data=rows[line])
 
 
 def _sync_monitor_learn_marker() -> None:
@@ -5144,14 +5148,14 @@ def on_mapper_row_thumb_click(
         refresh_mapper_ui()
 
 
-def _mapper_row_add(target_id: str, parent: Any, height: int) -> None:
-    """The per-row '+' add button at the end of a mapper row (e34s01).
+def _mapper_row_add(target_id: str, parent: Any, height: int, line_index: int) -> None:
+    """The per-row '+' at the end of a Mapper line (e34s01, e40s10).
 
     A NARROW borderless slot (MAPPER_ADD_SLOT_W, not the card pitch — the 2026-09-05
     rework: the '+' no longer wraps like a 150 px card on resize) as tall as the
-    row, holding a small centered '+' button; a click opens the New-Mapping
-    dialog with the row's source preselected, so the created mapping lands on
-    this row.
+    row, holding a small centered '+' button; a click opens the ONE Mapping
+    editor in create mode with this line's source preselected. While learn mode
+    is on the slot carries the e33 learn marker of the create action.
     """
     with dpg.child_window(
         parent=parent,
@@ -5166,12 +5170,19 @@ def _mapper_row_add(target_id: str, parent: Any, height: int) -> None:
             label="+",
             width=MAPPER_ADD_W,
             height=MAPPER_ADD_H,
-            callback=open_new_mapping_dialog,
+            callback=open_line_mapping_creator,
             user_data=target_id,
             tag=f"mapper_add_btn_{target_id}",
         )
+        if state.midi_learn_mode:  # e33 rule: the line creator is mappable
+            learn_marker(
+                MIDI_ACTION_MAPPING_ADD,
+                {"line": line_index},
+                parent=f"mapper_add_{target_id}",
+                tag=f"mapper_mk_add_{target_id}",
+            )
     with dpg.tooltip(parent=f"mapper_add_btn_{target_id}"):
-        dpg.add_text("Add a mapper to this line")
+        dpg.add_text("Add a Mapping to this line")
 
 
 def _mapper_marker_slot(mapping: dict[str, Any], parent: Any) -> None:
@@ -5983,7 +5994,7 @@ def _render_state_box(
                 label="+",
                 width=MAPPER_X_W,
                 height=MAPPER_X_H,
-                callback=add_state_mapping,
+                callback=open_line_mapping_creator,
                 user_data=target_id,
                 tag=f"mapper_state_add_{target_id}",
             )
@@ -6022,51 +6033,102 @@ def delete_mapping(sender: Any = None, app_data: Any = None, user_data: Any = No
     refresh_mapper_ui()
 
 
-def _create_state_mapping(target_id: str) -> dict[str, Any]:
-    """A fresh State -> MIDI Mapping on one source, seeded with the first controller.
+# --- e40s10: the ONE Mapping editor (create + modify) -------------------------
+# A Mapping is one object: the mini-card and the row are two renderings of it,
+# and create/modify share one modal. Creation lives ONLY on the "+" buttons: the
+# Global line's "+" is the general entry (every Type, asking for the Source when
+# the Type is source-bound — also the only way to start a NEW Source line), a
+# line's "+" fixes the Source. Clock/Constant Mappings have no Source, so they
+# are created from the Global "+" only.
+MAPPER_EDITOR_TAG = "mapper_mapping_window"
+MAPPER_SOURCE_BOUND_ORIGINS: tuple[str, ...] = (ORIGIN_CONTROL, ORIGIN_STATE)
+MAPPER_ALL_ORIGINS: tuple[str, ...] = (
+    ORIGIN_CONTROL,
+    ORIGIN_STATE,
+    ORIGIN_CLOCK,
+    ORIGIN_CONST,
+)
+MAPPER_CONTROL_KINDS: tuple[str, ...] = tuple(
+    c for c in mapper.MAPPER_CONTROLS if c != mapper.MAPPER_CONTROL_MAPPING
+)
 
-    Shared by the filter-bar 'New Mapping' button and the per-source State box '+'
-    (e40s08), so the two entry points can never drift.
+
+def open_line_mapping_creator(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """A line's '+' (and the tile menu): create a Mapping on THAT Source (e40s10).
+
+    Only the source-bound Types are offered — a Clock/Constant Mapping has no
+    Source and is created from the Global '+'.
     """
-    ports = [str(c.get("port", "")) for c in midi_controllers if c.get("port")]
-    return mapper.add_mapping(
-        origin=ORIGIN_STATE,
-        destination=DEST_MIDI,
-        target_id=target_id,
-        prop="seek",
-        destination_spec={
-            "controller_port": ports[0] if ports else "",
-            "channel": 0,
-            "type": MIDI_KIND_CC,
-            "number": 0,
-        },
-    )
-
-
-def add_state_mapping(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """The State box '+': add a State Mapping to that source and open its editor (e40s08)."""
-    mapping = _create_state_mapping(str(user_data))
-    _open_mapping_editor(int(mapping["id"]))
-
-
-def new_mapping_dialog(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Create a State -> MIDI Mapping on the first source and open its editor (e40s01)."""
-    targets = list(mapper.row_targets())
-    if not targets:
-        log_error("Mapper", "no source to mapping from - right-click one in Vimix sources first")
+    target_id = str(user_data or "")
+    if not target_id:
         return
-    add_state_mapping(user_data=targets[0])
+    _open_mapping_editor(None, target_id=target_id, origins=MAPPER_SOURCE_BOUND_ORIGINS)
+
+
+def open_global_mapping_creator(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """The Global line's '+': the general creator for every Type (e40s10)."""
+    _open_mapping_editor(None, target_id=None, origins=MAPPER_ALL_ORIGINS)
 
 
 def open_mapping_editor(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """'Edit' on a Mapping row: open the editor modal (e40s01)."""
+    """'Edit' on a Mapping row: open the editor in modify mode (e40s01)."""
     _open_mapping_editor(int(user_data))
+
+
+def _sync_mapping_component_picker(prop: str) -> None:
+    """Populate + reveal the component picker for a vector property (e36s03)."""
+    entry = catalog.PROPERTY_CATALOG.get(prop)
+    keys = (
+        [c["key"] for c in entry["components"]]
+        if entry is not None and len(entry["components"]) > 1
+        else []
+    )
+    if keys:
+        dpg.configure_item("mapping_component_combo", items=keys)
+        dpg.set_value("mapping_component_combo", keys[0])
+    dpg.configure_item("mapping_comp_group", show=bool(keys))
+
+
+def on_mapping_prop_change(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Property combo: reveal the component picker for a vector property and
+    suggest the right control kind for the toggle/trigger families (e36s03)."""
+    prop = str(app_data)
+    if prop not in catalog.PROPERTY_CATALOG:
+        return
+    family = catalog.family_of(prop)
+    suggests_button = (
+        family in (catalog.FAMILY_TOGGLE, catalog.FAMILY_TRIGGER)
+        and dpg.does_item_exist("mapping_control_combo")
+        and str(dpg.get_value("mapping_control_combo")) != "cue list"
+    )
+    if suggests_button:
+        dpg.set_value("mapping_control_combo", "button")
+    _sync_mapping_component_picker(prop)
+
+
+def on_mapping_control_kind_change(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Control-kind combo: a 'cue list' needs no property (its trigger runs an
+    editable OSC macro), so hide the property row and pin it to the inert
+    'play' — the card caption only (e35s04, e36s03)."""
+    is_cue = str(app_data) == "cue list"
+    if is_cue:
+        dpg.set_value("mapping_property_combo", "play")
+    dpg.configure_item("mapping_property_group", show=not is_cue)
+    dpg.configure_item("mapping_cue_hint", show=is_cue)
+    if not is_cue:
+        _sync_mapping_component_picker(str(dpg.get_value("mapping_property_combo")))
 
 
 def on_mapping_destination_change(
     sender: Any = None, app_data: Any = None, user_data: Any = None
 ) -> None:
-    """Destination combo in the Mapping editor: reveal only its fields (e40s03)."""
+    """Destination combo: reveal only its own fields (e40s03)."""
     destination = str(app_data or DEST_MIDI)
     dpg.configure_item("mapping_midi_fields", show=destination == DEST_MIDI)
     dpg.configure_item("mapping_osc_fields", show=destination == DEST_OSC)
@@ -6075,81 +6137,165 @@ def on_mapping_destination_change(
 def on_mapping_origin_change(
     sender: Any = None, app_data: Any = None, user_data: Any = None
 ) -> None:
-    """Origin combo in the Mapping editor: reveal only the chosen Origin fields (e40s02)."""
+    """Type combo: reveal the chosen Type's fields and re-filter the Destination
+    list from MAPPING_DIRECTIONS (e40s02, e40s10)."""
     origin = str(app_data or ORIGIN_STATE)
-    dpg.configure_item("mapping_state_fields", show=origin == ORIGIN_STATE)
+    options = [d for d in DESTINATIONS if d in MAPPING_DIRECTIONS[origin]]
+    destination = str(dpg.get_value("mapping_destination_combo"))
+    if destination not in options:
+        destination = options[0]
+    dpg.configure_item("mapping_destination_combo", items=options)
+    dpg.set_value("mapping_destination_combo", destination)
+    on_mapping_destination_change(None, destination)
+    _apply_mapping_editor_visibility(origin)
+
+
+def _apply_mapping_editor_visibility(origin: str) -> None:
+    """Show exactly the fields of one Origin type (e40s10).
+
+    The Destination-dependent fields are handled by on_mapping_destination_change;
+    the Destination itself is hidden for a Control Mapping, whose Destination is
+    Vimix by the v1 direction matrix — the hint says so instead of showing an
+    impossible choice.
+    """
+    is_control = origin == ORIGIN_CONTROL
+    is_cue = is_control and str(dpg.get_value("mapping_control_combo")) == "cue list"
+    dpg.configure_item("mapping_source_group", show=origin in MAPPER_SOURCE_BOUND_ORIGINS)
+    dpg.configure_item("mapping_control_kind_group", show=is_control)
+    dpg.configure_item(
+        "mapping_property_group", show=origin in MAPPER_SOURCE_BOUND_ORIGINS and not is_cue
+    )
+    dpg.configure_item("mapping_cue_hint", show=is_cue)
+    dpg.configure_item("mapping_state_group", show=origin == ORIGIN_STATE)
     dpg.configure_item("mapping_clock_fields", show=origin == ORIGIN_CLOCK)
     dpg.configure_item("mapping_const_fields", show=origin == ORIGIN_CONST)
+    dpg.configure_item("mapping_destination_group", show=not is_control)
+    dpg.configure_item("mapping_vimix_hint", show=is_control)
+    dpg.configure_item("mapping_steps_group", show=not is_control)
+    if not is_cue:
+        _sync_mapping_component_picker(str(dpg.get_value("mapping_property_combo")))
 
 
-def _open_mapping_editor(mapping_id: int) -> None:
-    """Edit one Mapping: Origin (state/clock/constant) + MIDI Destination + steps.
+def _open_mapping_editor(
+    mapping_id: int | None = None,
+    *,
+    target_id: str | None = None,
+    origins: tuple[str, ...] = MAPPER_ALL_ORIGINS,
+) -> None:
+    """The ONE Mapping editor: CREATE (``mapping_id`` None) or MODIFY (e40s10).
 
-    Control Origins are not edited here (their cards live in the Control band);
-    the Origin combo shows only the source-less/State kinds. The Origin window is
-    reseeded at confirm, so a cancel leaves the Mapping untouched.
+    Create mode builds NO Mapping until OK, so a cancel leaves nothing behind.
+    Modify mode never offers the Source as an editable field: re-pointing a Line
+    onto another Source is the row thumbnail's job (``mapper.retarget_source``),
+    never a side effect of editing a Mapping. A Control Mapping is not edited
+    here — its mini-card carries the live control. The whole window is rebuilt on
+    every open, so the mode is fixed at build time.
     """
-    mapping = mapper.find_mapping(mapping_id)
-    if mapping is None:
-        return
-    if dpg.does_item_exist("mapper_mapping_window"):
-        dpg.delete_item("mapper_mapping_window")
-    origin = mapper.origin_of(mapping)
-    if origin == ORIGIN_CONTROL:
-        return
-    destination = mapper.destination_of(mapping)
-    spec = mapping.get("destination_spec") or {}
+    mapping: dict[str, Any] = {}
+    if mapping_id is None:
+        origin = origins[0]
+    else:
+        found = mapper.find_mapping(int(mapping_id))
+        if found is None or mapper.origin_of(found) == ORIGIN_CONTROL:
+            return
+        mapping = found
+        origin = mapper.origin_of(mapping)
+    creating = mapping_id is None
+    if dpg.does_item_exist(MAPPER_EDITOR_TAG):
+        dpg.delete_item(MAPPER_EDITOR_TAG)
+    destination = (
+        mapper.DEST_VIMIX
+        if origin == ORIGIN_CONTROL
+        else (mapper.destination_of(mapping) if not creating else DEST_MIDI)
+    )
+    spec = dict(mapping.get("destination_spec") or {})
     ports = [str(c.get("port", "")) for c in midi_controllers if c.get("port")]
+    default_prop = {ORIGIN_CONTROL: "brightness", ORIGIN_STATE: "seek"}.get(origin, "alpha")
+    prop = default_prop if creating else str(mapping["property"])
     clock = str((mapping.get("origin_spec") or {}).get("clock") or CLOCK_DEFAULT)
     const = float((mapping.get("origin_spec") or {}).get("value", MAPPING_CONST_VALUE_DEFAULT))
+    cadence = int(mapping.get("cadence") or MAPPING_DEFAULT_CADENCE_MS)
+    steps = int(mapping.get("steps", MAPPING_STEPS_CONTINUOUS))
     with dpg.window(
-        label="Edit Mapping",
-        tag="mapper_mapping_window",
+        label="New Mapping" if creating else "Edit Mapping",
+        tag=MAPPER_EDITOR_TAG,
         modal=True,
-        width=450,
-        height=420,
+        width=460,
+        height=540,
         no_resize=True,
     ):
-        themed_text("Origin", slot="text_dim")
+        themed_text("Type", slot="text_dim")
         dpg.add_combo(
-            items=[ORIGIN_STATE, ORIGIN_CLOCK, ORIGIN_CONST],
+            items=list(origins),
             default_value=origin,
             width=280,
             tag="mapping_origin_combo",
             callback=on_mapping_origin_change,
         )
-        with dpg.group(tag="mapping_state_fields", show=origin == ORIGIN_STATE):
+        with dpg.group(tag="mapping_source_group"):
             themed_text("Source", slot="text_dim")
+            has_source = bool(mapping.get("target_id"))
             dpg.add_combo(
                 items=list(mapper.row_targets()),
-                default_value=str(mapping.get("target_id") or ""),
+                default_value=str(target_id or "")
+                if creating
+                else str(mapping.get("target_id") or ""),
                 width=280,
+                show=creating or not has_source,
                 tag="mapping_source_combo",
             )
+            if not creating and has_source:
+                # e40s10: on modify the Source is INFORMATION, not a picker —
+                # re-pointing a Line is the row thumbnail's job (retarget_source).
+                # The hidden combo above keeps the current value, so a confirm can
+                # never re-point by accident.
+                themed_text(
+                    f"{mapping['target_id']} (use the row thumbnail to re-point)",
+                    slot="text_dim",
+                    tag="mapping_source_text",
+                )
+        with dpg.group(tag="mapping_control_kind_group"):
+            themed_text("Control", slot="text_dim")
+            dpg.add_combo(
+                items=list(MAPPER_CONTROL_KINDS),
+                default_value="slider" if creating else str(mapping.get("control") or "slider"),
+                width=200,
+                tag="mapping_control_combo",
+                callback=on_mapping_control_kind_change,
+            )
+        with dpg.group(tag="mapping_property_group"):
             themed_text("Property", slot="text_dim")
             dpg.add_combo(
                 items=mapper.mappable_properties(),
-                default_value=str(mapping["property"]),
+                default_value=prop,
                 width=280,
                 tag="mapping_property_combo",
+                callback=on_mapping_prop_change,
             )
+            with dpg.group(tag="mapping_comp_group", show=False):
+                themed_text("Component", slot="text_dim")
+                dpg.add_combo(items=[], default_value="", width=280, tag="mapping_component_combo")
+        themed_text(
+            "The trigger runs the mapping's OSC macro (cue list) — no property needed.",
+            slot="text_dim",
+            tag="mapping_cue_hint",
+            wrap=420,
+        )
+        with dpg.group(tag="mapping_state_group"):
             themed_text("Cadence (ms)", slot="text_dim")
             dpg.add_drag_int(
-                default_value=int(mapping.get("cadence") or MAPPING_DEFAULT_CADENCE_MS),
+                default_value=cadence,
                 min_value=MAPPING_MIN_CADENCE_MS,
                 max_value=60_000,
                 width=160,
                 tag="mapping_cadence",
             )
-        with dpg.group(tag="mapping_clock_fields", show=origin == ORIGIN_CLOCK):
+        with dpg.group(tag="mapping_clock_fields"):
             themed_text("Clock", slot="text_dim")
             dpg.add_combo(
-                items=list(CLOCK_SOURCES),
-                default_value=clock,
-                width=160,
-                tag="mapping_clock_combo",
+                items=list(CLOCK_SOURCES), default_value=clock, width=200, tag="mapping_clock_combo"
             )
-        with dpg.group(tag="mapping_const_fields", show=origin == ORIGIN_CONST):
+        with dpg.group(tag="mapping_const_fields"):
             themed_text("Value", slot="text_dim")
             dpg.add_drag_float(
                 default_value=const,
@@ -6160,15 +6306,22 @@ def _open_mapping_editor(mapping_id: int) -> None:
                 speed=0.01,
                 tag="mapping_const_value",
             )
-        themed_text("Destination", slot="text_dim")
-        dpg.add_combo(
-            items=[d for d in DESTINATIONS if d in MAPPING_DIRECTIONS[origin]],
-            default_value=destination,
-            width=280,
-            tag="mapping_destination_combo",
-            callback=on_mapping_destination_change,
+        with dpg.group(tag="mapping_destination_group"):
+            themed_text("Destination", slot="text_dim")
+            dpg.add_combo(
+                items=[d for d in DESTINATIONS if d in MAPPING_DIRECTIONS[origin]],
+                default_value=destination,
+                width=280,
+                tag="mapping_destination_combo",
+                callback=on_mapping_destination_change,
+            )
+        themed_text(
+            "A Control Mapping always writes Vimix (its card holds the control).",
+            slot="text_dim",
+            tag="mapping_vimix_hint",
+            wrap=420,
         )
-        with dpg.group(tag="mapping_midi_fields", show=destination == DEST_MIDI):
+        with dpg.group(tag="mapping_midi_fields"):
             themed_text("Controller", slot="text_dim")
             dpg.add_combo(
                 items=ports,
@@ -6176,7 +6329,7 @@ def _open_mapping_editor(mapping_id: int) -> None:
                 width=280,
                 tag="mapping_controller_combo",
             )
-        with dpg.group(horizontal=True, tag="mapping_midi_row", show=destination == DEST_MIDI):
+        with dpg.group(horizontal=True, tag="mapping_midi_row"):
             themed_text("Channel", slot="text_dim")
             dpg.add_drag_int(
                 default_value=int(spec.get("channel", 0)),
@@ -6185,12 +6338,12 @@ def _open_mapping_editor(mapping_id: int) -> None:
                 width=70,
                 tag="mapping_channel",
             )
-            themed_text("Type", slot="text_dim")
+            themed_text("Message", slot="text_dim")
             dpg.add_combo(
                 items=[MIDI_KIND_CC, MIDI_KIND_NOTE],
                 default_value=str(spec.get("type") or MIDI_KIND_CC),
                 width=90,
-                tag="mapping_type_combo",
+                tag="mapping_message_combo",
             )
             themed_text("Number", slot="text_dim")
             dpg.add_drag_int(
@@ -6200,7 +6353,7 @@ def _open_mapping_editor(mapping_id: int) -> None:
                 width=70,
                 tag="mapping_number",
             )
-        with dpg.group(tag="mapping_osc_fields", show=destination == DEST_OSC):
+        with dpg.group(tag="mapping_osc_fields"):
             themed_text("Host", slot="text_dim")
             dpg.add_input_text(
                 default_value=str(spec.get("host") or MAPPING_OSC_DEFAULT_HOST),
@@ -6219,93 +6372,223 @@ def _open_mapping_editor(mapping_id: int) -> None:
                 width=280,
                 tag="mapping_osc_address",
             )
-        themed_text("Steps (1 = continuous)", slot="text_dim")
-        dpg.add_drag_int(
-            default_value=int(mapping.get("steps", MAPPING_STEPS_CONTINUOUS)),
-            min_value=1,
-            max_value=64,
-            width=160,
-            tag="mapping_steps",
-        )
+        with dpg.group(tag="mapping_steps_group"):
+            themed_text("Steps (1 = continuous)", slot="text_dim")
+            dpg.add_drag_int(
+                default_value=steps,
+                min_value=1,
+                max_value=64,
+                width=160,
+                tag="mapping_steps",
+            )
         dpg.add_separator()
         with dpg.group(horizontal=True):
             dpg.add_button(
-                label="OK", width=120, callback=mapping_editor_confirm, user_data=mapping_id
+                label="OK",
+                width=120,
+                callback=mapping_editor_confirm,
+                user_data=0 if mapping_id is None else int(mapping_id),
             )
             dpg.add_button(
                 label="Cancel",
                 width=120,
-                callback=lambda s, a: dpg.delete_item("mapper_mapping_window"),
+                callback=lambda s, a: dpg.delete_item(MAPPER_EDITOR_TAG),
             )
-    dpg.show_item("mapper_mapping_window")
+    on_mapping_destination_change(None, destination)
+    _apply_mapping_editor_visibility(origin)
+    dpg.show_item(MAPPER_EDITOR_TAG)
 
 
-def mapping_editor_confirm(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Store the edited Mapping fields, reseed the Origin window and rebuild (e40s02)."""
-    mapping = mapper.find_mapping(int(user_data))
-    if mapping is None:
-        return
+def _mapping_editor_values(mapping: dict[str, Any], *, creating: bool) -> dict[str, Any]:
+    """Read the editor widgets into a plain dict (ONE reader for both modes).
+
+    The Source is read ONLY where it is editable (create, or a source-less
+    Mapping being turned into a State one): on a plain modify it stays whatever
+    the Mapping already had, so the editor can never re-point a Line.
+    """
     origin = str(dpg.get_value("mapping_origin_combo"))
-    if origin not in (ORIGIN_STATE, ORIGIN_CLOCK, ORIGIN_CONST):
-        origin = ORIGIN_STATE
-    chosen = str(dpg.get_value("mapping_destination_combo"))
-    destination = chosen if chosen in DESTINATIONS else mapper.destination_of(mapping)
-    if destination not in MAPPING_DIRECTIONS[origin]:
-        log_error("Mapper", f"destination {destination!r} is not allowed for origin {origin!r}")
-        return
-    previous_destination = mapper.destination_of(mapping)
-    mapping["origin"] = origin
-    mapping["destination"] = destination
-    mapping["cadence"] = None
+    destination = str(dpg.get_value("mapping_destination_combo"))
+    source_editable = origin in MAPPER_SOURCE_BOUND_ORIGINS and (
+        creating or not mapping.get("target_id")
+    )
+    values: dict[str, Any] = {
+        "origin": origin,
+        "destination": destination,
+        "component": None,
+        "target_id": (str(dpg.get_value("mapping_source_combo")) or None)
+        if source_editable
+        else None,
+        "property": str(dpg.get_value("mapping_property_combo")),
+    }
+    if origin == ORIGIN_CONTROL:
+        values["control"] = str(dpg.get_value("mapping_control_combo"))
     if origin == ORIGIN_STATE:
-        mapping["target_id"] = str(dpg.get_value("mapping_source_combo")) or None
-        prop = str(dpg.get_value("mapping_property_combo"))
-        entry = catalog.PROPERTY_CATALOG.get(prop)
-        in_from, in_to = 0.0, 1.0
-        if entry is not None:
-            mapping["property"] = prop
-            comp = entry["components"][0]
-            mapping["component"] = comp["key"] if len(entry["components"]) > 1 else None
-            in_from, in_to = float(comp["min"]), float(comp["max"])
-        mapping["origin_spec"] = {}
-        mapping["cadence"] = max(MAPPING_MIN_CADENCE_MS, int(dpg.get_value("mapping_cadence")))
-    elif origin == ORIGIN_CLOCK:
-        clock = str(dpg.get_value("mapping_clock_combo"))
-        mapping["origin_spec"] = {"clock": clock}
-        mapping["target_id"] = None
-        in_from, in_to = CLOCK_SOURCES.get(clock, (0.0, 1.0))
-    else:
-        mapping["origin_spec"] = {"value": float(dpg.get_value("mapping_const_value"))}
-        mapping["target_id"] = None
-        in_from, in_to = 0.0, 1.0
-    mapper.set_mapping_input(mapping["id"], float(in_from), float(in_to))
-    mapping["steps"] = max(MAPPING_STEPS_CONTINUOUS, int(dpg.get_value("mapping_steps")))
+        values["cadence"] = max(MAPPING_MIN_CADENCE_MS, int(dpg.get_value("mapping_cadence")))
+    if origin == ORIGIN_CLOCK:
+        values["clock"] = str(dpg.get_value("mapping_clock_combo"))
+    if origin == ORIGIN_CONST:
+        values["value"] = float(dpg.get_value("mapping_const_value"))
+    if origin != ORIGIN_CONTROL:
+        values["steps"] = max(MAPPING_STEPS_CONTINUOUS, int(dpg.get_value("mapping_steps")))
     if destination == DEST_MIDI:
-        mapping["destination_spec"] = {
+        values["destination_spec"] = {
             "controller_port": str(dpg.get_value("mapping_controller_combo")),
             "channel": int(dpg.get_value("mapping_channel")),
-            "type": str(dpg.get_value("mapping_type_combo")),
+            "type": str(dpg.get_value("mapping_message_combo")),
             "number": int(dpg.get_value("mapping_number")),
         }
-    else:
-        osc_spec = {
+    elif destination == DEST_OSC:
+        values["destination_spec"] = {
             "host": str(dpg.get_value("mapping_osc_host")),
             "port": int(dpg.get_value("mapping_osc_port")),
             "address": str(dpg.get_value("mapping_osc_address")),
         }
-        error = validate_osc_destination(osc_spec)
-        if error is not None:
-            log_error("Mapper", f"mapping destination: {error}")
-            return  # keep the dialog open so the user can fix the input
-        mapping["destination_spec"] = osc_spec
+    entry = catalog.PROPERTY_CATALOG.get(values["property"])
+    if entry is not None and len(entry["components"]) > 1 and values.get("control") != "cue list":
+        keys = [c["key"] for c in entry["components"]]
+        candidate = str(dpg.get_value("mapping_component_combo"))
+        values["component"] = candidate if candidate in keys else keys[0]
+    return values
+
+
+def _validate_mapping_editor(values: dict[str, Any], mapping: dict[str, Any]) -> str | None:
+    """The editor's error message for a pair that cannot become a Mapping."""
+    origin = values["origin"]
+    destination = values["destination"]
+    if destination not in MAPPING_DIRECTIONS[origin]:
+        return f"destination {destination!r} is not allowed for type {origin!r}"
+    known_source = bool(values.get("target_id") or mapping.get("target_id"))
+    if origin in MAPPER_SOURCE_BOUND_ORIGINS and not known_source:
+        return f"a {origin} mapping needs a source"
+    if destination == DEST_OSC:
+        return validate_osc_destination(values["destination_spec"])
+    return None
+
+
+def _create_mapping_from_editor(values: dict[str, Any]) -> None:
+    """Create the Mapping with the single mapper factory (e40s10)."""
+    origin = values["origin"]
+    if origin == ORIGIN_CONTROL:
+        mapper.add_mapping(
+            values["target_id"],
+            values["property"],
+            values["control"],
+            component=values["component"],
+        )
+        return
+    origin_spec: dict[str, Any] = {}
+    if origin == ORIGIN_CLOCK:
+        origin_spec = {"clock": values["clock"]}
+    elif origin == ORIGIN_CONST:
+        origin_spec = {"value": values["value"]}
+    mapper.add_mapping(
+        values["target_id"],
+        values["property"],
+        origin=origin,
+        destination=values["destination"],
+        destination_spec=values["destination_spec"],
+        origin_spec=origin_spec,
+        cadence=values.get("cadence"),
+        steps=values.get("steps", MAPPING_STEPS_CONTINUOUS),
+    )
+
+
+def _update_mapping_from_editor(mapping: dict[str, Any], values: dict[str, Any]) -> None:
+    """Store the edited fields, reseeding the Origin window (e40s02)."""
+    origin = values["origin"]
+    destination = values["destination"]
+    previous_destination = mapper.destination_of(mapping)
+    mapping["origin"] = origin
+    mapping["destination"] = destination
+    mapping["cadence"] = None
+    if origin in MAPPER_SOURCE_BOUND_ORIGINS:
+        if values.get("target_id"):
+            mapping["target_id"] = values["target_id"]
+        entry = catalog.PROPERTY_CATALOG.get(values["property"])
+        in_from, in_to = 0.0, 1.0
+        if entry is not None:
+            mapping["property"] = values["property"]
+            comp = entry["components"][0]
+            mapping["component"] = comp["key"] if len(entry["components"]) > 1 else None
+            in_from, in_to = float(comp["min"]), float(comp["max"])
+        mapping["control"] = values.get("control") or mapper.MAPPER_CONTROL_MAPPING
+        mapping["origin_spec"] = {}
+        if origin == ORIGIN_STATE:
+            mapping["control"] = mapper.MAPPER_CONTROL_MAPPING
+            mapping["cadence"] = values["cadence"]
+    elif origin == ORIGIN_CLOCK:
+        mapping["origin_spec"] = {"clock": values["clock"]}
+        mapping["target_id"] = None
+        mapping["control"] = mapper.MAPPER_CONTROL_MAPPING
+        in_from, in_to = CLOCK_SOURCES.get(values["clock"], (0.0, 1.0))
+    else:
+        mapping["origin_spec"] = {"value": values["value"]}
+        mapping["target_id"] = None
+        mapping["control"] = mapper.MAPPER_CONTROL_MAPPING
+        in_from, in_to = 0.0, 1.0
+    mapper.set_mapping_input(mapping["id"], float(in_from), float(in_to))
+    mapping["steps"] = values.get("steps", MAPPING_STEPS_CONTINUOUS)
+    mapping["destination_spec"] = values["destination_spec"]
     if destination != previous_destination:
         out_from, out_to = mapper.default_output_range(
             destination, str(mapping["property"]), mapping.get("component")
         )
         mapper.set_mapping_output(mapping["id"], out_from, out_to)
-    if dpg.does_item_exist("mapper_mapping_window"):
-        dpg.delete_item("mapper_mapping_window")
+
+
+def mapping_editor_confirm(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """OK of the ONE Mapping editor: CREATE (user_data 0) or MODIFY (e40s10).
+
+    The widget values are read BEFORE the window is deleted — real dpg get_value
+    on a deleted widget returns None (BUG-2026-09-08T120000).
+    """
+    mapping_id = int(user_data or 0)
+    creating = mapping_id == 0
+    mapping = {} if creating else mapper.find_mapping(mapping_id)
+    if mapping is None:
+        return
+    values = _mapping_editor_values(mapping, creating=creating)
+    error = _validate_mapping_editor(values, mapping)
+    if error is not None:
+        log_error("Mapper", f"mapping editor: {error}")
+        return  # keep the editor open so the user can fix the input
+    if creating:
+        _create_mapping_from_editor(values)
+    else:
+        _update_mapping_from_editor(mapping, values)
+    dpg.delete_item(MAPPER_EDITOR_TAG)
     refresh_mapper_ui()
+    dpg.show_item("mapper_window")
+
+
+def _render_global_block(global_mappings: list[dict[str, Any]]) -> None:
+    """The Global line's header + its source-less Mappings (e40s01, e40s10).
+
+    Its '+' is the GENERAL creator: every Type, and the Source is asked when the
+    Type needs one — which is also how a NEW Source line starts (a Line exists
+    only if some Mapping already names its Source). The header is rendered even
+    when the line is empty, so Clock/Constant (and a brand-new source) are
+    always creatable.
+    """
+    global_block = dpg.add_group(parent="mapper_mappings_group", tag="mapper_global_block")
+    with dpg.group(horizontal=True, parent=global_block, tag="mapper_global_head"):
+        themed_text("Clock+Constant", slot="text_dim")
+        dpg.add_button(
+            label="+",
+            width=MAPPER_X_W,
+            height=MAPPER_X_H,
+            callback=open_global_mapping_creator,
+            tag="mapper_global_add",
+        )
+        if state.midi_learn_mode:  # e33 rule: the general creator is mappable
+            learn_marker(
+                MIDI_ACTION_MAPPING_ADD,
+                {},
+                parent="mapper_global_head",
+                tag="mapper_mk_global",
+            )
+    for mapping in global_mappings:
+        _render_mapping_row(mapping, parent=global_block)
 
 
 def refresh_mapper_ui() -> None:
@@ -6333,6 +6616,10 @@ def refresh_mapper_ui() -> None:
             wrap=MAPPER_WINDOW_WIDTH - 40,
             parent="mapper_mappings_group",
         )
+        if _mapper_show_global:
+            # e40s10: the Global '+' is the general creator, so a source-less
+            # Mapping (Clock/Constant) is creatable even from an empty Mapper
+            _render_global_block([])
         return
     # e40s01: split the flat list into Control Origins (the card bands, grouped
     # by source) and the other Mappings (the State bands + the source-less Global
@@ -6350,11 +6637,8 @@ def refresh_mapper_ui() -> None:
             mapping_rows[str(mapping["target_id"])].append(mapping)
         else:
             global_mappings.append(mapping)
-    if _mapper_show_global and global_mappings:
-        global_block = dpg.add_group(parent="mapper_mappings_group", tag="mapper_global_block")
-        themed_text("Clock+Constant", slot="text_dim", parent=global_block)
-        for mapping in global_mappings:
-            _render_mapping_row(mapping, parent=global_block)
+    if _mapper_show_global:
+        _render_global_block(global_mappings)
     per_line = _mapper_cards_per_line()
     width = dpg.get_item_width("mapper_window") or MAPPER_WINDOW_WIDTH
     card_area = width - 8 - (_mapper_row_lead_px() + 4)
@@ -6403,7 +6687,9 @@ def refresh_mapper_ui() -> None:
                         _render_mapper_card(control_mappings[slot], parent=line, height=row_height)
                 # e34s01: the small '+' rides the last card line when it fits
                 if add_inline and line_no == len(lines) - 1:
-                    _mapper_row_add(target_id, parent=line, height=row_height)
+                    _mapper_row_add(
+                        target_id, parent=line, height=row_height, line_index=row_no - 1
+                    )
                 # e34s03 (answer D): while learn mode is on every card LINE gets a
                 # marker strip line directly UNDER it — the cards' markers live
                 # outside the bordered cards, aligned under each card slot. The
@@ -6425,7 +6711,7 @@ def refresh_mapper_ui() -> None:
                 # cards (aligned with them) instead of overflowing the edge
                 line = dpg.add_group(horizontal=True, parent=block)
                 dpg.add_spacer(width=_mapper_row_lead_px(), parent=line)
-                _mapper_row_add(target_id, parent=line, height=row_height)
+                _mapper_row_add(target_id, parent=line, height=row_height, line_index=row_no - 1)
         else:
             # a State-only source keeps its line lead (number + thumbnail) without cards
             lead_height = MAPPER_CTRL_H
@@ -6699,150 +6985,6 @@ def reset_mapping(sender: Any = None, app_data: Any = None, user_data: Any = Non
         return
     mapper.reset_mapping_value(mid)
     _sync_mapper_control(mid)
-
-
-def open_new_mapping_dialog(
-    sender: Any = None, app_data: Any = None, user_data: Any = None
-) -> None:
-    """Mediagrid tile right-click > Add to Mapper: modal asking TYPE first (e35s04).
-
-    The type is the mapper control; the property only matters for the value
-    controls (slider/knob/button), so it is hidden for 'cue list' — its
-    trigger runs an editable OSC macro and no single property applies.
-    """
-    state.mapper_pending_target = str(user_data)
-    if dpg.does_item_exist("mapper_new_dialog"):
-        dpg.delete_item("mapper_new_dialog")
-    with dpg.window(
-        label="New Mapping",
-        tag="mapper_new_dialog",
-        modal=True,
-        width=340,
-        height=260,
-        no_resize=True,
-    ):
-        themed_text(f"Source: {state.mapper_pending_target}", slot="text")
-        dpg.add_separator()
-        themed_text("Type", slot="text_dim")
-        dpg.add_combo(
-            items=list(mapper.MAPPER_CONTROLS),
-            default_value="slider",
-            width=260,
-            tag="mapper_control_combo",
-            callback=on_mapper_control_type_change,
-        )
-        with dpg.group(tag="mapper_prop_group", show=True):
-            themed_text("Property", slot="text_dim")
-            dpg.add_combo(
-                items=mapper.mappable_properties(),  # e36s03: catalog minus the Cue-only rates
-                default_value="brightness",
-                width=260,
-                tag="mapper_prop_combo",
-                callback=on_mapper_prop_change,
-            )
-        with dpg.group(tag="mapper_comp_group", show=False):
-            # e36s03: multi-value properties pick the controlled component/axis
-            themed_text("Component", slot="text_dim")
-            dpg.add_combo(
-                items=[],
-                default_value="",
-                width=260,
-                tag="mapper_component_combo",
-            )
-        themed_text(
-            "The trigger runs the mapping's OSC macro (cue list) — no property needed.",
-            slot="text_dim",
-            tag="mapper_cue_hint",
-            wrap=300,
-        )
-        dpg.configure_item("mapper_cue_hint", show=False)
-        dpg.add_separator()
-        with dpg.group(horizontal=True):
-            dpg.add_button(label="Create", callback=mapper_dialog_confirm, width=120)
-            dpg.add_button(label="Cancel", callback=mapper_dialog_cancel, width=120)
-    dpg.show_item("mapper_new_dialog")
-
-
-def _sync_mapper_component_picker(prop: str) -> None:
-    """Populate + reveal the dialog's component picker for a vector property
-    (e36s03); hide it for scalar/toggle/trigger/enum properties.
-    """
-    entry = catalog.PROPERTY_CATALOG.get(prop)
-    keys = (
-        [c["key"] for c in entry["components"]]
-        if entry is not None and len(entry["components"]) > 1
-        else []
-    )
-    if keys:
-        dpg.configure_item("mapper_component_combo", items=keys)
-        dpg.set_value("mapper_component_combo", keys[0])
-    dpg.configure_item("mapper_comp_group", show=bool(keys))
-
-
-def on_mapper_prop_change(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """New-Mapping property combo: reveal the component picker for a vector
-    property and suggest the right control type for toggle/trigger families
-    (e36s03)."""
-    prop = str(app_data)
-    if prop not in catalog.PROPERTY_CATALOG:
-        return
-    family = catalog.family_of(prop)
-    control = str(dpg.get_value("mapper_control_combo"))
-    if family in (catalog.FAMILY_TOGGLE, catalog.FAMILY_TRIGGER) and control != "cue list":
-        dpg.set_value("mapper_control_combo", "button")
-    _sync_mapper_component_picker(prop)
-
-
-def on_mapper_control_type_change(sender: Any, app_data: Any, user_data: Any = None) -> None:
-    """New-Mapping type combo: a 'cue list' needs no property — hide the
-    property row (and the component picker) and pin it to 'play' (inert; the
-    card caption only); the value controls show the property picker (e35s04,
-    e36s03)."""
-    control = str(app_data)
-    is_cue = control == "cue list"
-    if is_cue:
-        dpg.set_value("mapper_prop_combo", "play")
-    dpg.configure_item("mapper_prop_group", show=not is_cue)
-    dpg.configure_item("mapper_comp_group", show=False)
-    dpg.configure_item("mapper_cue_hint", show=is_cue)
-    if not is_cue:
-        _sync_mapper_component_picker(str(dpg.get_value("mapper_prop_combo")))
-
-
-def mapper_dialog_confirm(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Dialog Create: add the mapping chosen in the combos and open the Mapper window.
-
-    e36s03: a multi-value property reads the component picker (defaulting to its
-    first component when the combo was never populated); cue-list controls skip
-    it (their property is inert). BUG-2026-09-08T120000: the component picker
-    must be read BEFORE the dialog is deleted — real dpg get_value() on a
-    deleted widget returns None, and the fallback would silently bind every
-    vector mapping to its FIRST component (color -> always R).
-    """
-    if not dpg.does_item_exist("mapper_new_dialog"):
-        return
-    prop = str(dpg.get_value("mapper_prop_combo"))
-    control = str(dpg.get_value("mapper_control_combo"))
-    target = state.mapper_pending_target
-    component: str | None = None
-    if target is not None and control != "cue list":
-        entry = catalog.PROPERTY_CATALOG.get(prop)
-        if entry is not None and len(entry["components"]) > 1:
-            keys = [c["key"] for c in entry["components"]]
-            candidate = str(dpg.get_value("mapper_component_combo"))
-            component = candidate if candidate in keys else keys[0]
-    dpg.delete_item("mapper_new_dialog")
-    if target is None:
-        return
-    mapper.add_mapping(target, prop, control, component=component)
-    refresh_mapper_ui()
-    dpg.show_item("mapper_window")
-
-
-def mapper_dialog_cancel(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Dialog Cancel: close without creating a mapping."""
-    if dpg.does_item_exist("mapper_new_dialog"):
-        dpg.delete_item("mapper_new_dialog")
 
 
 def _cue_row_label(mapping: dict[str, Any], row: dict[str, Any]) -> str:
@@ -9164,7 +9306,6 @@ with (
             default_value=True,
             callback=on_mapper_filter,
         )
-        dpg.add_button(label="New Mapping", callback=new_mapping_dialog)
     # NOTE: a bare dpg.group(...) call does NOT create the item — the context
     # manager must be entered (dearpygui 2.x), same as the original tuple-with.
     with dpg.group(tag="mapper_mappings_group"):

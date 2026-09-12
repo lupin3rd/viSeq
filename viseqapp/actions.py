@@ -157,7 +157,7 @@ ACTION_SPECS: dict[str, ActionSpec] = {
         MIDI_ACTION_MAPPING_TOGGLE, "Arm/disarm Mapping", CATEGORY_MAPPING, KIND_MOMENTARY
     ),
     MIDI_ACTION_MAPPING_ADD: ActionSpec(
-        MIDI_ACTION_MAPPING_ADD, "Add State Mapping to line", CATEGORY_MAPPING, KIND_MOMENTARY
+        MIDI_ACTION_MAPPING_ADD, "Add Mapping to line", CATEGORY_MAPPING, KIND_MOMENTARY
     ),
 }
 

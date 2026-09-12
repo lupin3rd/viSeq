@@ -337,9 +337,6 @@ mapper_mappings: list[dict[str, Any]] = []
 mapper_counter: int = 0
 
 
-mapper_pending_target: str | None = None  # source the New-mapping dialog targets
-
-
 # e35s02: active cue runs — written by the cue engine (viseqapp/cue.py) from
 # the scheduler thread, read by the UI for running indicators (e35s03). Each
 # entry: {mapping_id, target_id, plan, cursor} with plan entries of the shape
