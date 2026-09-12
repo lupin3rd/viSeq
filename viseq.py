@@ -301,11 +301,13 @@ Image.MAX_IMAGE_PIXELS = 25_000_000  # PIL's hard ceiling (~25 MP)
 # viseq application version — single source of truth (matches specs/release-plan.yaml, e08s02).
 # e13s01: this is the first real release of viSeq (user decision).
 # e20s03: 0.2.0 — viseqapp refactor + controller profiles + new project + Mapper family.
+# 0.6.0 — value routing (Route = Origin -> Remap -> Destination), MIDI Monitor, cue-row
+# dialog fixes, monitor players removed (viOSC 0.4.0).
 # 0.5.0 — source Preview (viOSC 0.3.0), cue lists, persistent MIDI-learn Mapper, Save as.
 # 0.4.0 — Leap Motion mapper source, per-mapping reset, project save + OSC config persist,
 # Mapper tile/row workflows (thumb assign, Add-to-Mapper submenu, line numbers).
 # 0.3.0 — Mapper family (rows/remap/enable/cycle), compact Vimix-sources grid, windows, XDG.
-APP_VERSION: str = "0.5.1"
+APP_VERSION: str = "0.6.0"
 
 # Author's GitHub profile, shown as a link in the About window (e08s01, user request).
 GITHUB_URL: str = "https://github.com/lupin3rd"
