@@ -813,6 +813,11 @@ def _sanitize_step(step: Any) -> dict[str, Any]:
         for key in STEP_PERSISTED_KEYS:
             if key in step:
                 base[key] = step[key]
+    if base.get("type") == "FlagX":
+        # e36s07: flag is a VALUE step now; the legacy fire token always meant
+        # "next", which the value form preserves as -1.
+        base["type"] = "FlagV"
+        base["v1"] = -1.0
     return base
 
 
@@ -1418,6 +1423,10 @@ def update_track_slot_ui(row: int) -> None:
 def set_step_type(sender: Any, app_data: Any, user_data: Any) -> None:
     row, col, step_type = user_data
     tracks_data[row]["steps"][col]["type"] = step_type
+    parsed = parse_step_token(step_type)
+    if parsed is not None and parsed[0] == "flag":
+        # e36s07: a new Flag step defaults to -1 (next)
+        tracks_data[row]["steps"][col]["v1"] = -1.0
     update_step_ui(row, col)
 
 
@@ -1834,7 +1843,23 @@ def update_step_ui(row: int, col: int) -> None:
         entry = catalog.PROPERTY_CATALOG[prop]
         comp0 = entry["components"][0]
         lo, hi = float(comp0["min"]), float(comp0["max"])
-        if mode == "value" or (mode == "fire" and entry["family"] == catalog.FAMILY_TOGGLE):
+        if mode == "value" and prop == "flag":
+            # e36s07: Flag is a VALUE step carrying the target flag id
+            # (-1 = next); ids are integers, so use an integer editor.
+            dpg.add_spacer(parent=cell_tag, height=5)
+            dpg.add_drag_int(
+                parent=cell_tag,
+                width=70,
+                default_value=int(step_data["v1"]),
+                min_value=int(lo),
+                max_value=int(hi),
+                speed=1,
+                format="%d",
+                tag=f"seq_flag_{row}_{col}",
+                callback=update_step_val,
+                user_data=(row, col, "v1"),
+            )
+        elif mode == "value" or (mode == "fire" and entry["family"] == catalog.FAMILY_TOGGLE):
             dpg.add_spacer(parent=cell_tag, height=5)
             dpg.add_drag_float(
                 parent=cell_tag,
@@ -1915,23 +1940,6 @@ def update_step_ui(row: int, col: int) -> None:
                 tag=f"rand_v1_{row}_{col}",
                 parent=cell_tag,
                 indent=20,
-            )
-        elif mode == "fire" and prop == "flag":
-            # BUG-2026-09-12: flag is the one trigger that carries a value — the
-            # target flag id (-1 = next). Without this the step is a no-op with a
-            # single flag.
-            dpg.add_spacer(parent=cell_tag, height=5)
-            dpg.add_drag_int(
-                parent=cell_tag,
-                width=70,
-                default_value=int(step_data["v1"]),
-                min_value=int(lo),
-                max_value=int(hi),
-                speed=1,
-                format="%d",
-                tag=f"seq_flag_{row}_{col}",
-                callback=update_step_val,
-                user_data=(row, col, "v1"),
             )
         else:  # mode == "fire" and trigger family: no value to edit
             dpg.add_spacer(parent=cell_tag, height=5)

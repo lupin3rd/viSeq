@@ -129,6 +129,9 @@ def step_modes_for(prop: str) -> list[str]:
     toggle & trigger -> fire (a momentary message per beat); enum -> cycle
     (advance the option index each beat). Rate family and the other vectors
     offer nothing — no ms-animation and no rate steps (user decisions).
+
+    ``flag`` is the exception: it carries a target id (-1 = next), so it is a
+    VALUE step (token ``FlagV``), never a bare fire (e36s07 user decision).
     """
     family = catalog.family_of(prop)
     if family == catalog.FAMILY_SET_SCALAR:
@@ -138,6 +141,8 @@ def step_modes_for(prop: str) -> list[str]:
         return modes
     if prop == "color":  # set_vec: only color has a cell editor (legacy)
         return ["value", "random"]
+    if prop == "flag":
+        return ["value"]
     if family in (catalog.FAMILY_TOGGLE, catalog.FAMILY_TRIGGER):
         return ["fire"]
     if family == catalog.FAMILY_ENUM:
@@ -227,9 +232,18 @@ def execute_step(
     lo, hi = _component_bounds(prop)
 
     if mode == "value":
-        val = max(lo, min(hi, float(step_data.get("v1") or 0.0)))
-        osc_client.send_message(target_addr, float(val))
-        append_log("OUT", f"{target_addr} [{val:.2f}]")
+        raw = step_data.get("v1")
+        if prop == "flag":
+            # flag carries an explicit id (-1 = next, per the OSC contract); a
+            # single flag makes the no-argument form a no-op (BUG-2026-09-12)
+            value = float(raw) if raw is not None else -1.0
+            flag_id = float(round(max(lo, min(hi, value))))
+            osc_client.send_message(target_addr, flag_id)
+            append_log("OUT", f"{target_addr} [{flag_id:.0f}]")
+        else:
+            val = max(lo, min(hi, float(raw or 0.0)))
+            osc_client.send_message(target_addr, float(val))
+            append_log("OUT", f"{target_addr} [{val:.2f}]")
 
     elif mode == "random":
         rand_val = random.uniform(lo, hi)
@@ -267,15 +281,6 @@ def execute_step(
             val = max(0.0, min(1.0, float(step_data.get("v1") or 0.0)))
             osc_client.send_message(target_addr, float(val))
             append_log("OUT", f"{target_addr} [{val:.2f}]")
-        elif prop == "flag":
-            # BUG-2026-09-12: flag carries an explicit id (-1 = next, per the
-            # OSC contract); the no-argument "next" form is a no-op with a
-            # single flag, so a Flag step must send its value.
-            lo, hi = _component_bounds(prop)
-            raw = step_data.get("v1")
-            flag_id = float(round(max(lo, min(hi, float(raw) if raw is not None else -1.0))))
-            osc_client.send_message(target_addr, flag_id)
-            append_log("OUT", f"{target_addr} [{flag_id:.0f}]")
         else:  # trigger: replay/reset/reload no-arg
             osc_client.send_message(target_addr, [])
             append_log("OUT", f"{target_addr} (fire)")
