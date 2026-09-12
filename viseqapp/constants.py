@@ -453,6 +453,7 @@ MIDI_ACTION_SEQ_ROW_ENABLE = "seq_row_enable"  # activate every step of a sequen
 MIDI_ACTION_SEQ_ROW_DISABLE = "seq_row_disable"  # deactivate every step of a sequencer row
 MIDI_ACTION_ENABLE_CORRECTION = "enable_correction"  # arm the SELECTED source's CC block
 MIDI_ACTION_MONITOR_TOGGLE = "monitor_toggle"  # e39s01: show/hide the MIDI Monitor window
+MIDI_ACTION_ROUTE_TOGGLE = "route_toggle"  # e40s01: arm/disarm a Route (its Enabled gate)
 
 
 # e39s01: MIDI Monitor (diagnostic window). The capture is bounded so a spinning

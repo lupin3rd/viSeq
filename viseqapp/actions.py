@@ -25,6 +25,7 @@ from viseqapp.constants import (
     MIDI_ACTION_NUDGE_BACK,
     MIDI_ACTION_NUDGE_FORWARD,
     MIDI_ACTION_REGEN_SELECTED,
+    MIDI_ACTION_ROUTE_TOGGLE,
     MIDI_ACTION_SEQ_ROW_ASSIGN,
     MIDI_ACTION_SEQ_ROW_DISABLE,
     MIDI_ACTION_SEQ_ROW_ENABLE,
@@ -47,6 +48,9 @@ CATEGORY_MEDIAGRID = "mediagrid"
 
 # e39s01: diagnostic window actions (MIDI Monitor show/hide).
 CATEGORY_MONITOR = "monitor"
+
+# e40s01: Route actions (arm/disarm a Route's Enabled gate).
+CATEGORY_ROUTE = "route"
 
 # Kinds describe how the incoming MIDI value maps onto the action.
 KIND_MOMENTARY = "momentary"  # note edges trigger; CC fires at the >=64 threshold
@@ -147,6 +151,9 @@ ACTION_SPECS: dict[str, ActionSpec] = {
     ),
     MIDI_ACTION_MONITOR_TOGGLE: ActionSpec(
         MIDI_ACTION_MONITOR_TOGGLE, "MIDI Monitor window", CATEGORY_MONITOR, KIND_MOMENTARY
+    ),
+    MIDI_ACTION_ROUTE_TOGGLE: ActionSpec(
+        MIDI_ACTION_ROUTE_TOGGLE, "Arm/disarm Route", CATEGORY_ROUTE, KIND_MOMENTARY
     ),
 }
 
