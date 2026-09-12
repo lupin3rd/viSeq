@@ -3086,12 +3086,37 @@ PREVIEW_SEEK_TAG = "preview_seek"
 PREVIEW_PLAYBTN_TAG = "preview_play_btn"
 PREVIEW_SPEED_TAG = "preview_speed"
 PREVIEW_SPEED_RESET_TAG = "preview_speed_reset"
+PREVIEW_SPEED_LABEL_TAG = "preview_speed_label"
+PREVIEW_CLOSE_TAG = "preview_close_btn"
 PREVIEW_WAIT_TAG = "preview_wait_text"
 PREVIEW_STATUS_TAG = "preview_status_text"
 PREVIEW_MSG_TEXT_TAG = "preview_msg_text"
-# px of fixed chrome in the transport row (play button, timecode, Speed field +
-# label + 1x reset, Close); the seek slider takes the remaining window width.
-PREVIEW_TRANSPORT_CHROME_W = 480
+PREVIEW_TRANSPORT_TAG = "preview_transport"
+PREVIEW_FLOW_ROW_TAGS = ("preview_flow_0", "preview_flow_1", "preview_flow_2")
+
+# Transport layout (BUG-2026-09-12): the seek bar + controls never exceed the
+# video width; the buttons flow onto new lines when the video gets narrow.
+PREVIEW_H_PAD = 20  # px horizontal padding of the video + transport content
+PREVIEW_TRANSPORT_RESERVE_H = 150  # px reserved below the video (transport rows + status)
+PREVIEW_H_SPACING = 8  # px horizontal spacing used by the button flow
+PREVIEW_SEEK_MIN_W = 80
+PREVIEW_BTN_PAUSE_W = 70
+PREVIEW_TIME_RESERVE_W = 92  # px reserved for the timecode label
+PREVIEW_SPEED_LABEL_W = 46  # px reserved for the "Speed" label
+PREVIEW_SPEED_FIELD_W = 64
+PREVIEW_BTN_RESET_W = 30
+PREVIEW_BTN_CLOSE_W = 60
+
+# The transport controls in reading order with their fixed widths; the flow
+# packer uses this to decide where the lines break.
+PREVIEW_TRANSPORT_CONTROLS: tuple[tuple[str, int], ...] = (
+    (PREVIEW_PLAYBTN_TAG, PREVIEW_BTN_PAUSE_W),
+    (PREVIEW_TIME_TAG, PREVIEW_TIME_RESERVE_W),
+    (PREVIEW_SPEED_LABEL_TAG, PREVIEW_SPEED_LABEL_W),
+    (PREVIEW_SPEED_TAG, PREVIEW_SPEED_FIELD_W),
+    (PREVIEW_SPEED_RESET_TAG, PREVIEW_BTN_RESET_W),
+    (PREVIEW_CLOSE_TAG, PREVIEW_BTN_CLOSE_W),
+)
 
 # Default window geometry when no remembered rect exists yet (a session rect
 # is remembered while the app runs and reused for the next preview).
@@ -3103,6 +3128,7 @@ PREVIEW_WIN_Y = 120
 _preview_player: Any = None  # composition-root-owned PreviewPlayer instance
 _preview_tex_dims: tuple[int, int] | None = None
 _preview_win_rect: tuple[int, int, int, int] | None = None
+_preview_layout: tuple[int, int, int] | None = None  # last applied (disp_w, disp_h, content_w)
 _preview_error_shown = False
 
 
@@ -3174,28 +3200,74 @@ def _preview_remember_rect() -> None:
     _preview_win_rect = (int(x), int(y), w, h)
 
 
+def _pack_preview_controls(max_w: int) -> list[list[str]]:
+    """Greedily pack the transport controls into rows no wider than ``max_w``.
+
+    Pure (no dpg): a control that does not fit flows onto the next line, so the
+    transport never exceeds the video width (BUG-2026-09-12).
+    """
+    rows: list[list[str]] = [[] for _ in PREVIEW_FLOW_ROW_TAGS]
+    row = 0
+    used = 0
+    for tag, width in PREVIEW_TRANSPORT_CONTROLS:
+        if rows[row] and used + PREVIEW_H_SPACING + width > max_w and row + 1 < len(rows):
+            row += 1
+            used = 0
+        if rows[row]:
+            used += PREVIEW_H_SPACING
+        rows[row].append(tag)
+        used += width
+    return rows
+
+
+def _layout_preview_transport(content_w: int) -> None:
+    """Reflow the seek bar + transport controls to ``content_w`` (the video
+    width): the slider spans the width, the buttons wrap onto new lines."""
+    if dpg.does_item_exist(PREVIEW_SEEK_TAG):
+        dpg.configure_item(PREVIEW_SEEK_TAG, width=max(PREVIEW_SEEK_MIN_W, content_w))
+    rows = _pack_preview_controls(content_w)
+    for row_tag, tags in zip(PREVIEW_FLOW_ROW_TAGS, rows, strict=True):
+        for tag in tags:
+            if dpg.does_item_exist(tag):
+                dpg.move_item(tag, parent=row_tag)
+        if dpg.does_item_exist(row_tag):
+            dpg.configure_item(row_tag, show=bool(tags))
+
+
 def _layout_preview_content() -> None:
-    """Reflow the video + transport to the current window size (resize-safe)."""
+    """Reflow the video + transport to the current window size.
+
+    The transport never exceeds the video width: the seek bar spans it and the
+    buttons wrap when the video is narrow. The applied geometry is cached so a
+    per-frame call never reflows (and never disturbs a slider drag) — only a
+    real size change reflows.
+    """
+    global _preview_layout
     if not dpg.does_item_exist(PREVIEW_WINDOW_TAG):
         return
     w = max(260, int(dpg.get_item_width(PREVIEW_WINDOW_TAG) or 0) or PREVIEW_WIN_W)
     h = max(200, int(dpg.get_item_height(PREVIEW_WINDOW_TAG) or 0) or PREVIEW_WIN_H)
-    # transport row: fixed buttons/time, the seek slider takes the rest
-    if dpg.does_item_exist(PREVIEW_SEEK_TAG):
-        dpg.configure_item(PREVIEW_SEEK_TAG, width=max(80, w - PREVIEW_TRANSPORT_CHROME_W))
-    if dpg.does_item_exist(PREVIEW_STATUS_TAG):
-        dpg.configure_item(PREVIEW_STATUS_TAG, wrap=max(200, w - 24))
-    # the video fills the width and keeps its aspect, leaving room for the
-    # transport + status rows below
-    if _preview_tex_dims is not None and dpg.does_item_exist(PREVIEW_IMAGE_TAG):
+    disp_w = 0
+    disp_h = 0
+    if _preview_tex_dims is not None:
+        # the video fills the width, keeps its aspect, and leaves the transport
+        # its reserved room below
         tex_w, tex_h = _preview_tex_dims
-        avail_h = max(120, h - 120)
-        disp_w = max(200, w - 20)
+        avail_h = max(120, h - PREVIEW_TRANSPORT_RESERVE_H)
+        disp_w = max(200, w - PREVIEW_H_PAD)
         disp_h = int(disp_w * tex_h / tex_w)
         if disp_h > avail_h:
             disp_h = max(120, avail_h)
             disp_w = max(200, int(disp_h * tex_w / tex_h))
+    content_w = disp_w if disp_w else max(200, w - PREVIEW_H_PAD)
+    if (disp_w, disp_h, content_w) == _preview_layout:
+        return  # geometry unchanged: keep the current rows (and any drag)
+    _preview_layout = (disp_w, disp_h, content_w)
+    if disp_w and dpg.does_item_exist(PREVIEW_IMAGE_TAG):
         dpg.configure_item(PREVIEW_IMAGE_TAG, width=disp_w, height=disp_h)
+    _layout_preview_transport(content_w)
+    if dpg.does_item_exist(PREVIEW_STATUS_TAG):
+        dpg.configure_item(PREVIEW_STATUS_TAG, wrap=max(200, content_w))
 
 
 def _on_preview_window_resize(
@@ -3212,6 +3284,8 @@ def _open_preview_window(target_id: str, message: str | None = None) -> None:
     ``message`` given: an error window (no transport) so a refused preview is
     visible and closable, never a silent no-op.
     """
+    global _preview_layout
+    _preview_layout = None  # a fresh window must be laid out once
     if _preview_win_rect is not None:
         x, y, w, h = _preview_win_rect
     else:
@@ -3232,41 +3306,54 @@ def _open_preview_window(target_id: str, message: str | None = None) -> None:
         ):
             with dpg.group(tag=PREVIEW_VIDEO_SLOT_TAG):
                 dpg.add_text("Connecting...", tag=PREVIEW_WAIT_TAG)
-            with dpg.group(horizontal=True):
-                dpg.add_button(
-                    label="Pause",
-                    width=70,
-                    tag=PREVIEW_PLAYBTN_TAG,
-                    callback=on_preview_play_button,
-                )
+            with dpg.group(tag=PREVIEW_TRANSPORT_TAG):
                 dpg.add_slider_float(
                     default_value=0.0,
                     min_value=0.0,
                     max_value=1.0,
-                    width=max(80, w - PREVIEW_TRANSPORT_CHROME_W),
+                    width=max(PREVIEW_SEEK_MIN_W, w - PREVIEW_H_PAD),
                     tag=PREVIEW_SEEK_TAG,
                     callback=on_preview_seek,
                 )
-                themed_text("0:00 / 0:00", slot="text", tag=PREVIEW_TIME_TAG)
-                themed_text("Speed", slot="text_dim")
-                dpg.add_drag_float(
-                    default_value=PREVIEW_SPEED_DEFAULT,
-                    min_value=PREVIEW_SPEED_MIN,
-                    max_value=PREVIEW_SPEED_MAX,
-                    speed=PREVIEW_SPEED_STEP,
-                    format="%.2fx",
-                    width=64,
-                    tag=PREVIEW_SPEED_TAG,
-                    callback=on_preview_speed,
-                )
-                dpg.add_button(
-                    label="1x",
-                    width=30,
-                    tag=PREVIEW_SPEED_RESET_TAG,
-                    callback=on_preview_speed_reset,
-                )
-                dpg.add_button(label="Close", width=60, callback=close_source_preview)
+                # controls live in the first flow row; _layout_preview_content
+                # moves them onto the next row when they no longer fit the video
+                with dpg.group(horizontal=True, tag=PREVIEW_FLOW_ROW_TAGS[0]):
+                    dpg.add_button(
+                        label="Pause",
+                        width=PREVIEW_BTN_PAUSE_W,
+                        tag=PREVIEW_PLAYBTN_TAG,
+                        callback=on_preview_play_button,
+                    )
+                    themed_text("0:00 / 0:00", slot="text", tag=PREVIEW_TIME_TAG)
+                    themed_text("Speed", slot="text_dim", tag=PREVIEW_SPEED_LABEL_TAG)
+                    dpg.add_drag_float(
+                        default_value=PREVIEW_SPEED_DEFAULT,
+                        min_value=PREVIEW_SPEED_MIN,
+                        max_value=PREVIEW_SPEED_MAX,
+                        speed=PREVIEW_SPEED_STEP,
+                        format="%.2fx",
+                        width=PREVIEW_SPEED_FIELD_W,
+                        tag=PREVIEW_SPEED_TAG,
+                        callback=on_preview_speed,
+                    )
+                    dpg.add_button(
+                        label="1x",
+                        width=PREVIEW_BTN_RESET_W,
+                        tag=PREVIEW_SPEED_RESET_TAG,
+                        callback=on_preview_speed_reset,
+                    )
+                    dpg.add_button(
+                        label="Close",
+                        width=PREVIEW_BTN_CLOSE_W,
+                        tag=PREVIEW_CLOSE_TAG,
+                        callback=close_source_preview,
+                    )
+                for row_tag in PREVIEW_FLOW_ROW_TAGS[1:]:
+                    dpg.add_group(horizontal=True, tag=row_tag)
             themed_text("", slot="text_dim", tag=PREVIEW_STATUS_TAG)
+        # first reflow to the intended geometry (the window may not report its
+        # size yet); the first decoded frame refines it to the video width
+        _layout_preview_content()
     # window resize handler: inner content follows the window size
     if dpg.does_item_exist(PREVIEW_RESIZE_REG_TAG):
         dpg.delete_item(PREVIEW_RESIZE_REG_TAG)
@@ -3310,7 +3397,7 @@ def _preview_apply_frame(rgba: Any) -> None:
 
 def close_source_preview(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     """Clean stop: remember the geometry, close the worker, drop the window."""
-    global _preview_player, _preview_tex_dims
+    global _preview_player, _preview_tex_dims, _preview_layout
     _preview_remember_rect()
     player = _preview_player
     _preview_player = None
@@ -3321,6 +3408,7 @@ def close_source_preview(sender: Any = None, app_data: Any = None, user_data: An
     if dpg.does_item_exist(PREVIEW_WINDOW_TAG):
         dpg.delete_item(PREVIEW_WINDOW_TAG)  # drops the texture/image children too
     _preview_tex_dims = None
+    _preview_layout = None
     state.preview_active = None
     state.preview_playing = False
     state.preview_error = None

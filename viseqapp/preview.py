@@ -19,7 +19,6 @@ from typing import Any
 
 import av
 import numpy as np
-from PIL import Image
 
 from viseqapp import state
 from viseqapp.constants import (
@@ -186,21 +185,49 @@ class PreviewPlayer:
 
     # -- internals ----------------------------------------------------------
 
-    def _publish(self, frame: Any, tb: float) -> None:
-        """Scale + convert one decoded frame, push it, re-anchor the pacing."""
-        arr = frame.to_ndarray(format="rgb24")  # (h, w, 3) uint8
-        img = Image.fromarray(arr).convert("RGBA")
-        if img.width > self._cap[0] or img.height > self._cap[1]:
-            img.thumbnail(self._cap, Image.Resampling.LANCZOS)
-        rgba = np.asarray(img, dtype=np.float32) / 255.0
-        state.preview_frames.put((self.source_name, rgba))
+    def _frame_to_rgba(self, frame: Any) -> np.ndarray:
+        """Scale a decoded frame to the texture cap and return RGBA float32.
+
+        Scaling happens in libswscale (``VideoFrame.reformat``) BEFORE the frame
+        is copied to numpy. Converting the full-resolution frame and resizing it
+        with PIL cost ~34 ms/frame at 1080p (hard real-time limit, and the
+        anchor-to-now pacing then compounded it to <0.5x); swscale + numpy is
+        ~2 ms/frame (BUG-2026-09-12).
+        """
+        width, height = frame.width, frame.height
+        scale = min(self._cap[0] / width, self._cap[1] / height, 1.0)
+        if scale < 1.0:
+            frame = frame.reformat(
+                width=max(1, int(width * scale)),
+                height=max(1, int(height * scale)),
+                format="rgb24",
+            )
+        else:
+            frame = frame.reformat(format="rgb24")
+        arr = frame.to_ndarray()  # (h, w, 3) uint8
+        h, w = arr.shape[0], arr.shape[1]
+        rgba = np.empty((h, w, 4), dtype=np.float32)
+        rgba[..., :3] = arr
+        rgba[..., :3] *= 1.0 / 255.0
+        rgba[..., 3] = 1.0
+        return rgba
+
+    def _publish(self, frame: Any, tb: float, due: float | None = None) -> None:
+        """Scale + convert one decoded frame, push it, re-anchor the pacing.
+
+        ``due`` is the wall-clock time this frame was scheduled for; anchoring
+        to it (not to the actual publish time) keeps decode/convert latency from
+        accumulating into a permanently slower playback rate.
+        """
         pts = frame.pts
+        rgba = self._frame_to_rgba(frame)
+        state.preview_frames.put((self.source_name, rgba))
         if pts is not None:
             media_s = float(pts) * tb
             self._position = media_s
             self._last_media = media_s
             self._anchor_pts = media_s
-            self._anchor_wall = time.monotonic()
+            self._anchor_wall = due if due is not None else time.monotonic()
 
     def _wait_until(self, target: float) -> bool:
         """Sleep until the wall clock reaches ``target``.
@@ -281,11 +308,12 @@ class PreviewPlayer:
                 ):
                     continue
                 # PTS pacing: sleep until this frame is due at the chosen speed
+                due = None
                 if media_s is not None and self._anchor_wall is not None:
                     due = self._anchor_wall + (media_s - self._anchor_pts) / self._speed
                     if not self._wait_until(due):
                         continue
-                self._publish(frame, tb)
+                self._publish(frame, tb, due=due)
         except Exception as e:
             self.error = str(e)
         finally:
