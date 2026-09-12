@@ -5800,9 +5800,9 @@ def _mapper_cards_per_line() -> int:
 
 
 # --- ROUTES IN THE MAPPER (e40s01) -------------------------------------------
-# Each source is one line with a Control band (the input-mapping cards) and a Get
-# band (the State Routes reading that source); source-less Routes (Clock/
-# Constant) live in a Global line on top. Three chips hide a band/line.
+# Each source is one line with a Control band (the input-mapping cards) and a State
+# band (the Routes reading that source); source-less Routes (Clock/Constant) live
+# in a Global line on top. Three chips hide a band/line.
 
 _mapper_show_control = True
 _mapper_show_get = True
@@ -6186,7 +6186,7 @@ def refresh_mapper_ui() -> None:
         )
         return
     # e40s01: split the flat list into Control Origins (the card bands, grouped
-    # by source) and the other Routes (the Get bands + the source-less Global
+    # by source) and the other Routes (the State bands + the source-less Global
     # line). Row order stays mapper.row_targets() (e31s01).
     targets = list(mapper.row_targets())
     rows: dict[str, list[dict[str, Any]]] = {target: [] for target in targets}
@@ -6203,7 +6203,7 @@ def refresh_mapper_ui() -> None:
             global_routes.append(mapping)
     if _mapper_show_global and global_routes:
         global_block = dpg.add_group(parent="mapper_mappings_group", tag="mapper_global_block")
-        themed_text("Global", slot="text_dim", parent=global_block)
+        themed_text("Clock+Constant", slot="text_dim", parent=global_block)
         for route in global_routes:
             _render_route_row(route, parent=global_block)
     per_line = _mapper_cards_per_line()
@@ -9009,10 +9009,10 @@ with (
             callback=on_mapper_filter,
         )
         dpg.add_checkbox(
-            label="Get", tag="mapper_filter_get", default_value=True, callback=on_mapper_filter
+            label="State", tag="mapper_filter_get", default_value=True, callback=on_mapper_filter
         )
         dpg.add_checkbox(
-            label="Global",
+            label="Clock+Constant",
             tag="mapper_filter_global",
             default_value=True,
             callback=on_mapper_filter,
