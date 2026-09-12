@@ -607,6 +607,12 @@ CLOCK_DEFAULT = "bpm"
 ROUTE_CONST_VALUE_MIN = -10.0
 ROUTE_CONST_VALUE_MAX = 10.0
 ROUTE_CONST_VALUE_DEFAULT = 0.5
+# e40s03: an OSC Destination is a new, opt-in network egress: fixed address, one
+# value argument (ADR decision 8). These are the defaults of a fresh Route.
+ROUTE_OSC_DEFAULT_HOST = "127.0.0.1"
+ROUTE_OSC_DEFAULT_PORT = 9000
+ROUTE_OSC_DEFAULT_ADDRESS = "/viseq/route"
+ROUTE_OSC_MAX_PORT = 65535
 ROUTE_DIRECTIONS: dict[str, tuple[str, ...]] = {
     ORIGIN_CONTROL: (DEST_VIMIX,),  # v1: a Control Origin keeps writing Vimix
     ORIGIN_STATE: (DEST_MIDI, DEST_OSC),

@@ -20,6 +20,7 @@ from viseqapp.constants import (
     MAX_STATE_JSON_BYTES,
     MAX_THUMBNAIL_BLOB_BYTES,
     MAX_THUMBNAIL_PIXELS,
+    ROUTE_OSC_MAX_PORT,
     VIOSC_IP,
     VIOSC_PORT,
 )
@@ -150,3 +151,63 @@ class ViseqOSCUDPServer(osc_server.ThreadingOSCUDPServer):
     """
 
     max_packet_size = MAX_THUMBNAIL_BLOB_BYTES + 4096
+
+
+# e40s03: OSC OUTPUT DESTINATIONS — an opt-in third-party egress.
+# One cached SimpleUDPClient per (host, port) so a Route never recreates a socket
+# per emission; a destination is validated before any send (address must be an
+# OSC path, port in range, host non-empty). The viOSC client above is untouched:
+# /vimix traffic never goes through here.
+
+_route_clients: dict[tuple[str, int], Any] = {}
+
+
+def validate_destination(spec: Any) -> str | None:
+    """The problem with an OSC destination spec, or None when it is usable (e40s03)."""
+    if not isinstance(spec, dict):
+        return "missing OSC destination"
+    host = str(spec.get("host") or "").strip()
+    if not host:
+        return "OSC host is empty"
+    raw_port = spec.get("port")
+    try:
+        port = int(raw_port) if raw_port is not None else 0
+    except (TypeError, ValueError):
+        return f"OSC port {raw_port!r} is not a number"
+    if not 1 <= port <= ROUTE_OSC_MAX_PORT:
+        return f"OSC port {port} out of range 1..{ROUTE_OSC_MAX_PORT}"
+    address = str(spec.get("address") or "").strip()
+    if not address.startswith("/") or len(address) < 2:
+        return f"OSC address {address!r} must start with '/'"
+    return None
+
+
+def _client_for(host: str, port: int) -> Any:
+    """The cached UDP client of one (host, port) destination (e40s03)."""
+    key = (str(host), int(port))
+    client = _route_clients.get(key)
+    if client is None:
+        client = udp_client.SimpleUDPClient(key[0], key[1])
+        _route_clients[key] = client
+    return client
+
+
+def send_route_osc(spec: Any, value: float) -> bool:
+    """Send one value to a Route's OSC destination; False on an invalid spec (e40s03).
+
+    Best-effort and never raising into the main loop: a bad spec or a failing
+    send is logged and returns False (the viOSC client and the /vimix path are
+    untouched).
+    """
+    error = validate_destination(spec)
+    if error is not None:
+        log_error("OSC", f"route destination: {error}")
+        return False
+    address = str(spec["address"])
+    try:
+        _client_for(str(spec["host"]), int(spec["port"])).send_message(address, [float(value)])
+        append_log("OUT", f"{address} [{float(value):.2f}] (route)")
+        return True
+    except Exception as e:
+        log_error("OSC", f"route destination {address}: {e}")
+        return False

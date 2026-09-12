@@ -473,6 +473,17 @@ def _default_output_range(destination: str, spec: dict[str, Any]) -> tuple[float
     return float(spec["min"]), float(spec["max"])
 
 
+def default_output_range(
+    destination: str, prop: str, component: str | None = None
+) -> tuple[float, float]:
+    """The default Destination range of a Route for a property (e40s03).
+
+    Used by the Route editor when the Destination changes: MIDI is 0..127, OSC
+    the 0..1 unit, Vimix the catalog range.
+    """
+    return _default_output_range(destination, _component_spec(prop, component))
+
+
 def _build_mapping(
     mapping_id: int,
     target_id: str | None,

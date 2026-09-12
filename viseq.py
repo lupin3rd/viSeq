@@ -46,6 +46,7 @@ from viseqapp.constants import (
     DEFAULT_PALETTE,
     DEST_MIDI,
     DEST_OSC,
+    DESTINATIONS,
     FRAME_SLEEP_ANIMATED,
     FRAME_SLEEP_IDLE,
     HELP_ASCII_LOGO,
@@ -162,6 +163,9 @@ from viseqapp.constants import (
     ROUTE_DEFAULT_CADENCE_MS,
     ROUTE_DIRECTIONS,
     ROUTE_MIN_CADENCE_MS,
+    ROUTE_OSC_DEFAULT_ADDRESS,
+    ROUTE_OSC_DEFAULT_HOST,
+    ROUTE_OSC_DEFAULT_PORT,
     ROUTE_STEPS_CONTINUOUS,
     ROUTE_TICK_INTERVAL_S,
     SLOT_BUTTON_HEIGHT,
@@ -230,7 +234,11 @@ from viseqapp.osc import (
     incoming_osc_handler,
     osc_client,
     send_monitor_command,
+    send_route_osc,
     thumbnail_decoder_worker,
+)
+from viseqapp.osc import (
+    validate_destination as validate_osc_destination,
 )
 from viseqapp.palette import (
     _apply_theme_config,
@@ -5094,10 +5102,14 @@ def _sync_route_subscriptions() -> None:
 
 
 def _emit_route(route: dict[str, Any], value: float) -> None:
-    """Send one Route's Destination value (e40s01: MIDI; OSC is e40s03)."""
-    if mapper.destination_of(route) != DEST_MIDI:
-        return
+    """Send one Route's Destination value (e40s01 MIDI, e40s03 OSC)."""
+    destination = mapper.destination_of(route)
     spec = route.get("destination_spec") or {}
+    if destination == DEST_OSC:
+        send_route_osc(spec, value)
+        return
+    if destination != DEST_MIDI:
+        return
     controller = find_controller_by_port(str(spec.get("controller_port") or ""))
     if controller is None or not ensure_route_output(controller):
         return
@@ -6251,6 +6263,15 @@ def open_route_editor(sender: Any = None, app_data: Any = None, user_data: Any =
     _open_route_editor(int(user_data))
 
 
+def on_route_destination_change(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Destination combo in the Route editor: reveal only its fields (e40s03)."""
+    destination = str(app_data or DEST_MIDI)
+    dpg.configure_item("route_midi_fields", show=destination == DEST_MIDI)
+    dpg.configure_item("route_osc_fields", show=destination == DEST_OSC)
+
+
 def on_route_origin_change(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     """Origin combo in the Route editor: reveal only the chosen Origin fields (e40s02)."""
     origin = str(app_data or ORIGIN_STATE)
@@ -6274,6 +6295,7 @@ def _open_route_editor(route_id: int) -> None:
     origin = mapper.origin_of(route)
     if origin == ORIGIN_CONTROL:
         return
+    destination = mapper.destination_of(route)
     spec = route.get("destination_spec") or {}
     ports = [str(c.get("port", "")) for c in midi_controllers if c.get("port")]
     clock = str((route.get("origin_spec") or {}).get("clock") or CLOCK_DEFAULT)
@@ -6336,14 +6358,23 @@ def _open_route_editor(route_id: int) -> None:
                 speed=0.01,
                 tag="route_const_value",
             )
-        themed_text("Controller", slot="text_dim")
+        themed_text("Destination", slot="text_dim")
         dpg.add_combo(
-            items=ports,
-            default_value=str(spec.get("controller_port") or (ports[0] if ports else "")),
+            items=[d for d in DESTINATIONS if d in ROUTE_DIRECTIONS[origin]],
+            default_value=destination,
             width=280,
-            tag="route_controller_combo",
+            tag="route_destination_combo",
+            callback=on_route_destination_change,
         )
-        with dpg.group(horizontal=True):
+        with dpg.group(tag="route_midi_fields", show=destination == DEST_MIDI):
+            themed_text("Controller", slot="text_dim")
+            dpg.add_combo(
+                items=ports,
+                default_value=str(spec.get("controller_port") or (ports[0] if ports else "")),
+                width=280,
+                tag="route_controller_combo",
+            )
+        with dpg.group(horizontal=True, tag="route_midi_row", show=destination == DEST_MIDI):
             themed_text("Channel", slot="text_dim")
             dpg.add_drag_int(
                 default_value=int(spec.get("channel", 0)),
@@ -6366,6 +6397,25 @@ def _open_route_editor(route_id: int) -> None:
                 max_value=127,
                 width=70,
                 tag="route_number",
+            )
+        with dpg.group(tag="route_osc_fields", show=destination == DEST_OSC):
+            themed_text("Host", slot="text_dim")
+            dpg.add_input_text(
+                default_value=str(spec.get("host") or ROUTE_OSC_DEFAULT_HOST),
+                width=280,
+                tag="route_osc_host",
+            )
+            themed_text("Port", slot="text_dim")
+            dpg.add_input_int(
+                default_value=int(spec.get("port") or ROUTE_OSC_DEFAULT_PORT),
+                width=160,
+                tag="route_osc_port",
+            )
+            themed_text("Address", slot="text_dim")
+            dpg.add_input_text(
+                default_value=str(spec.get("address") or ROUTE_OSC_DEFAULT_ADDRESS),
+                width=280,
+                tag="route_osc_address",
             )
         themed_text("Steps (1 = continuous)", slot="text_dim")
         dpg.add_drag_int(
@@ -6394,9 +6444,12 @@ def route_editor_confirm(sender: Any = None, app_data: Any = None, user_data: An
     origin = str(dpg.get_value("route_origin_combo"))
     if origin not in (ORIGIN_STATE, ORIGIN_CLOCK, ORIGIN_CONST):
         origin = ORIGIN_STATE
-    destination = mapper.destination_of(route)
-    if destination not in ROUTE_DIRECTIONS[origin]:  # v1 direction rule
-        destination = ROUTE_DIRECTIONS[origin][0]
+    chosen = str(dpg.get_value("route_destination_combo"))
+    destination = chosen if chosen in DESTINATIONS else mapper.destination_of(route)
+    if destination not in ROUTE_DIRECTIONS[origin]:
+        log_error("Mapper", f"destination {destination!r} is not allowed for origin {origin!r}")
+        return
+    previous_destination = mapper.destination_of(route)
     route["origin"] = origin
     route["destination"] = destination
     route["cadence"] = None
@@ -6430,6 +6483,22 @@ def route_editor_confirm(sender: Any = None, app_data: Any = None, user_data: An
             "type": str(dpg.get_value("route_type_combo")),
             "number": int(dpg.get_value("route_number")),
         }
+    else:
+        osc_spec = {
+            "host": str(dpg.get_value("route_osc_host")),
+            "port": int(dpg.get_value("route_osc_port")),
+            "address": str(dpg.get_value("route_osc_address")),
+        }
+        error = validate_osc_destination(osc_spec)
+        if error is not None:
+            log_error("Mapper", f"route destination: {error}")
+            return  # keep the dialog open so the user can fix the input
+        route["destination_spec"] = osc_spec
+    if destination != previous_destination:
+        out_from, out_to = mapper.default_output_range(
+            destination, str(route["property"]), route.get("component")
+        )
+        mapper.set_mapping_output(route["id"], out_from, out_to)
     if dpg.does_item_exist("mapper_route_window"):
         dpg.delete_item("mapper_route_window")
     refresh_mapper_ui()
