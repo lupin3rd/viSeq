@@ -282,6 +282,13 @@ VIOSC_LISTEN_PORT = 6667  # the port viOSC sends replies to; viseq's own server 
 # PREVIEW_MAX_FPS — one raw-texture set_value per frame on the main thread.
 PREVIEW_PORT = 8686  # matches the viOSC HTTP preview server default
 PREVIEW_PATH_PREFIX = "/preview/"  # served as /preview/<source-name>/file|meta
+THUMB_PATH_PREFIX = "/thumb/"  # e41s03: served as /thumb/<source-name>/<index>
+THUMB_HTTP_TIMEOUT = 5.0  # s: bounded thumbnail fetch (the OSC lane is the fallback)
+# e41s03: consecutive data-plane fetches with NO ANSWER before the fast lane is
+# given up for the session. A 404 is an ANSWER (the endpoint is alive and has no
+# such frame) and must not count — an out-of-range index on the stall path would
+# otherwise cost the lane for the whole session.
+THUMB_HTTP_MAX_FAILURES = 3
 PREVIEW_CAP_WIDTH = 640  # px texture-cap width (measured budget, SPIKE-source-preview)
 PREVIEW_CAP_HEIGHT = 360  # px texture-cap height
 PREVIEW_MAX_FPS = 30.0  # decoded/pushed frame ceiling

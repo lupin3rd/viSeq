@@ -19,7 +19,7 @@ import numpy as np
 from PIL import Image
 from pythonosc import osc_server, udp_client
 
-from viseqapp import iomonitor, state
+from viseqapp import dataplane, iomonitor, state
 from viseqapp.constants import (
     IO_MONITOR_DIRECTION_IN,
     IO_MONITOR_DIRECTION_OUT,
@@ -38,6 +38,7 @@ from viseqapp.constants import (
     MAX_THUMBNAIL_BLOB_BYTES,
     MAX_THUMBNAIL_PIXELS,
     RECV_BUFFER_BYTES,
+    THUMB_HTTP_MAX_FAILURES,
     THUMB_REQUESTS_PER_SOURCE,
     VIOSC_IP,
     VIOSC_PORT,
@@ -92,6 +93,64 @@ def thumbnail_decoder_worker() -> None:
         except Exception as e:
             print(f"[viseq Decoder Error] Unable to decode '{name}': {e}")
         state.blob_queue.task_done()
+
+
+def request_thumbnail_over_osc(name: str, index: int) -> None:
+    """Ask the daemon for one frame on the ORIGINAL OSC lane (e41s03 fallback)."""
+    client = state.viosc_client or osc_client
+    client.send_message(f"/viosc/thumb/{name}", [int(index)])
+    append_log("OUT", f"/viosc/thumb/{name} {index}")
+
+
+def fetch_one_thumbnail(name: str, index: int) -> bool:
+    """Fetch one frame over the data plane, falling back to OSC (e41s03).
+
+    Returns True when the data plane produced the blob. On ANY failure the
+    request is re-issued on the OSC lane, so a mixed-version rig keeps working:
+    an older daemon has no ``/thumb`` route at all, and a down server is
+    indistinguishable from that.
+
+    The lane is given up ONLY after THUMB_HTTP_MAX_FAILURES consecutive fetches
+    with NO ANSWER. A 404 answers — the endpoint is alive and has no such frame
+    (an out-of-range index on the e41s02 stall path) — and must not cost the
+    fast lane for the rest of the session.
+    """
+    host = state.dataplane_host
+    port = state.dataplane_port
+    blob, answered = dataplane.fetch_thumbnail(host, port, name, index)
+    if blob is not None:
+        state.thumb_http_supported = True
+        state.thumb_http_failures = 0
+        state.blob_queue.put((name, str(index), blob))
+        return True
+    if answered:
+        state.thumb_http_failures = 0
+    else:
+        state.thumb_http_failures += 1
+        if state.thumb_http_failures >= THUMB_HTTP_MAX_FAILURES:
+            state.thumb_http_supported = False
+            log_error(
+                "Thumbnail data plane",
+                f"{host}:{port} not answering — falling back to the OSC thumbnail lane",
+            )
+    request_thumbnail_over_osc(name, index)
+    return False
+
+
+def thumbnail_fetch_worker() -> None:
+    """Drain the data-plane fetch queue, one thumbnail at a time (e41s03).
+
+    The OSC lane's replies arrive on the OSC server thread; this worker is the
+    data plane's equivalent source, and it feeds the SAME blob queue — so the
+    decode worker and every texture consumer are untouched by the new transport.
+    """
+    while True:
+        name, index = state.thumb_fetch_queue.get()
+        try:
+            fetch_one_thumbnail(name, index)
+        except Exception as e:  # a worker thread must never die (Defensive Code)
+            log_error("Thumbnail data plane", str(e))
+        state.thumb_fetch_queue.task_done()
 
 
 def get_current_target_id() -> str | None:

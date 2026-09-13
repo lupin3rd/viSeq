@@ -243,9 +243,11 @@ from viseqapp.osc import (
     incoming_osc_handler,
     next_thumb_frame_index,
     osc_client,
+    request_thumbnail_over_osc,
     send_mapping_osc,
     size_receive_buffer,
     thumbnail_decoder_worker,
+    thumbnail_fetch_worker,
 )
 from viseqapp.osc import (
     validate_destination as validate_osc_destination,
@@ -2479,9 +2481,10 @@ def request_missing_thumbnails(now: float) -> None:
         last_thumb = request_timestamps.get(f"thumb_{target_id}", 0)
         if now - last_thumb <= THUMB_REQUEST_INTERVAL:
             continue
-        msg_addr = f"/viosc/thumb/{target_id}"
-        state.viosc_client.send_message(msg_addr, [frame_index])
-        append_log("OUT", f"{msg_addr} {frame_index}")
+        if state.thumb_http_supported is False:
+            request_thumbnail_over_osc(target_id, frame_index)
+        else:
+            state.thumb_fetch_queue.put((target_id, frame_index))
         request_timestamps[f"thumb_{target_id}"] = now
         if received == 0:
             # nothing has arrived yet: keep the e10s04 retry/failure accounting
@@ -3404,6 +3407,12 @@ def connect_osc_client(ip: str, port: int) -> bool:
         state.viosc_client = osc.observe_client(
             udp_client.SimpleUDPClient(ip, port), f"{ip}:{port}"
         )
+        # e41s03: the HTTP data plane lives on the SAME machine as viOSC, so its
+        # host follows the OSC client and its port comes from the preview config
+        # (the e38 server the thumbnails now use). Refreshed whenever the client
+        # is (re)connected, which is the only place the endpoint can change.
+        state.dataplane_host = str(ip)
+        state.dataplane_port = int(_preview_endpoints(load_config())["port"])
         dpg.set_value("viosc_status", f"Client Status: Ready on {ip}:{port}")
         return True
     except Exception:
@@ -9498,6 +9507,7 @@ threading.Thread(target=sequencer_tick, daemon=True).start()
 threading.Thread(target=visual_metronome_loop, daemon=True).start()
 threading.Thread(target=essentia_analyzer_loop, daemon=True).start()
 threading.Thread(target=thumbnail_decoder_worker, daemon=True).start()
+threading.Thread(target=thumbnail_fetch_worker, daemon=True).start()  # e41s03 data plane
 
 dpg.create_viewport(title="viSeq - Audio-Reactive VJ Controller", width=1700, height=1080)
 # e19/e37s04: closing the main window goes through the dirty-gated request — a

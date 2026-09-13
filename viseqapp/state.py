@@ -84,6 +84,19 @@ ui_state_queue: queue.Queue[Any] = queue.Queue()
 blob_queue: queue.Queue[Any] = queue.Queue()
 
 
+# e41s03: the HTTP data-plane lane for thumbnails. Items are (source name,
+# frame index); the fetch worker drains it and feeds blob_queue, so the decode
+# worker and every texture consumer stay untouched. thumb_http_supported is the
+# runtime lane probe (None = not yet proven, True = proven, False = given up);
+# thumb_http_failures counts consecutive fetches with NO answer at all.
+# dataplane_host/port are the machine-A HTTP endpoint, set with the OSC client.
+thumb_fetch_queue: queue.Queue[Any] = queue.Queue()
+thumb_http_supported: bool | None = None
+thumb_http_failures: int = 0
+dataplane_host: str = ""
+dataplane_port: int = 0
+
+
 texture_queue: queue.Queue[Any] = queue.Queue()
 
 
