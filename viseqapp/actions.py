@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from viseqapp.constants import (
     MIDI_ACTION_BEAT_SOURCE,
     MIDI_ACTION_ENABLE_CORRECTION,
+    MIDI_ACTION_IO_MONITOR_TOGGLE,
     MIDI_ACTION_MAPPER_BAND,
     MIDI_ACTION_MAPPER_CUE_OPEN,
     MIDI_ACTION_MAPPER_ENABLE,
@@ -23,7 +24,6 @@ from viseqapp.constants import (
     MIDI_ACTION_MAPPER_RESET,
     MIDI_ACTION_MAPPING_ADD,
     MIDI_ACTION_MAPPING_TOGGLE,
-    MIDI_ACTION_MONITOR_TOGGLE,
     MIDI_ACTION_NUDGE_BACK,
     MIDI_ACTION_NUDGE_FORWARD,
     MIDI_ACTION_REGEN_SELECTED,
@@ -47,7 +47,7 @@ CATEGORY_MAPPER = "mapper"
 # e33s04: Mediagrid actions (source browsing + tile-anchored context rows).
 CATEGORY_MEDIAGRID = "mediagrid"
 
-# e39s01: diagnostic window actions (MIDI Monitor show/hide).
+# e39s01: diagnostic window actions (I/O Monitor show/hide).
 CATEGORY_MONITOR = "monitor"
 
 # e40s01: Mapping actions (arm/disarm a Mapping's Enabled gate).
@@ -150,8 +150,8 @@ ACTION_SPECS: dict[str, ActionSpec] = {
         CATEGORY_MEDIAGRID,
         KIND_MOMENTARY,
     ),
-    MIDI_ACTION_MONITOR_TOGGLE: ActionSpec(
-        MIDI_ACTION_MONITOR_TOGGLE, "MIDI Monitor window", CATEGORY_MONITOR, KIND_MOMENTARY
+    MIDI_ACTION_IO_MONITOR_TOGGLE: ActionSpec(
+        MIDI_ACTION_IO_MONITOR_TOGGLE, "I/O Monitor window", CATEGORY_MONITOR, KIND_MOMENTARY
     ),
     MIDI_ACTION_MAPPING_TOGGLE: ActionSpec(
         MIDI_ACTION_MAPPING_TOGGLE, "Arm/disarm Mapping", CATEGORY_MAPPING, KIND_MOMENTARY

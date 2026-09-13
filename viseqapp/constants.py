@@ -448,57 +448,57 @@ MIDI_ACTION_SEQ_ROW_ASSIGN = "seq_row_assign"  # selected source -> a sequencer 
 MIDI_ACTION_SEQ_ROW_ENABLE = "seq_row_enable"  # activate every step of a sequencer row
 MIDI_ACTION_SEQ_ROW_DISABLE = "seq_row_disable"  # deactivate every step of a sequencer row
 MIDI_ACTION_ENABLE_CORRECTION = "enable_correction"  # arm the SELECTED source's CC block
-MIDI_ACTION_MONITOR_TOGGLE = "monitor_toggle"  # e39s01: show/hide the MIDI Monitor window
+MIDI_ACTION_IO_MONITOR_TOGGLE = "monitor_toggle"  # e39s01: show/hide the I/O Monitor window
 MIDI_ACTION_MAPPING_TOGGLE = "mapping_toggle"  # e40s01: arm/disarm a Mapping (Enabled gate)
 MIDI_ACTION_MAPPING_ADD = "mapping_add"  # e40s08: add a State Mapping on a source line
 
 
-# e39s01: MIDI Monitor (diagnostic window). The capture is bounded so a spinning
+# e39s01: I/O Monitor (diagnostic window). The capture is bounded so a spinning
 # wheel can never grow memory; coalescing is for display only (one row per
 # control with last/min/max/count). The neutral centre is the app-wide CC/pitch
 # midpoint used by _parse_midi_msg; the outcome tags are what the stream and
 # controls panes render.
 # e39s05: the monitor observes both directions (the I/O Monitor from task 3 on).
-MIDI_MONITOR_TRANSPORT_MIDI = "midi"
-MIDI_MONITOR_TRANSPORT_OSC = "osc"  # the OSC lanes join the same engine (task 2)
-MIDI_MONITOR_DIRECTION_IN = "in"
-MIDI_MONITOR_DIRECTION_OUT = "out"
-MIDI_MONITOR_DIRECTIONS: tuple[str, ...] = (
-    MIDI_MONITOR_DIRECTION_IN,
-    MIDI_MONITOR_DIRECTION_OUT,
+IO_MONITOR_TRANSPORT_MIDI = "midi"
+IO_MONITOR_TRANSPORT_OSC = "osc"  # the OSC lanes join the same engine (task 2)
+IO_MONITOR_DIRECTION_IN = "in"
+IO_MONITOR_DIRECTION_OUT = "out"
+IO_MONITOR_DIRECTIONS: tuple[str, ...] = (
+    IO_MONITOR_DIRECTION_IN,
+    IO_MONITOR_DIRECTION_OUT,
 )
-MIDI_MONITOR_KIND_MIDI_IN = "midi_in"
-MIDI_MONITOR_KIND_MIDI_OUT = "midi_out"
+IO_MONITOR_KIND_MIDI_IN = "midi_in"
+IO_MONITOR_KIND_MIDI_OUT = "midi_out"
 # e39s05: the OSC kinds say WHY a message exists (the address says what it is).
-MIDI_MONITOR_KIND_VIOSC = "viosc"
-MIDI_MONITOR_KIND_VIMIX = "vimix"
-MIDI_MONITOR_KIND_SYNC = "viosc_sync"
-MIDI_MONITOR_KIND_MONITOR = "viosc_monitor"
-MIDI_MONITOR_KIND_WATCH = "viosc_watch"
-MIDI_MONITOR_KIND_WATCH_REPLY = "watch_reply"
-MIDI_MONITOR_KIND_STATE = "state_broadcast"
-MIDI_MONITOR_KIND_THUMBNAIL = "thumbnail"
-MIDI_MONITOR_KIND_DESTINATION = "destination"
-MIDI_MONITOR_KIND_FADE = "fade"
-MIDI_MONITOR_KIND_SEQUENCER = "sequencer"
-MIDI_MONITOR_KIND_CUE = "cue"
-MIDI_MONITOR_KIND_OSC = "osc"
-MIDI_MONITOR_OUTCOME_RECV = "RECV"
+IO_MONITOR_KIND_VIOSC = "viosc"
+IO_MONITOR_KIND_VIMIX = "vimix"
+IO_MONITOR_KIND_SYNC = "viosc_sync"
+IO_MONITOR_KIND_MONITOR = "viosc_monitor"
+IO_MONITOR_KIND_WATCH = "viosc_watch"
+IO_MONITOR_KIND_WATCH_REPLY = "watch_reply"
+IO_MONITOR_KIND_STATE = "state_broadcast"
+IO_MONITOR_KIND_THUMBNAIL = "thumbnail"
+IO_MONITOR_KIND_DESTINATION = "destination"
+IO_MONITOR_KIND_FADE = "fade"
+IO_MONITOR_KIND_SEQUENCER = "sequencer"
+IO_MONITOR_KIND_CUE = "cue"
+IO_MONITOR_KIND_OSC = "osc"
+IO_MONITOR_OUTCOME_RECV = "RECV"
 # e39s05: a SHORT text/byte arg is summarised by size only beyond this many chars.
-MIDI_MONITOR_SUMMARY_TEXT_MAX = 48
+IO_MONITOR_SUMMARY_TEXT_MAX = 48
 
-MIDI_MONITOR_STREAM_LIMIT = 400  # newest stream entries kept
-MIDI_MONITOR_CONTROL_LIMIT = 256  # distinct controls tracked (oldest activity evicted)
-MIDI_MONITOR_NEUTRAL_CENTRE = 64
-MIDI_MONITOR_VALUE_MAX = 127.0
-MIDI_MONITOR_REFRESH_INTERVAL = 0.1  # s; UI text blocks refresh at most this often
-MIDI_MONITOR_OUTCOME_LEARN = "LEARN"
-MIDI_MONITOR_OUTCOME_MATCH = "MATCH"
-MIDI_MONITOR_OUTCOME_SENT = "SENT"
-MIDI_MONITOR_OUTCOME_HOLD = "HOLD"
-MIDI_MONITOR_OUTCOME_MUTED = "MUTED"
-MIDI_MONITOR_OUTCOME_NOMATCH = "NOMATCH"
-MIDI_MONITOR_OUTCOME_NOBIND = "NOBIND"
+IO_MONITOR_STREAM_LIMIT = 400  # newest stream entries kept
+IO_MONITOR_CONTROL_LIMIT = 256  # distinct controls tracked (oldest activity evicted)
+IO_MONITOR_NEUTRAL_CENTRE = 64
+IO_MONITOR_VALUE_MAX = 127.0
+IO_MONITOR_REFRESH_INTERVAL = 0.1  # s; UI text blocks refresh at most this often
+IO_MONITOR_OUTCOME_LEARN = "LEARN"
+IO_MONITOR_OUTCOME_MATCH = "MATCH"
+IO_MONITOR_OUTCOME_SENT = "SENT"
+IO_MONITOR_OUTCOME_HOLD = "HOLD"
+IO_MONITOR_OUTCOME_MUTED = "MUTED"
+IO_MONITOR_OUTCOME_NOMATCH = "NOMATCH"
+IO_MONITOR_OUTCOME_NOBIND = "NOBIND"
 
 
 # e33s02: momentary learn actions trigger at CC value >= this threshold (MIDI's

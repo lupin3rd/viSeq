@@ -21,7 +21,7 @@ running in the activation chain (including the running cue itself) is a no-op
 from typing import Any
 
 from viseqapp import catalog, mapper, osc, state
-from viseqapp.constants import MIDI_MONITOR_KIND_CUE
+from viseqapp.constants import IO_MONITOR_KIND_CUE
 from viseqapp.osc import osc_client
 from viseqapp.queues import append_log
 
@@ -216,7 +216,7 @@ def _advance_run(run: dict[str, Any], now_ms: float) -> None:
 
 def _send_cue(address: str, args: Any) -> None:
     """Send one cue-row OSC message, tagged for the I/O Monitor (e39s05)."""
-    with osc.sent_by(MIDI_MONITOR_KIND_CUE):
+    with osc.sent_by(IO_MONITOR_KIND_CUE):
         osc_client.send_message(address, args)
 
 

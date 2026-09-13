@@ -15,7 +15,7 @@ from viseqapp.constants import (
     BEAT_SOURCE_MANUAL,
     BEAT_SOURCE_MIDI,
     BPM_DETECTION_STALE_SECONDS,
-    MIDI_MONITOR_KIND_SEQUENCER,
+    IO_MONITOR_KIND_SEQUENCER,
 )
 from viseqapp.osc import osc_client
 from viseqapp.palette import dpg_color_rgba
@@ -28,7 +28,7 @@ def _send(address: str, args: Any) -> None:
     A sequencer step and a fade both write ``/vimix/...``: the ADDRESS says what
     it is, the KIND says why it exists, and only the caller knows that.
     """
-    with osc.sent_by(MIDI_MONITOR_KIND_SEQUENCER):
+    with osc.sent_by(IO_MONITOR_KIND_SEQUENCER):
         osc_client.send_message(address, args)
 
 

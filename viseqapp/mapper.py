@@ -19,6 +19,9 @@ from viseqapp.constants import (
     DEST_OSC,
     DEST_VIMIX,
     DESTINATIONS,
+    IO_MONITOR_OUTCOME_HOLD,
+    IO_MONITOR_OUTCOME_MUTED,
+    IO_MONITOR_OUTCOME_SENT,
     MAPPER_MAX_MAPPINGS,
     MAPPER_PERSISTED_KEYS,
     MAPPING_DEFAULT_CADENCE_MS,
@@ -27,9 +30,6 @@ from viseqapp.constants import (
     MAPPING_MIN_CADENCE_MS,
     MAPPING_OSC_EMIT_EPSILON,
     MAPPING_STEPS_CONTINUOUS,
-    MIDI_MONITOR_OUTCOME_HOLD,
-    MIDI_MONITOR_OUTCOME_MUTED,
-    MIDI_MONITOR_OUTCOME_SENT,
     ORIGIN_CLOCK,
     ORIGIN_CONST,
     ORIGIN_CONTROL,
@@ -1220,17 +1220,17 @@ def preview_mapping_value(mapping: dict[str, Any], raw: float) -> tuple[float, s
     Mirrors apply_input_value WITHOUT sending: disabled -> MUTED (value
     unchanged), outside a real window -> HOLD (value unchanged), otherwise the
     value the mapping would take. Returns (effective_value, tag). Used by the
-    MIDI Monitor; the dispatch path itself is untouched.
+    I/O Monitor; the dispatch path itself is untouched.
     """
     if not mapping.get("enabled", False):
-        return float(mapping["value"]), MIDI_MONITOR_OUTCOME_MUTED
+        return float(mapping["value"]), IO_MONITOR_OUTCOME_MUTED
     unit = _raw_unit(mapping, raw)
     if unit is None:
-        return float(mapping["value"]), MIDI_MONITOR_OUTCOME_HOLD
+        return float(mapping["value"]), IO_MONITOR_OUTCOME_HOLD
     value = float(mapping["output_from"]) + unit * (
         float(mapping["output_to"]) - float(mapping["output_from"])
     )
-    return value, MIDI_MONITOR_OUTCOME_SENT
+    return value, IO_MONITOR_OUTCOME_SENT
 
 
 def apply_input_value(mapping_id: int, raw: float) -> float:

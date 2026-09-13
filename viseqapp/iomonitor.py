@@ -25,19 +25,19 @@ import time
 from typing import Any
 
 from viseqapp.constants import (
-    MIDI_MONITOR_CONTROL_LIMIT,
-    MIDI_MONITOR_DIRECTION_IN,
-    MIDI_MONITOR_DIRECTION_OUT,
-    MIDI_MONITOR_KIND_MIDI_IN,
-    MIDI_MONITOR_KIND_MIDI_OUT,
-    MIDI_MONITOR_NEUTRAL_CENTRE,
-    MIDI_MONITOR_OUTCOME_RECV,
-    MIDI_MONITOR_OUTCOME_SENT,
-    MIDI_MONITOR_STREAM_LIMIT,
-    MIDI_MONITOR_SUMMARY_TEXT_MAX,
-    MIDI_MONITOR_TRANSPORT_MIDI,
-    MIDI_MONITOR_TRANSPORT_OSC,
-    MIDI_MONITOR_VALUE_MAX,
+    IO_MONITOR_CONTROL_LIMIT,
+    IO_MONITOR_DIRECTION_IN,
+    IO_MONITOR_DIRECTION_OUT,
+    IO_MONITOR_KIND_MIDI_IN,
+    IO_MONITOR_KIND_MIDI_OUT,
+    IO_MONITOR_NEUTRAL_CENTRE,
+    IO_MONITOR_OUTCOME_RECV,
+    IO_MONITOR_OUTCOME_SENT,
+    IO_MONITOR_STREAM_LIMIT,
+    IO_MONITOR_SUMMARY_TEXT_MAX,
+    IO_MONITOR_TRANSPORT_MIDI,
+    IO_MONITOR_TRANSPORT_OSC,
+    IO_MONITOR_VALUE_MAX,
 )
 
 __all__ = [
@@ -72,7 +72,7 @@ def control_key(
     msg_type: str,
     channel: int,
     number: int,
-    direction: str = MIDI_MONITOR_DIRECTION_IN,
+    direction: str = IO_MONITOR_DIRECTION_IN,
 ) -> tuple[str, str, int, int, str]:
     """The coalescing key of one control (one CC/note on one channel/port).
 
@@ -97,7 +97,7 @@ def summarize_osc_args(args: Any) -> str:
     if isinstance(args, (bytes, bytearray)):
         return f"blob {len(args)} B"
     if isinstance(args, str):
-        return args if len(args) <= MIDI_MONITOR_SUMMARY_TEXT_MAX else f"text {len(args)} B"
+        return args if len(args) <= IO_MONITOR_SUMMARY_TEXT_MAX else f"text {len(args)} B"
     if isinstance(args, (list, tuple)):
         if not args:
             return "no args"
@@ -128,7 +128,7 @@ def record_osc(
     _append_stream(
         {
             "ts": ts,
-            "transport": MIDI_MONITOR_TRANSPORT_OSC,
+            "transport": IO_MONITOR_TRANSPORT_OSC,
             "direction": str(direction),
             "kind": str(kind),
             "port": str(peer),
@@ -137,9 +137,9 @@ def record_osc(
             "number": 0,
             "value": 0.0,
             "normalized": 0.0,
-            "outcome": MIDI_MONITOR_OUTCOME_RECV
-            if direction == MIDI_MONITOR_DIRECTION_IN
-            else MIDI_MONITOR_OUTCOME_SENT,
+            "outcome": IO_MONITOR_OUTCOME_RECV
+            if direction == IO_MONITOR_DIRECTION_IN
+            else IO_MONITOR_OUTCOME_SENT,
             "detail": f"{address}{f' ({detail})' if detail else ''}",
             "subject": str(address),
         }
@@ -157,7 +157,7 @@ def control_id(control: tuple[str, str, int, int, str]) -> str:
 
 def normalize_value(value: float) -> float:
     """The raw MIDI value on the app-wide 0..1 scale."""
-    return float(value) / MIDI_MONITOR_VALUE_MAX
+    return float(value) / IO_MONITOR_VALUE_MAX
 
 
 def centre_offset(value: float) -> int:
@@ -166,7 +166,7 @@ def centre_offset(value: float) -> int:
     Positive above the centre, negative below: the readout that exposes a
     wheel's rest position and dead-zone.
     """
-    return round(float(value)) - MIDI_MONITOR_NEUTRAL_CENTRE
+    return round(float(value)) - IO_MONITOR_NEUTRAL_CENTRE
 
 
 def revision() -> int:
@@ -186,10 +186,10 @@ def record_rx(
 ) -> None:
     """Record one INCOMING message + its resolution outcome (main thread)."""
     _record(
-        MIDI_MONITOR_DIRECTION_IN,
+        IO_MONITOR_DIRECTION_IN,
         (port, msg_type, channel, number),
         value,
-        MIDI_MONITOR_KIND_MIDI_IN,
+        IO_MONITOR_KIND_MIDI_IN,
         outcome,
         detail,
         now,
@@ -212,11 +212,11 @@ def record_tx(
     r2c3', 'controller setup'). Same bounded stream and coalescing as the RX side.
     """
     _record(
-        MIDI_MONITOR_DIRECTION_OUT,
+        IO_MONITOR_DIRECTION_OUT,
         (port, msg_type, channel, number),
         value,
-        MIDI_MONITOR_KIND_MIDI_OUT,
-        MIDI_MONITOR_OUTCOME_SENT,
+        IO_MONITOR_KIND_MIDI_OUT,
+        IO_MONITOR_OUTCOME_SENT,
         detail,
         now,
     )
@@ -243,7 +243,7 @@ def _record(
     raw = float(value)
     entry: dict[str, Any] = {
         "ts": ts,
-        "transport": MIDI_MONITOR_TRANSPORT_MIDI,
+        "transport": IO_MONITOR_TRANSPORT_MIDI,
         "direction": direction,
         "kind": str(kind),
         "port": key[0],
@@ -291,8 +291,8 @@ def _append_stream(entry: dict[str, Any]) -> None:
     last = _stream[-1] if _stream else None
     if (
         last is not None
-        and entry["transport"] == MIDI_MONITOR_TRANSPORT_OSC
-        and last.get("transport") == MIDI_MONITOR_TRANSPORT_OSC
+        and entry["transport"] == IO_MONITOR_TRANSPORT_OSC
+        and last.get("transport") == IO_MONITOR_TRANSPORT_OSC
         and (last.get("direction"), last.get("kind"), last.get("port"), last.get("subject"))
         == (entry["direction"], entry["kind"], entry["port"], entry["subject"])
     ):
@@ -304,14 +304,14 @@ def _append_stream(entry: dict[str, Any]) -> None:
         return
     entry.setdefault("repeat", 1)
     _stream.append(entry)
-    if len(_stream) > MIDI_MONITOR_STREAM_LIMIT:
-        del _stream[: len(_stream) - MIDI_MONITOR_STREAM_LIMIT]
+    if len(_stream) > IO_MONITOR_STREAM_LIMIT:
+        del _stream[: len(_stream) - IO_MONITOR_STREAM_LIMIT]
     _revision += 1
 
 
 def _evict_controls() -> None:
     """Keep the control table bounded by dropping the least recently seen row."""
-    while len(_controls) > MIDI_MONITOR_CONTROL_LIMIT:
+    while len(_controls) > IO_MONITOR_CONTROL_LIMIT:
         oldest = min(_controls, key=lambda k: float(_controls[k]["last_ts"]))
         del _controls[oldest]
 
@@ -365,7 +365,7 @@ def _entry_matches(
 
 
 def snapshot_controls(
-    port: str | None = None, direction: str | None = MIDI_MONITOR_DIRECTION_IN
+    port: str | None = None, direction: str | None = IO_MONITOR_DIRECTION_IN
 ) -> list[dict[str, Any]]:
     """Control rows, most recently active first, with the centre offset derived.
 
@@ -415,8 +415,8 @@ def stats() -> dict[str, int]:
         "stream": len(_stream),
         "controls": len(_controls),
         "revision": _revision,
-        "stream_limit": MIDI_MONITOR_STREAM_LIMIT,
-        "control_limit": MIDI_MONITOR_CONTROL_LIMIT,
+        "stream_limit": IO_MONITOR_STREAM_LIMIT,
+        "control_limit": IO_MONITOR_CONTROL_LIMIT,
     }
 
 
@@ -433,7 +433,7 @@ def format_stream(entries: list[dict[str, Any]]) -> str:
             f"{int(entry['number']):>3}  "
             f"{float(entry['value']):>4.0f}  "
             f"{float(entry['normalized']):>5.2f}  "
-            if entry["transport"] == MIDI_MONITOR_TRANSPORT_MIDI
+            if entry["transport"] == IO_MONITOR_TRANSPORT_MIDI
             else f"{'':>2}  {'':>3}  {'':>4}  {'':>5}  "
         )
         lines.append(
@@ -478,9 +478,9 @@ def format_controls(rows: list[dict[str, Any]]) -> str:
 def format_report(stream_text: str, controls_text: str) -> str:
     """The 'Copy report' payload: header + both panes, for pasting in a ticket."""
     stamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    incoming = sum(1 for e in _stream if e["direction"] == MIDI_MONITOR_DIRECTION_IN)
+    incoming = sum(1 for e in _stream if e["direction"] == IO_MONITOR_DIRECTION_IN)
     return (
-        f"viSeq MIDI Monitor report - {stamp}\n"
+        f"viSeq I/O Monitor report - {stamp}\n"
         f"messages: {len(_stream)} (in {incoming} / out {len(_stream) - incoming})  "
         f"controls: {len(_controls)}\n\n"
         f"--- STREAM (newest first) ---\n{stream_text}\n\n"

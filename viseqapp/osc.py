@@ -18,24 +18,24 @@ import numpy as np
 from PIL import Image
 from pythonosc import osc_server, udp_client
 
-from viseqapp import midimonitor, state
+from viseqapp import iomonitor, state
 from viseqapp.constants import (
+    IO_MONITOR_DIRECTION_IN,
+    IO_MONITOR_DIRECTION_OUT,
+    IO_MONITOR_KIND_DESTINATION,
+    IO_MONITOR_KIND_MONITOR,
+    IO_MONITOR_KIND_OSC,
+    IO_MONITOR_KIND_STATE,
+    IO_MONITOR_KIND_SYNC,
+    IO_MONITOR_KIND_THUMBNAIL,
+    IO_MONITOR_KIND_VIMIX,
+    IO_MONITOR_KIND_VIOSC,
+    IO_MONITOR_KIND_WATCH,
+    IO_MONITOR_KIND_WATCH_REPLY,
     MAPPING_OSC_MAX_PORT,
     MAX_STATE_JSON_BYTES,
     MAX_THUMBNAIL_BLOB_BYTES,
     MAX_THUMBNAIL_PIXELS,
-    MIDI_MONITOR_DIRECTION_IN,
-    MIDI_MONITOR_DIRECTION_OUT,
-    MIDI_MONITOR_KIND_DESTINATION,
-    MIDI_MONITOR_KIND_MONITOR,
-    MIDI_MONITOR_KIND_OSC,
-    MIDI_MONITOR_KIND_STATE,
-    MIDI_MONITOR_KIND_SYNC,
-    MIDI_MONITOR_KIND_THUMBNAIL,
-    MIDI_MONITOR_KIND_VIMIX,
-    MIDI_MONITOR_KIND_VIOSC,
-    MIDI_MONITOR_KIND_WATCH,
-    MIDI_MONITOR_KIND_WATCH_REPLY,
     VIOSC_IP,
     VIOSC_PORT,
 )
@@ -136,18 +136,18 @@ def _reply_detail(address: str, args: Any) -> str:
         ]
         if pairs:
             return " ".join(pairs[:6])
-    return midimonitor.summarize_osc_args(args)
+    return iomonitor.summarize_osc_args(args)
 
 
 def _incoming_kind(address: str) -> str:
     """The monitor kind of an incoming OSC address (e39s05)."""
     if address == "/viosc/replydata":
-        return MIDI_MONITOR_KIND_STATE
+        return IO_MONITOR_KIND_STATE
     if address.startswith("/viosc/replythumb/"):
-        return MIDI_MONITOR_KIND_THUMBNAIL
+        return IO_MONITOR_KIND_THUMBNAIL
     if address.startswith("/viosc/reply/"):
-        return MIDI_MONITOR_KIND_WATCH_REPLY
-    return MIDI_MONITOR_KIND_OSC
+        return IO_MONITOR_KIND_WATCH_REPLY
+    return IO_MONITOR_KIND_OSC
 
 
 def listen_peer() -> str:
@@ -162,8 +162,8 @@ def listen_peer() -> str:
 def incoming_osc_handler(address: str, *args: Any) -> None:
     append_log("IN ", address)
     try:
-        midimonitor.record_osc(
-            MIDI_MONITOR_DIRECTION_IN,
+        iomonitor.record_osc(
+            IO_MONITOR_DIRECTION_IN,
             _incoming_kind(address),
             address,
             _reply_detail(address, args),
@@ -210,11 +210,11 @@ _mapping_clients: dict[tuple[str, int], Any] = {}
 
 
 _OSC_KIND_BY_PREFIX: tuple[tuple[str, str], ...] = (
-    ("/vimix/", MIDI_MONITOR_KIND_VIMIX),
-    ("/viosc/watch/", MIDI_MONITOR_KIND_WATCH),
-    ("/viosc/sync/", MIDI_MONITOR_KIND_SYNC),
-    ("/viosc/monitor", MIDI_MONITOR_KIND_MONITOR),
-    ("/viosc/", MIDI_MONITOR_KIND_VIOSC),
+    ("/vimix/", IO_MONITOR_KIND_VIMIX),
+    ("/viosc/watch/", IO_MONITOR_KIND_WATCH),
+    ("/viosc/sync/", IO_MONITOR_KIND_SYNC),
+    ("/viosc/monitor", IO_MONITOR_KIND_MONITOR),
+    ("/viosc/", IO_MONITOR_KIND_VIOSC),
 )
 
 
@@ -228,7 +228,7 @@ def kind_of(address: str) -> str:
     for prefix, kind in _OSC_KIND_BY_PREFIX:
         if address.startswith(prefix):
             return kind
-    return MIDI_MONITOR_KIND_OSC
+    return IO_MONITOR_KIND_OSC
 
 
 def viosc_peer() -> str:
@@ -285,11 +285,11 @@ class ObservedClient:
     def send_message(self, address: str, args: Any = None) -> None:
         """Send one OSC message and record it (the payload itself is not kept)."""
         self._client.send_message(address, args)
-        midimonitor.record_osc(
-            MIDI_MONITOR_DIRECTION_OUT,
+        iomonitor.record_osc(
+            IO_MONITOR_DIRECTION_OUT,
             _current_kind.get() or kind_of(address),
             address,
-            midimonitor.summarize_osc_args(args),
+            iomonitor.summarize_osc_args(args),
             self._peer,
         )
 
@@ -355,7 +355,7 @@ def send_mapping_osc(spec: Any, value: float) -> bool:
         if not isinstance(client, ObservedClient):
             client = observe_client(client, f"{spec['host']}:{spec['port']}")
             _mapping_clients[(str(spec["host"]), int(spec["port"]))] = client
-        with sent_by(MIDI_MONITOR_KIND_DESTINATION):
+        with sent_by(IO_MONITOR_KIND_DESTINATION):
             client.send_message(address, [float(value)])
         append_log("OUT", f"{address} [{float(value):.2f}] (mapping)")
         return True

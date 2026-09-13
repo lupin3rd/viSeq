@@ -11,7 +11,7 @@ import threading
 import time
 from typing import Any
 
-from viseqapp import midimonitor, state
+from viseqapp import iomonitor, state
 from viseqapp.config import load_config, save_config
 from viseqapp.constants import (
     DEST_MIDI,
@@ -541,7 +541,7 @@ def _send_observed(
     with _controller_lock:
         output.send(message)
     with contextlib.suppress(Exception):
-        midimonitor.record_tx(
+        iomonitor.record_tx(
             str(port),
             str(msg_type),
             int(getattr(message, "channel", 0) or 0),
