@@ -8234,8 +8234,8 @@ def _window_menu_entries() -> list[tuple[str, str]]:
     """Windows in switching order: (tag, real window-title label).
 
     The main window (Step Sequencer) is always on screen and is not a switching
-    target; Monitor Players are appended live so the list (and Ctrl+Tab) always
-    match the windows that exist.
+    target; the workspace windows are appended live so the list (and Ctrl+Tab)
+    always match the windows that exist.
     """
     entries = [
         ("sequencer_window", "Step Sequencer"),
@@ -8308,7 +8308,7 @@ def refresh_window_menu() -> None:
 
     The list lives under the ``Windows`` menu (after its separator); each entry
     is a checkable item wired to ``switch_to_window``. Missing windows are
-    skipped so a pruned Monitor Player never leaves a dead entry.
+    skipped so a closed window never leaves a dead entry.
     """
     for tag in _window_menu_dynamic_tags:
         if dpg.does_item_exist(tag):
