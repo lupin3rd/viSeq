@@ -147,6 +147,7 @@ from viseqapp.constants import (
     MIDI_ACTION_MAPPING_TOGGLE,
     MIDI_ACTION_NUDGE_BACK,
     MIDI_ACTION_NUDGE_FORWARD,
+    MIDI_ACTION_PAIRING_PROMPT,
     MIDI_ACTION_REGEN_SELECTED,
     MIDI_ACTION_SEQ_ROW_ASSIGN,
     MIDI_ACTION_SEQ_ROW_DISABLE,
@@ -3862,6 +3863,8 @@ _MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
     MIDI_ACTION_MAPPING_TOGGLE: lambda p, v: _exec_mapping_toggle(p, v),
     # e40s08: create a State Mapping on a source line (the State box '+')
     MIDI_ACTION_MAPPING_ADD: lambda p, v: _exec_mapping_add(p, v),
+    # e42s02: re-open the pairing prompt (viOSC restarted -> new code)
+    MIDI_ACTION_PAIRING_PROMPT: lambda p, v: _exec_pairing_prompt(p, v),
 }
 
 _last_unknown_action_log: dict[str, float] = {}  # action id -> last log time (throttle)
@@ -4030,6 +4033,7 @@ def _refresh_learn_surfaces() -> None:
     _sync_seq_row_learn_strip()
     _sync_monitor_learn_marker()
     _sync_filter_learn_marker()
+    _sync_settings_pairing_learn_marker()
 
 
 def learn_marker(
@@ -4725,6 +4729,17 @@ def _exec_monitor_toggle(params: dict[str, Any], value: int) -> None:
     toggle_io_monitor_window()
 
 
+def _exec_pairing_prompt(params: dict[str, Any], value: int) -> None:
+    """e42s02: a momentary press re-opens the pairing prompt (re-pair).
+
+    Needed because viOSC rotates its code on every start: after a daemon restart
+    viseq's token is stale and this is the way back without restarting viseq.
+    """
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    show_pairing_prompt()
+
+
 def _exec_mapping_toggle(params: dict[str, Any], value: int) -> None:
     """e40s01: a momentary press arms/disarms a Mapping (its Enabled gate).
 
@@ -4802,6 +4817,25 @@ def _sync_monitor_learn_marker() -> None:
             parent="io_monitor_learn_slot",
             tag="io_monitor_mk_toggle",
             tooltip="Map: I/O Monitor window",
+        )
+
+
+def _sync_settings_pairing_learn_marker() -> None:
+    """(Re)render the pairing action's learn marker (e42s02, e33 rule).
+
+    The Settings window is built once at boot, so its marker slot is re-rendered
+    on every learn transition, next to the 'Pair with viOSC...' button.
+    """
+    if not dpg.does_item_exist("settings_pairing_learn_slot"):
+        return
+    dpg.delete_item("settings_pairing_learn_slot", children_only=True)
+    if state.midi_learn_mode:
+        learn_marker(
+            MIDI_ACTION_PAIRING_PROMPT,
+            {},
+            parent="settings_pairing_learn_slot",
+            tag="settings_pairing_mk",
+            tooltip="Map: Pair with viOSC",
         )
 
 
@@ -9318,6 +9352,10 @@ with dpg.window(
         dpg.add_input_text(default_value="127.0.0.1", tag="viosc_ip", width=120)
         dpg.add_input_int(default_value=6666, tag="viosc_port", width=80, step=0)
         dpg.add_button(label="Connect Client", callback=connect_to_viosc)
+    with dpg.group(horizontal=True):
+        dpg.add_button(label="Pair with viOSC...", callback=show_pairing_prompt)
+        with dpg.group(tag="settings_pairing_learn_slot"):
+            pass
     themed_text("Client Status: Waiting", slot="text_dim", tag="viosc_status")
     dpg.add_separator()
     dpg.add_spacer(height=5)
@@ -9625,6 +9663,7 @@ with dpg.viewport_menu_bar():
         dpg.add_menu_item(label="General", callback=show_settings_window)
         dpg.add_menu_item(label="MIDI", callback=show_midi_window)
         dpg.add_menu_item(label="Leap Motion", callback=show_leap_window)  # e26
+        dpg.add_menu_item(label="Pair with viOSC...", callback=show_pairing_prompt)  # e42s02
 
 # e11s03/e13s02: project file dialogs are created ON DEMAND by
 # show_open_project_dialog / show_save_project_dialog (_recreate_project_dialog)

@@ -26,6 +26,7 @@ from viseqapp.constants import (
     MIDI_ACTION_MAPPING_TOGGLE,
     MIDI_ACTION_NUDGE_BACK,
     MIDI_ACTION_NUDGE_FORWARD,
+    MIDI_ACTION_PAIRING_PROMPT,
     MIDI_ACTION_REGEN_SELECTED,
     MIDI_ACTION_SEQ_ROW_ASSIGN,
     MIDI_ACTION_SEQ_ROW_DISABLE,
@@ -52,6 +53,9 @@ CATEGORY_MONITOR = "monitor"
 
 # e40s01: Mapping actions (arm/disarm a Mapping's Enabled gate).
 CATEGORY_MAPPING = "mapping"
+
+# e42s02: link-pairing actions (re-open the pairing prompt).
+CATEGORY_SETTINGS = "settings"
 
 # Kinds describe how the incoming MIDI value maps onto the action.
 KIND_MOMENTARY = "momentary"  # note edges trigger; CC fires at the >=64 threshold
@@ -158,6 +162,9 @@ ACTION_SPECS: dict[str, ActionSpec] = {
     ),
     MIDI_ACTION_MAPPING_ADD: ActionSpec(
         MIDI_ACTION_MAPPING_ADD, "Add Mapping to line", CATEGORY_MAPPING, KIND_MOMENTARY
+    ),
+    MIDI_ACTION_PAIRING_PROMPT: ActionSpec(
+        MIDI_ACTION_PAIRING_PROMPT, "Pair with viOSC", CATEGORY_SETTINGS, KIND_MOMENTARY
     ),
 }
 

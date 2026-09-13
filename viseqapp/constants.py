@@ -484,6 +484,7 @@ MIDI_ACTION_ENABLE_CORRECTION = "enable_correction"  # arm the SELECTED source's
 MIDI_ACTION_IO_MONITOR_TOGGLE = "monitor_toggle"  # e39s01: show/hide the I/O Monitor window
 MIDI_ACTION_MAPPING_TOGGLE = "mapping_toggle"  # e40s01: arm/disarm a Mapping (Enabled gate)
 MIDI_ACTION_MAPPING_ADD = "mapping_add"  # e40s08: add a State Mapping on a source line
+MIDI_ACTION_PAIRING_PROMPT = "pairing_prompt"  # e42s02: re-pair with viOSC (code prompt)
 
 
 # e39s01: I/O Monitor (diagnostic window). The capture is bounded so a spinning
