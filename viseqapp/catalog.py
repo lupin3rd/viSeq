@@ -10,9 +10,14 @@ mask vs anchored vector — verified on the live rig, SPIKE-osc-source-attrs),
 the optional-ms animation flag and enum options.
 
 Every entry: {family, components:[{key,label,min,max,neutral}], partial,
-ms, options}. Legacy property ids and label/range pairs for the 17 shared
-attributes stay compatible with MAPPER_PROPERTIES (posterize min is the one
-deliberate difference: the catalog can express 0 = disabled).
+ms, options, derivable}. The last one is a CLIENT-side capability (e40s01,
+ADR-mapping-model): unlike family/ranges/ms/options (facts of the vimix OSC API,
+per the wiki), ``derivable`` says viseq may extrapolate the value between state
+refreshes — only ``seek`` is derivable today.
+
+Legacy property ids and label/range pairs for the 17 shared attributes stay
+compatible with MAPPER_PROPERTIES (posterize min is the one deliberate
+difference: the catalog can express 0 = disabled).
 """
 
 import math
@@ -48,6 +53,7 @@ def _scalar(
     ms: bool = False,
     partial: str = PARTIAL_NONE,
     options: tuple[str, ...] | None = None,
+    derivable: bool = False,
 ) -> dict[str, Any]:
     return {
         "family": family,
@@ -56,6 +62,7 @@ def _scalar(
         "partial": partial,
         "ms": ms,
         "options": list(options) if options else None,
+        "derivable": derivable,
     }
 
 
@@ -78,6 +85,7 @@ def _vector(
         "partial": partial,
         "ms": ms,
         "options": None,
+        "derivable": False,  # e40s01: no derivable vector property today
     }
 
 
@@ -97,7 +105,7 @@ PROPERTY_CATALOG: dict[str, dict[str, Any]] = {
     "gamma": _scalar("Gamma", -1.0, 1.0, 0.0, ms=True),
     "threshold": _scalar("Threshold", 0.0, 1.0, 0.0, ms=True),
     "posterize": _scalar("Posterize", 0.0, 256.0, 0.0, ms=True),  # 0 = disabled
-    "seek": _scalar("Seek", 0.0, 1.0, 0.0),  # fraction; no animation
+    "seek": _scalar("Seek", 0.0, 1.0, 0.0, derivable=True),  # fraction; no animation
     "speed": _scalar("Speed", 0.1, 10.0, 1.0, ms=True),
     # --- set vector (whole or per-component, optional ms) ---
     "position": _vector(
@@ -223,6 +231,26 @@ def is_trigger(prop: str) -> bool:
     return family_of(prop) == FAMILY_TRIGGER
 
 
+def is_derivable(prop: str) -> bool:
+    """True when a Mapping may DEAD-RECKON this property between state refreshes.
+
+    e40s01 (ADR-mapping-model, decision 5): a client-side capability, not a vimix
+    OSC fact — a linear timeline position (seek) can be extrapolated from the
+    last value plus speed * elapsed while the source plays. Every catalog entry
+    carries the flag; only seek is True today.
+    """
+    return bool(PROPERTY_CATALOG[prop]["derivable"])
+
+
+def trigger_carries_value(prop: str) -> bool:
+    """True for trigger properties whose OSC message takes an argument.
+
+    Only ``flag`` carries one (its target id; -1 advances to the next flag);
+    replay/reset/reload fire with no argument (compose_send_args).
+    """
+    return prop == "flag"
+
+
 def is_enum(prop: str) -> bool:
     return family_of(prop) == FAMILY_ENUM
 
@@ -318,7 +346,7 @@ def compose_send_args(
         else:
             args = list(values) if values is not None else default_components(prop)
     elif family == FAMILY_TRIGGER:
-        args = [value] if prop == "flag" and value is not None else []
+        args = [value] if trigger_carries_value(prop) and value is not None else []
     else:  # set_scalar, rate scalar, toggle, enum
         neutral = entry["components"][0]["neutral"]
         scalar = value

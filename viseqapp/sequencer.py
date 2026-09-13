@@ -9,23 +9,74 @@ import random
 import time
 from typing import Any
 
-from viseqapp import catalog, state
+from viseqapp import catalog, osc, state
 from viseqapp.constants import (
     BEAT_SOURCE_BAND1,
     BEAT_SOURCE_MANUAL,
     BEAT_SOURCE_MIDI,
     BPM_DETECTION_STALE_SECONDS,
+    IO_MONITOR_KIND_FADE,
+    IO_MONITOR_KIND_SEQUENCER,
 )
 from viseqapp.osc import osc_client
 from viseqapp.palette import dpg_color_rgba
 from viseqapp.queues import append_log, enqueue_set_value
 
 
+def _send(address: str, args: Any) -> None:
+    """Send one sequencer OSC message, tagged for the I/O Monitor (e39s05).
+
+    A sequencer step and a fade both write ``/vimix/...``: the ADDRESS says what
+    it is, the KIND says why it exists, and only the caller knows that.
+    """
+    with osc.sent_by(IO_MONITOR_KIND_SEQUENCER):
+        osc_client.send_message(address, args)
+
+
+def _send_fade(address: str, value: float) -> None:
+    """Send one beat-fade OSC message, tagged for the I/O Monitor (e39s05)."""
+    with osc.sent_by(IO_MONITOR_KIND_FADE):
+        osc_client.send_message(address, float(value))
+
+
+def fade_message_value(fade: dict[str, Any], index: int) -> float:
+    """The trajectory value of a beat-fade at one message index (pure, e41s02)."""
+    total_msgs = int(fade["total_msgs"])
+    progress = index / float(total_msgs - 1) if total_msgs > 1 else 1.0
+    return float(fade["start_val"] + (fade["end_val"] - fade["start_val"]) * progress)
+
+
+def advance_fade(fade: dict[str, Any], now: float) -> bool:
+    """Advance one active beat-fade to ``now``, emitting AT MOST one message (e41s02).
+
+    Returns True when a message was due. When the tick falls behind, only the
+    LATEST value goes out: the skipped intermediates are already superseded, and
+    a catch-up burst is exactly what a lossy transport must not receive (a
+    scheduler hiccup used to fan out into one datagram per skipped index). At
+    full rate the emitted sequence is unchanged — one index per tick, in order —
+    and the fade still deactivates on its last index.
+    """
+    if not fade.get("active"):
+        return False
+    total_msgs = int(fade["total_msgs"])
+    expected_index = int((now - fade["start_time"]) / fade["msg_interval"])
+    if expected_index <= fade["last_msg_index"]:
+        return False
+    index = min(expected_index, total_msgs - 1)
+    value = fade_message_value(fade, index)
+    _send_fade(fade["address"], value)
+    append_log("OUT", f"{fade['address']} [FADE: {value:.2f}]")
+    fade["last_msg_index"] = index
+    if index >= total_msgs - 1:
+        fade["active"] = False
+    return True
+
+
 def send_colorv_step(track: dict[str, Any], row: int, col: int) -> None:
     """Send the picked RGB (0..1) for a ColorV step (HIGH-1 safe)."""
     target_addr = f"{track['base_address']}/color"
     r_val, g_val, b_val = [float(c) for c in track["steps"][col]["color"]]
-    osc_client.send_message(target_addr, [r_val, g_val, b_val])
+    _send(target_addr, [r_val, g_val, b_val])
     append_log("OUT", f"{target_addr} [{r_val:.2f}, {g_val:.2f}, {b_val:.2f}]")
 
 
@@ -37,7 +88,7 @@ def send_colorr_step(track: dict[str, Any], row: int, col: int) -> None:
         random.uniform(0.0, 1.0),
         random.uniform(0.0, 1.0),
     )
-    osc_client.send_message(target_addr, [r_val, g_val, b_val])
+    _send(target_addr, [r_val, g_val, b_val])
     append_log("OUT", f"{target_addr} [{r_val:.2f}, {g_val:.2f}, {b_val:.2f}]")
 
     step_data = track["steps"][col]
@@ -50,7 +101,7 @@ def send_seekr_step(track: dict[str, Any], row: int, col: int) -> None:
     """Send a random seek (0..1) for a SeekR step and show the value in the cell."""
     target_addr = f"{track['base_address']}/seek"
     rand_val = random.uniform(0.0, 1.0)
-    osc_client.send_message(target_addr, float(rand_val))
+    _send(target_addr, float(rand_val))
     append_log("OUT", f"{target_addr} [{rand_val:.2f}]")
 
     step_data = track["steps"][col]
@@ -129,6 +180,9 @@ def step_modes_for(prop: str) -> list[str]:
     toggle & trigger -> fire (a momentary message per beat); enum -> cycle
     (advance the option index each beat). Rate family and the other vectors
     offer nothing — no ms-animation and no rate steps (user decisions).
+
+    ``flag`` is the exception: it carries a target id (-1 = next), so it is a
+    VALUE step (token ``FlagV``), never a bare fire (e36s07 user decision).
     """
     family = catalog.family_of(prop)
     if family == catalog.FAMILY_SET_SCALAR:
@@ -138,6 +192,8 @@ def step_modes_for(prop: str) -> list[str]:
         return modes
     if prop == "color":  # set_vec: only color has a cell editor (legacy)
         return ["value", "random"]
+    if prop == "flag":
+        return ["value"]
     if family in (catalog.FAMILY_TOGGLE, catalog.FAMILY_TRIGGER):
         return ["fire"]
     if family == catalog.FAMILY_ENUM:
@@ -227,13 +283,22 @@ def execute_step(
     lo, hi = _component_bounds(prop)
 
     if mode == "value":
-        val = max(lo, min(hi, float(step_data.get("v1") or 0.0)))
-        osc_client.send_message(target_addr, float(val))
-        append_log("OUT", f"{target_addr} [{val:.2f}]")
+        raw = step_data.get("v1")
+        if prop == "flag":
+            # flag carries an explicit id (-1 = next, per the OSC contract); a
+            # single flag makes the no-argument form a no-op (BUG-2026-09-12)
+            value = float(raw) if raw is not None else -1.0
+            flag_id = float(round(max(lo, min(hi, value))))
+            _send(target_addr, flag_id)
+            append_log("OUT", f"{target_addr} [{flag_id:.0f}]")
+        else:
+            val = max(lo, min(hi, float(raw or 0.0)))
+            _send(target_addr, float(val))
+            append_log("OUT", f"{target_addr} [{val:.2f}]")
 
     elif mode == "random":
         rand_val = random.uniform(lo, hi)
-        osc_client.send_message(target_addr, float(rand_val))
+        _send(target_addr, float(rand_val))
         append_log("OUT", f"{target_addr} [{rand_val:.2f}]")
         step_data["last_rand_v1"] = rand_val
         enqueue_set_value(_rand_tag(row, col), f"{rand_val:.2f}")
@@ -258,17 +323,17 @@ def execute_step(
             "start_time": time.time(),
             "last_msg_index": 0,
         }
-        osc_client.send_message(target_addr, float(start_val))
+        _send(target_addr, float(start_val))
         append_log("OUT", f"{target_addr} [FADE START: {start_val:.2f}]")
 
     elif mode == "fire":
         family = catalog.family_of(prop)
         if family == catalog.FAMILY_TOGGLE:
             val = max(0.0, min(1.0, float(step_data.get("v1") or 0.0)))
-            osc_client.send_message(target_addr, float(val))
+            _send(target_addr, float(val))
             append_log("OUT", f"{target_addr} [{val:.2f}]")
-        else:  # trigger: replay/reset/reload no-arg; flag = next
-            osc_client.send_message(target_addr, [])
+        else:  # trigger: replay/reset/reload no-arg
+            _send(target_addr, [])
             append_log("OUT", f"{target_addr} (fire)")
 
     elif mode == "cycle":
@@ -278,6 +343,6 @@ def execute_step(
         last = int(raw) if raw is not None else -1
         index = (last + 1) % count
         step_data["last_idx"] = index
-        osc_client.send_message(target_addr, float(index))
+        _send(target_addr, float(index))
         append_log("OUT", f"{target_addr} [{index}.00]")
         enqueue_set_value(_rand_tag(row, col), f"{index}")

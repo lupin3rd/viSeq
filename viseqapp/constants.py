@@ -17,13 +17,26 @@ MAX_THUMBNAIL_BLOB_BYTES = 8 * 1024 * 1024  # per-blob cap
 MAX_STATE_JSON_BYTES = 1 * 1024 * 1024  # per-replydata cap
 
 
+# e41s02: explicit UDP receive buffer for the OSC listener. socketserver inherits
+# the kernel default (208 KiB on Linux), which is small for a burst of datagrams
+# (a state broadcast arriving together with a burst of monitor/watch replies).
+# The kernel caps the request at net.core.rmem_max and doubles the effective
+# value; the helper suppresses a refusing platform.
+RECV_BUFFER_BYTES = 262144
+
+
 THUMB_REQUEST_INTERVAL = 3.0  # min seconds between thumbnail requests per source
 
 
+# e41s02: how many frame indices a source is asked for, ONE per throttle cycle.
+# Mirrors viOSC's THUMB_MAX_COUNT (up to 3 thumbs per media, jittered anchors):
+# asking for all of them in one `all` request made the daemon emit three JPEG
+# blobs back-to-back — a multi-fragment burst on a transport that never
+# retransmits.
+THUMB_REQUESTS_PER_SOURCE = 3
+
+
 LOG_HISTORY_LIMIT = 25  # max entries kept in the OSC log window
-
-
-MONITOR_OFFSET = (280, 260)  # grid spacing between monitor player windows
 
 
 DPG_COLOR_SCALE = 255.0  # DPG ToColor divides color inputs by 255 -> its color API is 0..255
@@ -122,30 +135,6 @@ MEDIA_TITLE_ELLIPSIS = "..."  # ASCII dots: ProggyClean (default font) has no U+
 
 
 MEDIA_TITLE_CHAR_PX = 7  # default-font estimate (ProggyClean 13 px) used before the atlas is built
-
-
-MONITOR_THUMB_W = 115  # thumbnail width, same as the Mediagrid/sequencer
-
-
-MONITOR_THUMB_H = 65  # thumbnail height, same as the Mediagrid/sequencer
-
-
-MONITOR_DISC_SIZE = 64  # px side of the turntable disc
-
-
-MONITOR_ALPHA_W = 10  # px width of the vertical alpha bar
-
-
-MONITOR_SEEK_W = 250  # px width of the horizontal seek bar
-
-
-MONITOR_DISC_R = 26.0  # radius of the rotating turntable arm
-
-
-MONITOR_DISC_RPM = 33.0  # disc rotations per minute at speed 1.0 (vinyl standard)
-
-
-MONITOR_SPEED_TEXT_SIZE = 12  # px font size of the speed label inside the disc
 
 
 # e16/e20/e22/e23: Mapper window geometry — the body is a vertical stack of
@@ -249,6 +238,29 @@ MAPPER_LEARN_SLOTS = 4
 MAPPER_MARKER_W = 15
 MAPPER_MARKER_H = 15
 
+# e40s13: the Mapper body scroll area. DPG's child_window treats a NEGATIVE
+# height as "fill the available height", so the area always matches the window
+# even after a resize. It used MAPPER_WINDOW_HEIGHT - 8, a number computed from
+# the INITIAL window size while the Mapper window is resizable and its
+# geometry persisted (e28s02): a user-grown window then showed a scrollbar with
+# free space below it (and the fixed value was ~20 px too tall anyway).
+MAPPER_SCROLL_HEIGHT = -1
+
+# e40s12: gap between the Mapper's Show chips and the general '+' creator, so
+# the create action reads as its own control and not as a fourth filter.
+MAPPER_FILTER_ADD_GAP = 24
+
+# e40s08: the per-source State band — a bordered box on the source line's OWN
+# sub-line (no line number) holding that source's State Mappings, plus a header
+# row ('State' + a small '+'). Height = the box WindowPadding air
+# (MAPPER_ROW_PAD_V) + the header + N rows + the ItemSpacing gap between each.
+# 17 px is the MEASURED height of both rows on the rig with real DPG 2.3.1 (the
+# header's text and a Mapping row's checkbox both settle at 17, one px above the
+# 16 px buttons); the buttons are forced to the same 17 so a row can never
+# outgrow the box.
+MAPPER_STATE_BOX_HEADER_H = 17  # px height of the box header row
+MAPPER_STATE_BOX_ROW_H = 17  # px height of one State Mapping row inside the box
+
 # e33s04: wider spacing BETWEEN the learn-bar groups (replaces the almost
 # invisible DPG vertical separators — the user asked for plain space).
 MARKER_GROUP_GAP = 18
@@ -270,10 +282,34 @@ VIOSC_LISTEN_PORT = 6667  # the port viOSC sends replies to; viseq's own server 
 # PREVIEW_MAX_FPS — one raw-texture set_value per frame on the main thread.
 PREVIEW_PORT = 8686  # matches the viOSC HTTP preview server default
 PREVIEW_PATH_PREFIX = "/preview/"  # served as /preview/<source-name>/file|meta
+THUMB_PATH_PREFIX = "/thumb/"  # e41s03: served as /thumb/<source-name>/<index>
+STATE_PATH = "/state"  # e41s04: the state table as a pull resource
+DATA_PLANE_TIMEOUT = 5.0  # s: bounded data-plane request (the OSC lane is the fallback)
+# e41s04: how often viseq reads the state table. The push fires whenever vimix
+# changes a property — the rate belongs to vimix, not to the consumer — while
+# this cadence belongs to the machine that pays the render cost. Measured cost at
+# 50 sources: 24.8 KB serialized in 0.149 ms (SPIKE-transport-planes M1), i.e.
+# cheaper in wall cost than the 2 s push baseline AND fresher.
+STATE_PULL_INTERVAL = 1.0  # s
+# e41s04: consecutive state pulls with NO ANSWER before the pull is given up for
+# the session and the cadence returns to the OSC push lane.
+STATE_PULL_MAX_FAILURES = 3
+# e41s03: consecutive data-plane fetches with NO ANSWER before the fast lane is
+# given up for the session. A 404 is an ANSWER (the endpoint is alive and has no
+# such frame) and must not count — an out-of-range index on the stall path would
+# otherwise cost the lane for the whole session.
+THUMB_HTTP_MAX_FAILURES = 3
 PREVIEW_CAP_WIDTH = 640  # px texture-cap width (measured budget, SPIKE-source-preview)
 PREVIEW_CAP_HEIGHT = 360  # px texture-cap height
 PREVIEW_MAX_FPS = 30.0  # decoded/pushed frame ceiling
 PREVIEW_HTTP_TIMEOUT = 10.0  # s: av.open + meta request timeout
+# e38 BUG-2026-09-12: playback rate. The transport is paced against the wall
+# clock from the frame PTS; 1.0 is real time (the default). The control lets the
+# user speed up/slow down and reset to the default.
+PREVIEW_SPEED_DEFAULT = 1.0  # real-time playback (the reset target)
+PREVIEW_SPEED_MIN = 0.25  # slowest selectable rate (~4x longer)
+PREVIEW_SPEED_MAX = 4.0  # fastest selectable rate
+PREVIEW_SPEED_STEP = 0.05  # drag speed of the Speed field
 
 
 # Palette slots drive every chrome color: the global theme, the per-item themes, explicit
@@ -442,7 +478,60 @@ MIDI_ACTION_SOURCE_NEXT = "source_next"  # select the next source in the grid or
 MIDI_ACTION_SOURCE_PREV = "source_prev"  # select the previous source in the grid order (wrap)
 MIDI_ACTION_REGEN_SELECTED = "regen_selected_thumb"  # regen the selected source's thumbs
 MIDI_ACTION_SEQ_ROW_ASSIGN = "seq_row_assign"  # selected source -> a sequencer row (slot)
+MIDI_ACTION_SEQ_ROW_ENABLE = "seq_row_enable"  # activate every step of a sequencer row
+MIDI_ACTION_SEQ_ROW_DISABLE = "seq_row_disable"  # deactivate every step of a sequencer row
 MIDI_ACTION_ENABLE_CORRECTION = "enable_correction"  # arm the SELECTED source's CC block
+MIDI_ACTION_IO_MONITOR_TOGGLE = "monitor_toggle"  # e39s01: show/hide the I/O Monitor window
+MIDI_ACTION_MAPPING_TOGGLE = "mapping_toggle"  # e40s01: arm/disarm a Mapping (Enabled gate)
+MIDI_ACTION_MAPPING_ADD = "mapping_add"  # e40s08: add a State Mapping on a source line
+
+
+# e39s01: I/O Monitor (diagnostic window). The capture is bounded so a spinning
+# wheel can never grow memory; coalescing is for display only (one row per
+# control with last/min/max/count). The neutral centre is the app-wide CC/pitch
+# midpoint used by _parse_midi_msg; the outcome tags are what the stream and
+# controls panes render.
+# e39s05: the monitor observes both directions (the I/O Monitor from task 3 on).
+IO_MONITOR_TRANSPORT_MIDI = "midi"
+IO_MONITOR_TRANSPORT_OSC = "osc"  # the OSC lanes join the same engine (task 2)
+IO_MONITOR_DIRECTION_IN = "in"
+IO_MONITOR_DIRECTION_OUT = "out"
+IO_MONITOR_DIRECTIONS: tuple[str, ...] = (
+    IO_MONITOR_DIRECTION_IN,
+    IO_MONITOR_DIRECTION_OUT,
+)
+IO_MONITOR_KIND_MIDI_IN = "midi_in"
+IO_MONITOR_KIND_MIDI_OUT = "midi_out"
+# e39s05: the OSC kinds say WHY a message exists (the address says what it is).
+IO_MONITOR_KIND_VIOSC = "viosc"
+IO_MONITOR_KIND_VIMIX = "vimix"
+IO_MONITOR_KIND_SYNC = "viosc_sync"
+IO_MONITOR_KIND_MONITOR = "viosc_monitor"
+IO_MONITOR_KIND_WATCH = "viosc_watch"
+IO_MONITOR_KIND_WATCH_REPLY = "watch_reply"
+IO_MONITOR_KIND_STATE = "state_broadcast"
+IO_MONITOR_KIND_THUMBNAIL = "thumbnail"
+IO_MONITOR_KIND_DESTINATION = "destination"
+IO_MONITOR_KIND_FADE = "fade"
+IO_MONITOR_KIND_SEQUENCER = "sequencer"
+IO_MONITOR_KIND_CUE = "cue"
+IO_MONITOR_KIND_OSC = "osc"
+IO_MONITOR_OUTCOME_RECV = "RECV"
+# e39s05: a SHORT text/byte arg is summarised by size only beyond this many chars.
+IO_MONITOR_SUMMARY_TEXT_MAX = 48
+
+IO_MONITOR_STREAM_LIMIT = 400  # newest stream entries kept
+IO_MONITOR_CONTROL_LIMIT = 256  # distinct controls tracked (oldest activity evicted)
+IO_MONITOR_NEUTRAL_CENTRE = 64
+IO_MONITOR_VALUE_MAX = 127.0
+IO_MONITOR_REFRESH_INTERVAL = 0.1  # s; UI text blocks refresh at most this often
+IO_MONITOR_OUTCOME_LEARN = "LEARN"
+IO_MONITOR_OUTCOME_MATCH = "MATCH"
+IO_MONITOR_OUTCOME_SENT = "SENT"
+IO_MONITOR_OUTCOME_HOLD = "HOLD"
+IO_MONITOR_OUTCOME_MUTED = "MUTED"
+IO_MONITOR_OUTCOME_NOMATCH = "NOMATCH"
+IO_MONITOR_OUTCOME_NOBIND = "NOBIND"
 
 
 # e33s02: momentary learn actions trigger at CC value >= this threshold (MIDI's
@@ -532,7 +621,63 @@ MAPPER_PERSISTED_KEYS: tuple[str, ...] = (
     "input_to",
     "enabled",
     "cue",  # e35s01: the per-mapping cue macro (rows + gap_ms), inert for non-cue-list controls
+    # e40s01: a Mapping is a Mapping (Origin -> Rescale -> Destination). Legacy rows
+    # carry none of these keys and hydrate to Control -> Vimix, so old project
+    # files load unchanged; the new keys are additive.
+    "origin",
+    "destination",
+    "destination_spec",
+    "origin_spec",
+    "cadence",
+    "steps",
 )
+
+
+# e40s01: the Mapping discriminators (ADR-mapping-model). Origin = where the value
+# comes from; Destination = where it goes.
+ORIGIN_CONTROL = "control"  # a physical control / band / MIDI / Leap drives the value
+ORIGIN_STATE = "state"  # a live Vimix property of a source is read
+ORIGIN_CLOCK = "clock"  # a transport/app quantity (beat, BPM, step, cue progress)
+ORIGIN_CONST = "const"  # a fixed value
+ORIGINS: tuple[str, ...] = (ORIGIN_CONTROL, ORIGIN_STATE, ORIGIN_CLOCK, ORIGIN_CONST)
+DEST_VIMIX = "vimix"  # writes /vimix/<source>/<property>
+DEST_MIDI = "midi"  # writes a MIDI note/CC to a controller output port
+DEST_OSC = "osc"  # writes an OSC message to a third-party host/port/address
+DESTINATIONS: tuple[str, ...] = (DEST_VIMIX, DEST_MIDI, DEST_OSC)
+# The default state Origin cadence: viOSC's sync_interval default (ADR: it stays 2 s).
+MAPPING_DEFAULT_CADENCE_MS = 2000
+MAPPING_MIN_CADENCE_MS = 20  # sanity floor for a per-Mapping cadence
+MAPPING_RESYNC_EPSILON = 1e-6  # a live state change below this is not a resync
+MAPPING_TICK_INTERVAL_S = 1.0 / 30.0  # emission tick cap (ADR: named constant)
+MAPPING_MIDI_EMIT_EPSILON = 0.5  # one MIDI step (integer note velocity / CC)
+MAPPING_OSC_EMIT_EPSILON = 1e-4  # a float OSC argument needs a real change
+# MIDI Destination kinds (destination_spec['type'])
+MIDI_KIND_NOTE = "note"
+MIDI_KIND_CC = "cc"
+MAPPING_STEPS_CONTINUOUS = 1  # quantisation steps <= 1 means no quantisation
+# e40s02: the source-less Clock Origins and their natural value windows (the
+# seeded Origin window; the value comes from the live transport/app state).
+CLOCK_SOURCES: dict[str, tuple[float, float]] = {
+    "bpm": (0.0, 300.0),
+    "step": (0.0, 7.0),  # sequencer column, NUM_STEPS - 1
+    "playing": (0.0, 1.0),  # transport flag as a value
+}
+CLOCK_DEFAULT = "bpm"
+MAPPING_CONST_VALUE_MIN = -10.0
+MAPPING_CONST_VALUE_MAX = 10.0
+MAPPING_CONST_VALUE_DEFAULT = 0.5
+# e40s03: an OSC Destination is a new, opt-in network egress: fixed address, one
+# value argument (ADR decision 8). These are the defaults of a fresh Mapping.
+MAPPING_OSC_DEFAULT_HOST = "127.0.0.1"
+MAPPING_OSC_DEFAULT_PORT = 9000
+MAPPING_OSC_DEFAULT_ADDRESS = "/viseq/mapping"
+MAPPING_OSC_MAX_PORT = 65535
+MAPPING_DIRECTIONS: dict[str, tuple[str, ...]] = {
+    ORIGIN_CONTROL: (DEST_VIMIX,),  # v1: a Control Origin keeps writing Vimix
+    ORIGIN_STATE: (DEST_MIDI, DEST_OSC),
+    ORIGIN_CLOCK: (DEST_MIDI, DEST_OSC),
+    ORIGIN_CONST: (DEST_MIDI, DEST_OSC),
+}
 
 
 # e28s01: restore cap for the mapper section of a project file — a corrupted or

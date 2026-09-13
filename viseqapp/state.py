@@ -84,6 +84,26 @@ ui_state_queue: queue.Queue[Any] = queue.Queue()
 blob_queue: queue.Queue[Any] = queue.Queue()
 
 
+# e41s03: the HTTP data-plane lane for thumbnails. Items are (source name,
+# frame index); the fetch worker drains it and feeds blob_queue, so the decode
+# worker and every texture consumer stay untouched. thumb_http_supported is the
+# runtime lane probe (None = not yet proven, True = proven, False = given up);
+# thumb_http_failures counts consecutive fetches with NO answer at all.
+# dataplane_host/port are the machine-A HTTP endpoint, set with the OSC client.
+thumb_fetch_queue: queue.Queue[Any] = queue.Queue()
+thumb_http_supported: bool | None = None
+thumb_http_failures: int = 0
+dataplane_host: str = ""
+dataplane_port: int = 0
+
+# e41s04: the state pull lane. state_pull_supported is the runtime lane probe
+# (None = not yet tried, True = proven, False = given up for the session); while
+# it is True the OSC /viosc/replydata push is DROPPED so the state is never
+# ingested twice. state_pull_failures counts consecutive unanswered pulls.
+state_pull_supported: bool | None = None
+state_pull_failures: int = 0
+
+
 texture_queue: queue.Queue[Any] = queue.Queue()
 
 
@@ -267,10 +287,11 @@ thumb_cycle_state: dict[str, tuple[int, float]] = {}
 thumb_fail_count: dict[str, int] = {}
 
 
-monitor_players: list[dict[str, Any]] = []  # each: {"id", "tag", "target_id", "props"}
-
-
-monitor_player_counter = 0
+# e41s02: len(thumbnails_data[target]) observed when the last thumbnail request
+# went out. The next index is asked only when that number GREW, so a source with
+# fewer frames than the budget (an image) stops being polled instead of being
+# asked for a non-existent index forever.
+thumb_frames_at_last_request: dict[str, int] = {}
 
 
 _last_unmatched_log: dict[str, float] = {}  # port -> last unmatched-message log time
@@ -336,14 +357,11 @@ leap_drive_state: dict[int, dict[str, Any]] = {}
 
 # e16: Mapper state — OSC property mappings (see viseqapp/mapper.py).
 # Each entry: {id, target_id, property, control, value}; ids come from the
-# monotonic counter (like monitor_player_counter).
+# monotonic counter (like the other UI element counters).
 mapper_mappings: list[dict[str, Any]] = []
 
 
 mapper_counter: int = 0
-
-
-mapper_pending_target: str | None = None  # source the New-mapping dialog targets
 
 
 # e35s02: active cue runs — written by the cue engine (viseqapp/cue.py) from
@@ -392,3 +410,23 @@ current_window: str | None = None
 current_project_path: str | None = None  # None = unnamed (new) project
 project_dirty: bool = False  # live content differs from the last-saved baseline
 saved_content_fingerprint: str = ""  # canonical JSON of the content at the last save/open/new
+
+
+# e40s01: the Mapping engine's runtime memory — per-Mapping real-value bookkeeping for
+# dead-reckoning (emission.mapping_raw_value) and the last emitted Destination
+# value (the epsilon dedupe). Main-thread only; never persisted.
+mapping_book: dict[int, dict[str, Any]] = {}
+mapping_values: dict[int, float] = {}
+# e40s01: the /viosc/monitor subscriptions the live mappings currently hold, so the
+# tick only re-issues them when the desired set changes.
+mapping_subscriptions: dict[str, list[str]] = {}
+# e40s02: Mappings the orphan policy disabled (their source is gone); they are
+# re-enabled automatically when the source comes back.
+mapping_orphans: set[int] = set()
+# e40s06: the targeted watch lane — the /viosc/reply deltas land on this queue
+# from the OSC server thread and are applied on the main thread; the plan last
+# sent to viOSC and whether the lane is proven alive (None = unknown, still
+# using the 2 s monitor fallback).
+watch_state_queue: queue.Queue[tuple[str, list[Any]]] = queue.Queue()
+mapping_watch_plan: dict[str, dict[str, Any]] = {}
+osc_watch_supported: bool | None = None

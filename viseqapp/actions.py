@@ -15,16 +15,21 @@ from dataclasses import dataclass
 from viseqapp.constants import (
     MIDI_ACTION_BEAT_SOURCE,
     MIDI_ACTION_ENABLE_CORRECTION,
+    MIDI_ACTION_IO_MONITOR_TOGGLE,
     MIDI_ACTION_MAPPER_BAND,
     MIDI_ACTION_MAPPER_CUE_OPEN,
     MIDI_ACTION_MAPPER_ENABLE,
     MIDI_ACTION_MAPPER_LINE,
     MIDI_ACTION_MAPPER_MAPPING,
     MIDI_ACTION_MAPPER_RESET,
+    MIDI_ACTION_MAPPING_ADD,
+    MIDI_ACTION_MAPPING_TOGGLE,
     MIDI_ACTION_NUDGE_BACK,
     MIDI_ACTION_NUDGE_FORWARD,
     MIDI_ACTION_REGEN_SELECTED,
     MIDI_ACTION_SEQ_ROW_ASSIGN,
+    MIDI_ACTION_SEQ_ROW_DISABLE,
+    MIDI_ACTION_SEQ_ROW_ENABLE,
     MIDI_ACTION_SEQ_TOGGLE,
     MIDI_ACTION_SOURCE_NEXT,
     MIDI_ACTION_SOURCE_PREV,
@@ -42,9 +47,15 @@ CATEGORY_MAPPER = "mapper"
 # e33s04: Mediagrid actions (source browsing + tile-anchored context rows).
 CATEGORY_MEDIAGRID = "mediagrid"
 
+# e39s01: diagnostic window actions (I/O Monitor show/hide).
+CATEGORY_MONITOR = "monitor"
+
+# e40s01: Mapping actions (arm/disarm a Mapping's Enabled gate).
+CATEGORY_MAPPING = "mapping"
+
 # Kinds describe how the incoming MIDI value maps onto the action.
 KIND_MOMENTARY = "momentary"  # note edges trigger; CC fires at the >=64 threshold
-KIND_VALUE = "value"  # the raw CC 0..127 value is consumed (remapped by the action)
+KIND_VALUE = "value"  # the raw CC 0..127 value is consumed (rescaleped by the action)
 
 
 @dataclass(frozen=True)
@@ -121,23 +132,58 @@ ACTION_SPECS: dict[str, ActionSpec] = {
         CATEGORY_SEQUENCER,
         KIND_MOMENTARY,
     ),
+    MIDI_ACTION_SEQ_ROW_ENABLE: ActionSpec(
+        MIDI_ACTION_SEQ_ROW_ENABLE,
+        "Enable sequencer line",
+        CATEGORY_SEQUENCER,
+        KIND_MOMENTARY,
+    ),
+    MIDI_ACTION_SEQ_ROW_DISABLE: ActionSpec(
+        MIDI_ACTION_SEQ_ROW_DISABLE,
+        "Disable sequencer line",
+        CATEGORY_SEQUENCER,
+        KIND_MOMENTARY,
+    ),
     MIDI_ACTION_ENABLE_CORRECTION: ActionSpec(
         MIDI_ACTION_ENABLE_CORRECTION,
         "Enable color correction",
         CATEGORY_MEDIAGRID,
         KIND_MOMENTARY,
     ),
+    MIDI_ACTION_IO_MONITOR_TOGGLE: ActionSpec(
+        MIDI_ACTION_IO_MONITOR_TOGGLE, "I/O Monitor window", CATEGORY_MONITOR, KIND_MOMENTARY
+    ),
+    MIDI_ACTION_MAPPING_TOGGLE: ActionSpec(
+        MIDI_ACTION_MAPPING_TOGGLE, "Arm/disarm Mapping", CATEGORY_MAPPING, KIND_MOMENTARY
+    ),
+    MIDI_ACTION_MAPPING_ADD: ActionSpec(
+        MIDI_ACTION_MAPPING_ADD, "Add Mapping to line", CATEGORY_MAPPING, KIND_MOMENTARY
+    ),
 }
+
+
+# e40s09: ids persisted by e40 before the terminology rename (Route -> Mapping).
+# A Binding saved with an old id must keep triggering the same action, so every
+# accessor and the dispatcher resolve through canonical_action().
+LEGACY_ACTION_ALIASES: dict[str, str] = {
+    "route_toggle": MIDI_ACTION_MAPPING_TOGGLE,
+    "route_add": MIDI_ACTION_MAPPING_ADD,
+}
+
+
+def canonical_action(action_id: str) -> str:
+    """The current id of an action; a legacy id maps to its renamed successor."""
+    return LEGACY_ACTION_ALIASES.get(action_id, action_id)
 
 
 def action_spec(action_id: str) -> ActionSpec | None:
     """The spec for an action id, or None when it is not a registered action."""
-    return ACTION_SPECS.get(action_id)
+    return ACTION_SPECS.get(canonical_action(action_id))
 
 
 def known_action(action_id: str) -> bool:
     """True when the action id is registered and therefore dispatchable."""
-    return action_id in ACTION_SPECS
+    return canonical_action(action_id) in ACTION_SPECS
 
 
 def action_label(action_id: str) -> str:
@@ -146,7 +192,7 @@ def action_label(action_id: str) -> str:
     A stale binding (an action removed from the catalog) must still render a
     readable row, so unknown ids fall back to themselves.
     """
-    spec = ACTION_SPECS.get(action_id)
+    spec = ACTION_SPECS.get(canonical_action(action_id))
     if spec is not None:
         return spec.label
     return str(action_id)

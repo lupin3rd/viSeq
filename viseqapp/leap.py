@@ -16,7 +16,7 @@ DEVIATION (live-verified 2026-09-02, Gemini 5.17.1.0 + LMC fw 1.7.0): the
 service never populates LEAP_PALM.stabilized_position (it stays 0.0 even with
 a hand held still for 20 s while position/velocity read real values), so the
 ``palm_*`` keys come from the RAW palm position (jitter accepted; rate-capped
-driving + remap ranges keep mappings usable).
+driving + rescale ranges keep mappings usable).
 """
 
 from itertools import pairwise

@@ -3,9 +3,11 @@
 Audio-reactive VJ controller for **Vimix**, driven by **viOSC**.
 
 An 8×8 step sequencer that fires OSC messages to Vimix in sync with the music
-(VU/BPM analysis, MIDI clock, band peaks), with a thumbnail grid, monitor
-players and optional MIDI controller support (Novation Launchpad profiles
-included).
+(VU/BPM analysis, MIDI clock, band peaks), with a thumbnail grid, a **Mapper**
+that maps an origin to a destination (a live Vimix property, an audio band or a
+MIDI/Leap control to Vimix, a controller LED or third-party OSC), an **I/O
+Monitor** that shows the MIDI and OSC traffic in both directions, and optional
+MIDI controller support (Novation Launchpad profiles included).
 
 [![Watch the video](https://img.youtube.com/vi/dtzOFJbv7ko/maxresdefault.jpg)](https://youtu.be/dtzOFJbv7ko)
 
@@ -18,8 +20,8 @@ root**. Starting with release **0.5.0**, download
 [GitHub Releases](https://github.com/lupin3rd/viseq/releases) page, then:
 
 ```bash
-chmod +x viseq-0.5.0-x86_64.AppImage
-./viseq-0.5.0-x86_64.AppImage
+chmod +x viseq-0.6.0-x86_64.AppImage
+./viseq-0.6.0-x86_64.AppImage
 ```
 
 ### Where your data lives
