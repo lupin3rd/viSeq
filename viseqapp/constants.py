@@ -222,6 +222,14 @@ MAPPER_LEARN_SLOTS = 4
 MAPPER_MARKER_W = 15
 MAPPER_MARKER_H = 15
 
+# e40s13: the Mapper body scroll area. DPG's child_window treats a NEGATIVE
+# height as "fill the available height", so the area always matches the window
+# even after a resize. It used MAPPER_WINDOW_HEIGHT - 8, a number computed from
+# the INITIAL window size while the Mapper window is resizable and its
+# geometry persisted (e28s02): a user-grown window then showed a scrollbar with
+# free space below it (and the fixed value was ~20 px too tall anyway).
+MAPPER_SCROLL_HEIGHT = -1
+
 # e40s12: gap between the Mapper's Show chips and the general '+' creator, so
 # the create action reads as its own control and not as a fourth filter.
 MAPPER_FILTER_ADD_GAP = 24

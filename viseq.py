@@ -79,6 +79,7 @@ from viseqapp.constants import (
     MAPPER_ROW_PAD_V,
     MAPPER_ROW_THUMB_H,
     MAPPER_ROW_THUMB_W,
+    MAPPER_SCROLL_HEIGHT,
     MAPPER_SMALL_CHAR_PX,
     MAPPER_STATE_BOX_HEADER_H,
     MAPPER_STATE_BOX_ROW_H,
@@ -9353,7 +9354,7 @@ with (
         show=False,
     ),
     dpg.child_window(
-        height=MAPPER_WINDOW_HEIGHT - 8,
+        height=MAPPER_SCROLL_HEIGHT,
         border=False,
         tag="mapper_scroll",
     ),
