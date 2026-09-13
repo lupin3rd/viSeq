@@ -2501,6 +2501,49 @@ def request_missing_thumbnails(now: float) -> None:
             thumb_frames_at_last_request[target_id] = received
 
 
+def _prune_state_consumers(live_ids: set[str]) -> None:
+    """Drop cached UI that belongs to sources which no longer exist (L-1).
+
+    The caller MUST pass a NON-EMPTY ``live_ids``: an empty state table means
+    "viOSC has not synced yet" (or, under pairing, "not authenticated yet"),
+    never "every source was removed". Pruning against it deleted every Control
+    Mapping and every cached tile (BUG-2026-09-13T231500).
+    """
+    for target_id in list(thumbnails_data):
+        if target_id not in live_ids:
+            tex_tags = thumbnails_data.pop(target_id)
+            for tex_tag in tex_tags:
+                if dpg.does_item_exist(tex_tag):
+                    dpg.delete_item(tex_tag)
+            click_reg_tag = media_tile_click_registry_tag(target_id)
+            if dpg.does_item_exist(click_reg_tag):
+                dpg.delete_item(click_reg_tag)  # stale click registry must not linger
+            popup_tag = _tile_popup_tag(target_id)
+            if dpg.does_item_exist(popup_tag):
+                dpg.delete_item(popup_tag)  # stale action popup must not linger (e16)
+    for key in list(request_timestamps):
+        if key.startswith("thumb_"):
+            target_id = key[len("thumb_") :]
+            if target_id not in live_ids:
+                request_timestamps.pop(key)
+    for target_id in list(thumb_fail_count):
+        if target_id not in live_ids:
+            thumb_fail_count.pop(target_id)
+    for target_id in list(thumb_frames_at_last_request):
+        if target_id not in live_ids:
+            thumb_frames_at_last_request.pop(target_id)
+    mapper.prune_anchors(live_ids)  # e36s06: the anchor cache follows source churn
+    removed_mappings = mapper.prune_mappings(live_ids)
+    if removed_mappings:
+        for removed in removed_mappings:
+            _drop_mapping_editor_and_runs(int(removed["id"]))  # e35s05
+        refresh_mapper_ui()  # a removed source takes its mappings with it (e16)
+    if state.viseq_selected_source is not None and state.viseq_selected_source not in live_ids:
+        state.viseq_selected_source = None  # a pruned source can't stay selected (e10s06)
+    if state.preview_active is not None and state.preview_active not in live_ids:
+        close_source_preview()  # a pruned source can't keep a preview stream (e38s03)
+
+
 def update_vimix_sources_ui(json_string: str) -> None:
     try:
         payload = json.loads(json_string)
@@ -2526,39 +2569,12 @@ def update_vimix_sources_ui(json_string: str) -> None:
         for k, props in sources.items():
             name = props.get("name")
             live_ids.add(str(name) if name else str(k))
-        for target_id in list(thumbnails_data):
-            if target_id not in live_ids:
-                tex_tags = thumbnails_data.pop(target_id)
-                for tex_tag in tex_tags:
-                    if dpg.does_item_exist(tex_tag):
-                        dpg.delete_item(tex_tag)
-                click_reg_tag = media_tile_click_registry_tag(target_id)
-                if dpg.does_item_exist(click_reg_tag):
-                    dpg.delete_item(click_reg_tag)  # stale click registry must not linger
-                popup_tag = _tile_popup_tag(target_id)
-                if dpg.does_item_exist(popup_tag):
-                    dpg.delete_item(popup_tag)  # stale action popup must not linger (e16)
-        for key in list(request_timestamps):
-            if key.startswith("thumb_"):
-                target_id = key[len("thumb_") :]
-                if target_id not in live_ids:
-                    request_timestamps.pop(key)
-        for target_id in list(thumb_fail_count):
-            if target_id not in live_ids:
-                thumb_fail_count.pop(target_id)
-        for target_id in list(thumb_frames_at_last_request):
-            if target_id not in live_ids:
-                thumb_frames_at_last_request.pop(target_id)
-        mapper.prune_anchors(live_ids)  # e36s06: the anchor cache follows source churn
-        removed_mappings = mapper.prune_mappings(live_ids)
-        if removed_mappings:
-            for removed in removed_mappings:
-                _drop_mapping_editor_and_runs(int(removed["id"]))  # e35s05
-            refresh_mapper_ui()  # a removed source takes its mappings with it (e16)
-        if state.viseq_selected_source is not None and state.viseq_selected_source not in live_ids:
-            state.viseq_selected_source = None  # a pruned source can't stay selected (e10s06)
-        if state.preview_active is not None and state.preview_active not in live_ids:
-            close_source_preview()  # a pruned source can't keep a preview stream (e38s03)
+        # BUG-2026-09-13T231500: an EMPTY state table is not evidence that every
+        # source is gone (viOSC holds no sources until its first sync; under
+        # pairing the table stays empty until the peer authenticates), so the
+        # L-1 prune must not run against it.
+        if live_ids:
+            _prune_state_consumers(live_ids)
 
         current_source = state.global_vimix_state["current_source"]
         data_dict = state.global_vimix_state["sources"]
