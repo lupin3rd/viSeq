@@ -15,6 +15,7 @@ from viseqapp.constants import (
     BEAT_SOURCE_MANUAL,
     BEAT_SOURCE_MIDI,
     BPM_DETECTION_STALE_SECONDS,
+    IO_MONITOR_KIND_FADE,
     IO_MONITOR_KIND_SEQUENCER,
 )
 from viseqapp.osc import osc_client
@@ -30,6 +31,45 @@ def _send(address: str, args: Any) -> None:
     """
     with osc.sent_by(IO_MONITOR_KIND_SEQUENCER):
         osc_client.send_message(address, args)
+
+
+def _send_fade(address: str, value: float) -> None:
+    """Send one beat-fade OSC message, tagged for the I/O Monitor (e39s05)."""
+    with osc.sent_by(IO_MONITOR_KIND_FADE):
+        osc_client.send_message(address, float(value))
+
+
+def fade_message_value(fade: dict[str, Any], index: int) -> float:
+    """The trajectory value of a beat-fade at one message index (pure, e41s02)."""
+    total_msgs = int(fade["total_msgs"])
+    progress = index / float(total_msgs - 1) if total_msgs > 1 else 1.0
+    return float(fade["start_val"] + (fade["end_val"] - fade["start_val"]) * progress)
+
+
+def advance_fade(fade: dict[str, Any], now: float) -> bool:
+    """Advance one active beat-fade to ``now``, emitting AT MOST one message (e41s02).
+
+    Returns True when a message was due. When the tick falls behind, only the
+    LATEST value goes out: the skipped intermediates are already superseded, and
+    a catch-up burst is exactly what a lossy transport must not receive (a
+    scheduler hiccup used to fan out into one datagram per skipped index). At
+    full rate the emitted sequence is unchanged — one index per tick, in order —
+    and the fade still deactivates on its last index.
+    """
+    if not fade.get("active"):
+        return False
+    total_msgs = int(fade["total_msgs"])
+    expected_index = int((now - fade["start_time"]) / fade["msg_interval"])
+    if expected_index <= fade["last_msg_index"]:
+        return False
+    index = min(expected_index, total_msgs - 1)
+    value = fade_message_value(fade, index)
+    _send_fade(fade["address"], value)
+    append_log("OUT", f"{fade['address']} [FADE: {value:.2f}]")
+    fade["last_msg_index"] = index
+    if index >= total_msgs - 1:
+        fade["active"] = False
+    return True
 
 
 def send_colorv_step(track: dict[str, Any], row: int, col: int) -> None:

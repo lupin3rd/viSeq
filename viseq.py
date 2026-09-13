@@ -65,7 +65,6 @@ from viseqapp.constants import (
     HELP_WINDOW_WIDTH,
     IO_MONITOR_DIRECTION_IN,
     IO_MONITOR_DIRECTION_OUT,
-    IO_MONITOR_KIND_FADE,
     IO_MONITOR_OUTCOME_LEARN,
     IO_MONITOR_OUTCOME_MATCH,
     IO_MONITOR_OUTCOME_NOBIND,
@@ -267,6 +266,7 @@ from viseqapp.profiles import (
 from viseqapp.queues import append_log, enqueue_set_value, log_error, ui_task
 from viseqapp.sequencer import (
     _timed_bpm_live,
+    advance_fade,
     beat_is_event_driven,
     execute_step,
     more_step_offerings,
@@ -8552,39 +8552,19 @@ def visual_metronome_loop() -> None:
 # NEW ASYNC THREAD FOR HIGH-RESOLUTION FADES
 # ==============================================================================
 def fade_tick_loop() -> None:
+    """Advance the active beat-fades at 100 Hz (e41s02: coalesced emission).
+
+    The per-track work lives in ``sequencer.advance_fade`` (dpg-free, unit
+    tested): this loop owns only the cadence and the worker-thread survival
+    guarantee — a failing send must never kill the thread (HIGH-1 / Defensive
+    Code).
+    """
     while True:
         if state.is_playing:
             current_time = time.time()
             for track in tracks_data:
-                fade = track.get("active_fade", {})
-                if fade and fade.get("active"):
-                    elapsed = current_time - fade["start_time"]
-                    expected_msg_index = int(elapsed / fade["msg_interval"])
-
-                    # If we fell behind, or it is time for the next tick
-                    if expected_msg_index > fade["last_msg_index"]:
-                        max_msg = min(expected_msg_index, fade["total_msgs"] - 1)
-
-                        # Send all the accumulated intermediate messages
-                        for i in range(fade["last_msg_index"] + 1, max_msg + 1):
-                            progress = (
-                                i / float(fade["total_msgs"] - 1) if fade["total_msgs"] > 1 else 1.0
-                            )
-                            val = (
-                                fade["start_val"] + (fade["end_val"] - fade["start_val"]) * progress
-                            )
-                            try:
-                                with osc.sent_by(IO_MONITOR_KIND_FADE):
-                                    osc_client.send_message(fade["address"], float(val))
-                                append_log("OUT", f"{fade['address']} [FADE: {val:.2f}]")
-                            except Exception:
-                                pass
-
-                        fade["last_msg_index"] = max_msg
-
-                        # Deactivate when the fade is finished
-                        if fade["last_msg_index"] >= fade["total_msgs"] - 1:
-                            fade["active"] = False
+                with contextlib.suppress(Exception):
+                    advance_fade(track.get("active_fade", {}), current_time)
         time.sleep(0.01)  # 100 FPS check loop for smooth fades
 
 
