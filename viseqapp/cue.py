@@ -20,7 +20,8 @@ running in the activation chain (including the running cue itself) is a no-op
 
 from typing import Any
 
-from viseqapp import catalog, mapper, state
+from viseqapp import catalog, mapper, osc, state
+from viseqapp.constants import IO_MONITOR_KIND_CUE
 from viseqapp.osc import osc_client
 from viseqapp.queues import append_log
 
@@ -213,6 +214,12 @@ def _advance_run(run: dict[str, Any], now_ms: float) -> None:
         state.cue_runs.remove(run)
 
 
+def _send_cue(address: str, args: Any) -> None:
+    """Send one cue-row OSC message, tagged for the I/O Monitor (e39s05)."""
+    with osc.sent_by(IO_MONITOR_KIND_CUE):
+        osc_client.send_message(address, args)
+
+
 def _send_property(run: dict[str, Any], payload: dict[str, Any]) -> None:
     """Send one cue action to the run mapping's source and log it (worker-safe).
 
@@ -231,9 +238,9 @@ def _send_property(run: dict[str, Any], payload: dict[str, Any]) -> None:
     else:
         args = catalog.compose_send_args(prop, value=float(payload.get("value", 0.0)), ms=ms)
     if len(args) == 1 and args[0] is not None:
-        osc_client.send_message(addr, float(args[0]))
+        _send_cue(addr, float(args[0]))
     else:
-        osc_client.send_message(addr, list(args))
+        _send_cue(addr, list(args))
     parts = []
     for a in args:
         parts.append("N" if a is None else f"{float(a):.2f}")

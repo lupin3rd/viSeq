@@ -1,7 +1,6 @@
 import contextlib
 import copy
 import json
-import math
 import os
 import queue
 import random  # noqa: F401 — module attribute (test harness patches viseq.random)
@@ -21,7 +20,18 @@ from PIL import Image
 from pythonosc import dispatcher, udp_client
 
 import viseqapp  # noqa: F401  scaffold hook (REFACTOR_LATEST.md commit 1): proves the package import path works at boot
-from viseqapp import actions, catalog, cue, leap, mapper, preview, state
+from viseqapp import (
+    actions,
+    catalog,
+    cue,
+    emission,
+    iomonitor,
+    leap,
+    mapper,
+    osc,
+    preview,
+    state,
+)
 from viseqapp.audio import (
     _set_band_variable,
     apply_spectrum_agc,
@@ -40,14 +50,28 @@ from viseqapp.constants import (
     BEAT_SOURCE_LABELS,
     BEAT_SOURCE_MANUAL,
     BEAT_SOURCE_MIDI,
+    CLOCK_DEFAULT,
+    CLOCK_SOURCES,
     DEFAULT_MANUAL_BPM,
     DEFAULT_PALETTE,
+    DEST_MIDI,
+    DEST_OSC,
+    DESTINATIONS,
     FRAME_SLEEP_ANIMATED,
     FRAME_SLEEP_IDLE,
     HELP_ASCII_LOGO,
     HELP_LOGO_INDENT,
     HELP_WINDOW_HEIGHT,
     HELP_WINDOW_WIDTH,
+    IO_MONITOR_DIRECTION_IN,
+    IO_MONITOR_DIRECTION_OUT,
+    IO_MONITOR_OUTCOME_LEARN,
+    IO_MONITOR_OUTCOME_MATCH,
+    IO_MONITOR_OUTCOME_NOBIND,
+    IO_MONITOR_OUTCOME_NOMATCH,
+    IO_MONITOR_REFRESH_INTERVAL,
+    IO_MONITOR_TRANSPORT_MIDI,
+    IO_MONITOR_TRANSPORT_OSC,
     LAYOUT_ALWAYS_HIDDEN_TAGS,
     LAYOUT_WINDOW_TAGS,
     LOG_HISTORY_LIMIT,
@@ -58,6 +82,7 @@ from viseqapp.constants import (
     MAPPER_CB_W,
     MAPPER_CTRL_H,
     MAPPER_DRAG_W,
+    MAPPER_FILTER_ADD_GAP,
     MAPPER_KNOB_H,
     MAPPER_LEARN_SLOTS,
     MAPPER_LINE_NO_DIGIT_PX,
@@ -74,12 +99,26 @@ from viseqapp.constants import (
     MAPPER_ROW_PAD_V,
     MAPPER_ROW_THUMB_H,
     MAPPER_ROW_THUMB_W,
+    MAPPER_SCROLL_HEIGHT,
     MAPPER_SMALL_CHAR_PX,
+    MAPPER_STATE_BOX_HEADER_H,
+    MAPPER_STATE_BOX_ROW_H,
     MAPPER_TEXT_H,
     MAPPER_WINDOW_HEIGHT,
     MAPPER_WINDOW_WIDTH,
     MAPPER_X_H,
     MAPPER_X_W,
+    MAPPING_CONST_VALUE_DEFAULT,
+    MAPPING_CONST_VALUE_MAX,
+    MAPPING_CONST_VALUE_MIN,
+    MAPPING_DEFAULT_CADENCE_MS,
+    MAPPING_DIRECTIONS,
+    MAPPING_MIN_CADENCE_MS,
+    MAPPING_OSC_DEFAULT_ADDRESS,
+    MAPPING_OSC_DEFAULT_HOST,
+    MAPPING_OSC_DEFAULT_PORT,
+    MAPPING_STEPS_CONTINUOUS,
+    MAPPING_TICK_INTERVAL_S,
     MARKER_GROUP_GAP,
     MEDIA_ALPHA_SLIDER_W,
     MEDIA_BADGE_H,
@@ -96,16 +135,21 @@ from viseqapp.constants import (
     MEDIA_TITLE_WRAP,
     MIDI_ACTION_BEAT_SOURCE,
     MIDI_ACTION_ENABLE_CORRECTION,
+    MIDI_ACTION_IO_MONITOR_TOGGLE,
     MIDI_ACTION_MAPPER_BAND,
     MIDI_ACTION_MAPPER_CUE_OPEN,
     MIDI_ACTION_MAPPER_ENABLE,
     MIDI_ACTION_MAPPER_LINE,
     MIDI_ACTION_MAPPER_MAPPING,
     MIDI_ACTION_MAPPER_RESET,
+    MIDI_ACTION_MAPPING_ADD,
+    MIDI_ACTION_MAPPING_TOGGLE,
     MIDI_ACTION_NUDGE_BACK,
     MIDI_ACTION_NUDGE_FORWARD,
     MIDI_ACTION_REGEN_SELECTED,
     MIDI_ACTION_SEQ_ROW_ASSIGN,
+    MIDI_ACTION_SEQ_ROW_DISABLE,
+    MIDI_ACTION_SEQ_ROW_ENABLE,
     MIDI_ACTION_SEQ_TOGGLE,
     MIDI_ACTION_SOURCE_NEXT,
     MIDI_ACTION_SOURCE_PREV,
@@ -115,20 +159,21 @@ from viseqapp.constants import (
     MIDI_ACTION_TRANSPORT_TAP,
     MIDI_CC_TRIGGER_THRESHOLD,
     MIDI_CLOCK_PULSES_PER_BEAT,
+    MIDI_KIND_CC,
+    MIDI_KIND_NOTE,
     MIDI_LEARN_TIMEOUT_SECONDS,
     MIDI_OPEN_RETRY_COOLDOWN_SECONDS,
-    MONITOR_ALPHA_W,
-    MONITOR_DISC_R,
-    MONITOR_DISC_RPM,
-    MONITOR_DISC_SIZE,
-    MONITOR_OFFSET,
-    MONITOR_SEEK_W,
-    MONITOR_SPEED_TEXT_SIZE,
-    MONITOR_THUMB_H,
-    MONITOR_THUMB_W,
     NUM_STEPS,
     NUM_TRACKS,
+    ORIGIN_CLOCK,
+    ORIGIN_CONST,
+    ORIGIN_CONTROL,
+    ORIGIN_STATE,
     PREVIEW_PORT,
+    PREVIEW_SPEED_DEFAULT,
+    PREVIEW_SPEED_MAX,
+    PREVIEW_SPEED_MIN,
+    PREVIEW_SPEED_STEP,
     PROJECT_FILE_EXTENSION,
     PROJECT_FORMAT,
     PROJECT_VERSION,
@@ -175,6 +220,7 @@ from viseqapp.midi import (
     controller_disconnect,
     controller_profile_of,
     controller_profiles,
+    ensure_mapping_output,
     find_controller_by_port,
     grid_controller,
     grid_flash_playhead,
@@ -186,18 +232,26 @@ from viseqapp.midi import (
     save_midi_controllers,
     scan_midi_inputs,
     selected_bindings,
+    send_mapping_midi,
     set_midi_enabled,
 )
 from viseqapp.osc import (
     ALL_PROPERTIES,
     ViseqOSCUDPServer,
-    find_player_index,
     find_source_by_name,
     get_current_target_id,
     incoming_osc_handler,
+    next_thumb_frame_index,
     osc_client,
-    send_monitor_command,
+    request_thumbnail_over_osc,
+    send_mapping_osc,
+    size_receive_buffer,
+    state_poll_worker,
     thumbnail_decoder_worker,
+    thumbnail_fetch_worker,
+)
+from viseqapp.osc import (
+    validate_destination as validate_osc_destination,
 )
 from viseqapp.palette import (
     _apply_theme_config,
@@ -217,6 +271,7 @@ from viseqapp.profiles import (
 from viseqapp.queues import append_log, enqueue_set_value, log_error, ui_task
 from viseqapp.sequencer import (
     _timed_bpm_live,
+    advance_fade,
     beat_is_event_driven,
     execute_step,
     more_step_offerings,
@@ -237,7 +292,6 @@ from viseqapp.state import (
     log_queue,
     midi_bindings,
     midi_controllers,
-    monitor_players,
     osc_log_history,
     request_timestamps,
     samplerate,
@@ -248,6 +302,7 @@ from viseqapp.state import (
     texture_queue,
     thumb_cycle_state,
     thumb_fail_count,
+    thumb_frames_at_last_request,
     thumbnails_data,
     tracks_data,
     ui_state_queue,
@@ -259,7 +314,6 @@ from viseqapp.state import (
 Image.MAX_IMAGE_PIXELS = 25_000_000  # PIL's hard ceiling (~25 MP)
 
 # Monitor player: compact graphical readout (e07)
-DEFAULT_MONITOR_PROPS = ["alpha", "seek", "speed"]  # requested when a monitor starts
 
 # --- OSC CONFIGURATION ---
 # viseq talks exclusively to viOSC: /vimix/* messages are forwarded by viOSC
@@ -274,11 +328,15 @@ DEFAULT_MONITOR_PROPS = ["alpha", "seek", "speed"]  # requested when a monitor s
 # viseq application version — single source of truth (matches specs/release-plan.yaml, e08s02).
 # e13s01: this is the first real release of viSeq (user decision).
 # e20s03: 0.2.0 — viseqapp refactor + controller profiles + new project + Mapper family.
+# 0.6.0 — the Mapper edits MAPPINGS (origin -> rescale -> destination): State/Clock/Constant
+# origins driving MIDI and OSC destinations with dead-reckoning and the viOSC watch lane,
+# one editor for create and modify, the I/O Monitor (MIDI+OSC, in+out, filters), the cue-row
+# dialog fixes, and the monitor players removed (viOSC 0.4.0).
 # 0.5.0 — source Preview (viOSC 0.3.0), cue lists, persistent MIDI-learn Mapper, Save as.
 # 0.4.0 — Leap Motion mapper source, per-mapping reset, project save + OSC config persist,
 # Mapper tile/row workflows (thumb assign, Add-to-Mapper submenu, line numbers).
-# 0.3.0 — Mapper family (rows/remap/enable/cycle), compact Vimix-sources grid, windows, XDG.
-APP_VERSION: str = "0.5.1"
+# 0.3.0 — Mapper family (rows/rescale/enable/cycle), compact Vimix-sources grid, windows, XDG.
+APP_VERSION: str = "0.6.0"
 
 # Author's GitHub profile, shown as a link in the About window (e08s01, user request).
 GITHUB_URL: str = "https://github.com/lupin3rd"
@@ -362,7 +420,6 @@ _mapper_line_no_font: Any = None
 def _existing_layout_window_tags() -> list[str]:
     """Tags of every layout-tracked window currently present in the UI."""
     tags = [t for t in LAYOUT_WINDOW_TAGS if dpg.does_item_exist(t)]
-    tags += [p["tag"] for p in monitor_players if dpg.does_item_exist(p["tag"])]
     return tags
 
 
@@ -807,6 +864,11 @@ def _sanitize_step(step: Any) -> dict[str, Any]:
         for key in STEP_PERSISTED_KEYS:
             if key in step:
                 base[key] = step[key]
+    if base.get("type") == "FlagX":
+        # e36s07: flag is a VALUE step now; the legacy fire token always meant
+        # "next", which the value form preserves as -1.
+        base["type"] = "FlagV"
+        base["v1"] = -1.0
     return base
 
 
@@ -1067,15 +1129,16 @@ def save_current_project(sender: Any = None, app_data: Any = None, user_data: An
 
 
 def exit_app(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """viSeq > Exit menu voice: the dirty-gated close request (e19/e37s04)."""
+    """viSeq > Exit menu voice: the close request (e19/e37s04, always confirmed)."""
     request_exit()
 
 
-# e19/e37s04: exit confirmation — the modal is shared by viSeq > Exit and the
-# OS main-window X (set_exit_callback + disable_close), but it opens ONLY when
-# the project is dirty; a clean session quits immediately. ``_exiting_app``
-# guards the shutdown-time re-invocation of the exit callback (destroy_context
-# queues it again while tearing down, when no modal may be created).
+# e19/e37s04, e40s11: exit confirmation — the modal is shared by viSeq > Exit and
+# the OS main-window X (set_exit_callback + disable_close) and opens ALWAYS.
+# viSeq is a live-performance tool: the window X sits next to the controls, so a
+# stray click must never kill the session; the prompt names the dirty case.
+# ``_exiting_app`` guards the shutdown-time re-invocation of the exit callback
+# (destroy_context queues it again while tearing down, when no modal may exist).
 EXIT_CONFIRM_TAG = "exit_confirm_modal"
 
 
@@ -1083,22 +1146,28 @@ _exiting_app = False
 
 
 def request_exit(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Close request (menu Exit or the OS window X): ask when dirty, else quit (e37s04)."""
+    """Close request (menu Exit or the OS window X): ALWAYS confirm first (e40s11).
+
+    The dirty check is refreshed only to WORD the prompt: a clean session is
+    confirmed too, because a live tool must never close on a stray click.
+    """
     if _exiting_app:
         return  # already confirmed — destroy_context re-invokes the exit callback
     _sync_project_dirty()  # fresh dirt: the ~0.5 s cadence may lag a just-made edit
-    if state.project_dirty:
-        show_exit_confirm()
-    else:
-        confirm_exit()
+    show_exit_confirm()
 
 
 def show_exit_confirm(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Open the Exit-confirmation modal (called only when the project is dirty, e37s04)."""
+    """Open the Exit-confirmation modal (menu Exit, the OS window X, e37s04/e40s11)."""
     if _exiting_app:
         return  # already confirmed — destroy_context re-invokes the exit callback
     if dpg.does_item_exist(EXIT_CONFIRM_TAG):
         dpg.delete_item(EXIT_CONFIRM_TAG)
+    warning = (
+        "Any unsaved changes will be lost."
+        if state.project_dirty
+        else "The current session will close."
+    )
     with dpg.window(
         label="Exit viSeq",
         tag=EXIT_CONFIRM_TAG,
@@ -1108,7 +1177,7 @@ def show_exit_confirm(sender: Any = None, app_data: Any = None, user_data: Any =
         no_resize=True,
     ):
         themed_text("Close viSeq?", slot="text")
-        themed_text("Any unsaved changes will be lost.", slot="text_dim")
+        themed_text(warning, slot="text_dim")
         dpg.add_separator()
         with dpg.group(horizontal=True):
             dpg.add_button(label="Cancel", callback=cancel_exit, width=140)
@@ -1317,15 +1386,6 @@ def frame_sleep() -> float:
         return FRAME_SLEEP_ANIMATED
     if state.preview_active is not None and state.preview_playing:
         return FRAME_SLEEP_ANIMATED  # e38: a playing preview keeps full rate
-    for p in monitor_players:
-        if not p.get("target_id"):
-            continue
-        _, props = find_source_by_name(p["target_id"])
-        if props is None:
-            continue
-        seek = max(0.0, min(1.0, float(props.get("seek") or 0.0)))
-        if video_is_playing(props, p.get("prev_seek", 0.0), seek):
-            return FRAME_SLEEP_ANIMATED  # a spinning disc keeps full rate
     return FRAME_SLEEP_IDLE
 
 
@@ -1412,6 +1472,10 @@ def update_track_slot_ui(row: int) -> None:
 def set_step_type(sender: Any, app_data: Any, user_data: Any) -> None:
     row, col, step_type = user_data
     tracks_data[row]["steps"][col]["type"] = step_type
+    parsed = parse_step_token(step_type)
+    if parsed is not None and parsed[0] == "flag":
+        # e36s07: a new Flag step defaults to -1 (next)
+        tracks_data[row]["steps"][col]["v1"] = -1.0
     update_step_ui(row, col)
 
 
@@ -1540,6 +1604,31 @@ def _set_step_active(row: int, col: int, active: bool) -> None:
     if dpg.does_item_exist(f"seq_cb_{row}_{col}"):
         dpg.set_value(f"seq_cb_{row}_{col}", active)  # keep the cell checkbox in sync
     update_step_theme(row, col)
+
+
+def set_step_row_active(row: int, active: bool) -> None:
+    """Enable/disable every step of one sequencer row (mouse + MIDI share this).
+
+    e36s07: refreshes each cell's checkbox and theme in place; an out-of-range
+    row is a no-op so a stale binding can never raise into the UI.
+    """
+    if row < 0 or row >= NUM_TRACKS:
+        return
+    for col in range(NUM_STEPS):
+        tracks_data[row]["steps"][col]["active"] = bool(active)
+        if dpg.does_item_exist(f"seq_cb_{row}_{col}"):
+            dpg.set_value(f"seq_cb_{row}_{col}", bool(active))
+        update_step_theme(row, col)
+
+
+def enable_step_row(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Cell popup > Enable row: arm every step of the clicked row."""
+    set_step_row_active(int(user_data), True)
+
+
+def disable_step_row(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Cell popup > Disable row: disarm every step of the clicked row."""
+    set_step_row_active(int(user_data), False)
 
 
 def toggle_step_active(sender: Any, app_data: Any, user_data: Any) -> None:
@@ -1672,6 +1761,10 @@ def update_step_ui(row: int, col: int) -> None:
             dpg.add_menu_item(
                 label="Paste to Row", callback=paste_step_to_row, user_data=(row, col)
             )
+            # e36s07: whole-row arm/disarm, kept at the bottom of the menu
+            dpg.add_separator()
+            dpg.add_menu_item(label="Enable row", callback=enable_step_row, user_data=row)
+            dpg.add_menu_item(label="Disable row", callback=disable_step_row, user_data=row)
 
     parsed_type = parse_step_token(step_data["type"])  # e36s04 (property, mode)
     if step_data["type"] == "AlphaV":
@@ -1799,7 +1892,23 @@ def update_step_ui(row: int, col: int) -> None:
         entry = catalog.PROPERTY_CATALOG[prop]
         comp0 = entry["components"][0]
         lo, hi = float(comp0["min"]), float(comp0["max"])
-        if mode == "value" or (mode == "fire" and entry["family"] == catalog.FAMILY_TOGGLE):
+        if mode == "value" and prop == "flag":
+            # e36s07: Flag is a VALUE step carrying the target flag id
+            # (-1 = next); ids are integers, so use an integer editor.
+            dpg.add_spacer(parent=cell_tag, height=5)
+            dpg.add_drag_int(
+                parent=cell_tag,
+                width=70,
+                default_value=int(step_data["v1"]),
+                min_value=int(lo),
+                max_value=int(hi),
+                speed=1,
+                format="%d",
+                tag=f"seq_flag_{row}_{col}",
+                callback=update_step_val,
+                user_data=(row, col, "v1"),
+            )
+        elif mode == "value" or (mode == "fire" and entry["family"] == catalog.FAMILY_TOGGLE):
             dpg.add_spacer(parent=cell_tag, height=5)
             dpg.add_drag_float(
                 parent=cell_tag,
@@ -1966,7 +2075,7 @@ def _add_tile_context_items(target_id: str) -> None:
     with dpg.menu(label="Add to Mapper"):
         dpg.add_menu_item(
             label="new",
-            callback=open_new_mapping_dialog,
+            callback=open_line_mapping_creator,
             user_data=target_id,
         )
         for line_index in range(len(mapper.row_targets())):
@@ -2054,6 +2163,7 @@ def regen_thumb_callback(sender: Any, app_data: Any, user_data: Any) -> None:
     with dpg.mutex():
         tex_tags = thumbnails_data.pop(target_id, None)
         thumb_fail_count[target_id] = 0  # a manual retry clears the failure state (e10s04)
+        thumb_frames_at_last_request[target_id] = 0  # e41s02: the walk restarts from frame 0
         if dpg.does_item_exist(f"img_{target_id}"):
             dpg.delete_item(f"img_{target_id}")
         for tex_tag in tex_tags or []:
@@ -2145,9 +2255,6 @@ def apply_thumbnail_texture(name: str, idx: str, img_data: Any, w: int, h: int) 
     for r, track in enumerate(tracks_data):
         if track.get("target_id") == target_id:
             update_track_slot_ui(r)
-    for p in monitor_players:
-        if p.get("target_id") == target_id:
-            update_monitor_player_ui(p["id"])
 
 
 def advance_thumb_cycle(
@@ -2170,16 +2277,13 @@ def advance_thumb_cycle(
 def _thumb_cycle_active() -> bool:
     """True while any thumbnail consumer window is visible (e10s05 gate).
 
-    The Mediagrid, the sequencer, every monitor player window and the Mapper
-    each show per-source thumbnails; cycling runs while at least one of them
-    is open so the animation follows the media wherever it is applied
-    (e25s01: an open Mapper alone keeps the cycle running).
+    The Mediagrid, the sequencer and the Mapper each show per-source
+    thumbnails; cycling runs while at least one of them is open so the animation
+    follows the media wherever it is applied (e25s01: an open Mapper alone keeps
+    the cycle running). The monitor player windows are gone (e40s04).
     """
     for tag in ("vimix_media_window", "sequencer_window", "mapper_window"):
         if dpg.does_item_exist(tag) and dpg.is_item_shown(tag):
-            return True
-    for p in monitor_players:
-        if p.get("target_id") and dpg.does_item_exist(p["tag"]) and dpg.is_item_shown(p["tag"]):
             return True
     return False
 
@@ -2187,9 +2291,9 @@ def _thumb_cycle_active() -> bool:
 def _apply_cycle_frame(target_id: str, tex_tag: str) -> None:
     """Switch every visible consumer of a source to the cycled frame (e10s05).
 
-    The Mediagrid tile, every sequencer slot and every monitor player assigned
-    to the source switch together on the same cadence; consumers whose widget
-    is gone (window closed, slot unassigned) are skipped.
+    The Mediagrid tile and every sequencer slot assigned to the source switch
+    together on the same cadence; consumers whose widget is gone (window closed,
+    slot unassigned) are skipped.
     """
     img_tag = f"img_{target_id}"
     if dpg.does_item_exist(img_tag):
@@ -2203,18 +2307,13 @@ def _apply_cycle_frame(target_id: str, tex_tag: str) -> None:
             slot_tag = f"seq_thumb_{r}"
             if dpg.does_item_exist(slot_tag):
                 dpg.configure_item(slot_tag, texture_tag=tex_tag)
-    for p in monitor_players:
-        if p.get("target_id") == target_id:
-            mon_tag = f"mon_thumb_{p['id']}"
-            if dpg.does_item_exist(mon_tag):
-                dpg.configure_item(mon_tag, texture_tag=tex_tag)
 
 
 def tick_thumb_cycle(now: float) -> None:
     """Advance thumb frames once per main-loop frame (e10s04 + e10s05).
 
-    Gated: no cycling while every consumer window (Mediagrid, sequencer,
-    monitor players) is hidden or gone. Tiles with >=2 stored textures switch
+    Gated: no cycling while every consumer window (Mediagrid, sequencer) is
+    hidden or gone. Tiles with >=2 stored textures switch
     texture_tag via configure_item on the cadence; the switch reuses
     pre-loaded static textures (SPIKE-thumb-cycle: ~1.6 us per call).
     """
@@ -2354,11 +2453,17 @@ def on_tile_alpha_slider(sender: Any = None, app_data: Any = None, user_data: An
 
 
 def request_missing_thumbnails(now: float) -> None:
-    """Request thumbs for sources that still lack them (3 s throttle, e10s04).
+    """Request the frame a source still lacks, ONE index at a time (e10s04, e41s02).
 
     Each sent-but-unanswered request bumps the source's fail counter; crossing
     the threshold fires ONE regen retry and the tile flips to the failed label
     (rendered by update_vimix_sources_ui). A successful reply clears the counter.
+
+    e41s02: viOSC answers a digit index with ONE blob, so the frame indices are
+    walked one per throttle cycle. Asking for `all` made the daemon emit three
+    JPEG blobs back-to-back — a multi-fragment burst on a transport that never
+    retransmits. ``next_thumb_frame_index`` bounds the walk and stops it once the
+    daemon stops answering (an image source has a single frame).
     """
     if not state.viosc_client:
         return
@@ -2366,20 +2471,32 @@ def request_missing_thumbnails(now: float) -> None:
         name = props.get("name")
         uri = props.get("uri")
         target_id = str(name) if name else str(idx)
-
-        if uri and target_id not in thumbnails_data:
-            last_thumb = request_timestamps.get(f"thumb_{target_id}", 0)
-            if now - last_thumb > THUMB_REQUEST_INTERVAL:
-                msg_addr = f"/viosc/thumb/{target_id}"
-                state.viosc_client.send_message(msg_addr, ["all"])
-                append_log("OUT", msg_addr)
-                request_timestamps[f"thumb_{target_id}"] = now
-                thumb_fail_count[target_id] = thumb_fail_count.get(target_id, 0) + 1
-                if thumb_fail_count[target_id] == THUMB_FAIL_THRESHOLD:
-                    regen_addr = f"/viosc/regen_thumb/{target_id}"
-                    state.viosc_client.send_message(regen_addr, [])
-                    append_log("OUT", regen_addr)
-                    _show_failed_tile_label(target_id)
+        if not uri:
+            continue
+        received = len(thumbnails_data.get(target_id, ()))
+        frame_index = next_thumb_frame_index(
+            received, thumb_frames_at_last_request.get(target_id, 0)
+        )
+        if frame_index is None:
+            continue
+        last_thumb = request_timestamps.get(f"thumb_{target_id}", 0)
+        if now - last_thumb <= THUMB_REQUEST_INTERVAL:
+            continue
+        if state.thumb_http_supported is False:
+            request_thumbnail_over_osc(target_id, frame_index)
+        else:
+            state.thumb_fetch_queue.put((target_id, frame_index))
+        request_timestamps[f"thumb_{target_id}"] = now
+        if received == 0:
+            # nothing has arrived yet: keep the e10s04 retry/failure accounting
+            thumb_fail_count[target_id] = thumb_fail_count.get(target_id, 0) + 1
+            if thumb_fail_count[target_id] == THUMB_FAIL_THRESHOLD:
+                regen_addr = f"/viosc/regen_thumb/{target_id}"
+                state.viosc_client.send_message(regen_addr, [])
+                append_log("OUT", regen_addr)
+                _show_failed_tile_label(target_id)
+        else:
+            thumb_frames_at_last_request[target_id] = received
 
 
 def update_vimix_sources_ui(json_string: str) -> None:
@@ -2427,6 +2544,9 @@ def update_vimix_sources_ui(json_string: str) -> None:
         for target_id in list(thumb_fail_count):
             if target_id not in live_ids:
                 thumb_fail_count.pop(target_id)
+        for target_id in list(thumb_frames_at_last_request):
+            if target_id not in live_ids:
+                thumb_frames_at_last_request.pop(target_id)
         mapper.prune_anchors(live_ids)  # e36s06: the anchor cache follows source churn
         removed_mappings = mapper.prune_mappings(live_ids)
         if removed_mappings:
@@ -2713,353 +2833,6 @@ def update_vimix_sources_ui(json_string: str) -> None:
         log_error("UI update", str(e))
 
 
-# ==============================================================================
-# MONITOR PLAYERS
-# ==============================================================================
-
-
-def new_monitor_player(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    state.monitor_player_counter += 1
-    player_id = state.monitor_player_counter
-    tag = f"monitor_player_{player_id}"
-    player = {
-        "id": player_id,
-        "tag": tag,
-        "target_id": None,
-        "props": list(DEFAULT_MONITOR_PROPS),
-        "disc_angle": 0.0,
-        "disc_last": 0.0,
-    }
-    monitor_players.append(player)
-    pos = (
-        10 + MONITOR_OFFSET[0] * ((player_id - 1) % 4),
-        30 + MONITOR_OFFSET[1] * ((player_id - 1) // 4),
-    )
-    with dpg.window(label=f"Monitor Player {player_id}", tag=tag, width=270, height=150, pos=pos):
-        head_tag = f"mon_head_{player_id}"
-        themed_text(
-            "Click the box below to assign the current source.",
-            slot="text_dim",
-            tag=head_tag,
-            wrap=250,
-        )
-        with dpg.popup(head_tag, mousebutton=dpg.mvMouseButton_Right):
-            # 2026-09-06 (user): arm/cancel MIDI Learn from any right-click menu
-            _add_context_learn_item(tag=f"ctx_learn_mon_{player_id}")
-            dpg.add_separator()
-            dpg.add_menu_item(
-                label="Monitor Properties...",
-                callback=lambda s, a, u: open_monitor_props(player_id),
-                user_data=player_id,
-            )
-            dpg.add_separator()
-            dpg.add_menu_item(
-                label="Remove Player",
-                callback=lambda s, a, u: remove_monitor_player(player_id),
-                user_data=player_id,
-            )
-        with dpg.group(tag=f"mon_body_{player_id}"):
-            pass
-        with dpg.group(horizontal=True):
-            dpg.add_button(
-                label="Properties...",
-                width=120,
-                callback=lambda s, a, u: open_monitor_props(player_id),
-                user_data=player_id,
-            )
-            dpg.add_button(
-                label="Remove",
-                width=90,
-                callback=lambda s, a, u: remove_monitor_player(player_id),
-                user_data=player_id,
-            )
-    update_monitor_player_ui(player_id)  # build the body: assign box or the readout
-
-
-def update_monitor_player_ui(player_id: int) -> None:
-    try:
-        idx = find_player_index(player_id)
-        if idx is None:
-            return
-        player = monitor_players[idx]
-        tag = player["tag"]
-        if not dpg.does_item_exist(tag):
-            return
-        target_id = player["target_id"]
-        head = f"mon_head_{player_id}"
-        if dpg.does_item_exist(head):
-            if target_id:
-                dpg.set_value(head, target_id)  # just the source name, no label
-            else:
-                dpg.set_value(head, "Click the box below to assign the current source.")
-        body = f"mon_body_{player_id}"
-        if not dpg.does_item_exist(body):
-            return
-        dpg.delete_item(body, children_only=True)
-        with dpg.group(parent=body):
-            if target_id:
-                with dpg.group(horizontal=True):
-                    if target_id in thumbnails_data:
-                        dpg.add_image(
-                            texture_tag=thumbnails_data[target_id][0],
-                            width=MONITOR_THUMB_W,
-                            height=MONITOR_THUMB_H,
-                            tag=f"mon_thumb_{player_id}",  # stable tag: cycled by tick_thumb_cycle
-                        )
-                    else:
-                        themed_text("Loading thumbnail...", slot="text_dim", wrap=MONITOR_THUMB_W)
-                    # turntable disc: spins while playing, rate follows speed (1.0 = normal)
-                    with dpg.drawlist(width=MONITOR_DISC_SIZE, height=MONITOR_DISC_SIZE):
-                        dpg.draw_circle(
-                            center=[MONITOR_DISC_SIZE // 2, MONITOR_DISC_SIZE // 2],
-                            radius=MONITOR_DISC_SIZE // 2 - 4,
-                            color=(60, 60, 70, 255),
-                            fill=(25, 25, 35, 255),
-                        )
-                        dpg.draw_circle(
-                            center=[MONITOR_DISC_SIZE // 2, MONITOR_DISC_SIZE // 2],
-                            radius=MONITOR_DISC_SIZE // 2 - 12,
-                            color=(40, 40, 50, 255),
-                        )
-                        dpg.draw_line(
-                            p1=[MONITOR_DISC_SIZE // 2, MONITOR_DISC_SIZE // 2],
-                            p2=[MONITOR_DISC_SIZE // 2, MONITOR_DISC_SIZE // 2 - MONITOR_DISC_R],
-                            color=(180, 190, 200, 255),
-                            thickness=2,
-                            tag=f"mon_arm_{player_id}",
-                        )
-                        dpg.draw_circle(
-                            center=[MONITOR_DISC_SIZE // 2, MONITOR_DISC_SIZE // 2],
-                            radius=3,
-                            color=(70, 70, 80, 255),
-                            fill=(90, 90, 100, 255),
-                        )
-                        dpg.draw_text(
-                            pos=(
-                                MONITOR_DISC_SIZE // 2 - 12,
-                                MONITOR_DISC_SIZE // 2 - MONITOR_SPEED_TEXT_SIZE // 2,
-                            ),
-                            text="1.00",
-                            color=(220, 230, 240, 255),
-                            size=MONITOR_SPEED_TEXT_SIZE,
-                            tag=f"mon_speed_{player_id}",
-                        )
-
-                    # vertical alpha bar (filled from the bottom)
-                    with dpg.drawlist(width=MONITOR_ALPHA_W, height=MONITOR_DISC_SIZE):
-                        dpg.draw_rectangle(
-                            pmin=[0, 0],
-                            pmax=[MONITOR_ALPHA_W, MONITOR_DISC_SIZE],
-                            color=(60, 60, 70, 255),
-                            fill=(35, 35, 45, 255),
-                        )
-                        dpg.draw_rectangle(
-                            pmin=[0, MONITOR_DISC_SIZE],
-                            pmax=[MONITOR_ALPHA_W, MONITOR_DISC_SIZE],
-                            color=(200, 255, 200, 255),
-                            fill=(120, 220, 120, 255),
-                            tag=f"mon_alpha_fill_{player_id}",
-                        )
-                # horizontal seek bar (video progress 0..1)
-                with dpg.drawlist(width=MONITOR_SEEK_W, height=10):
-                    dpg.draw_rectangle(
-                        pmin=[0, 0],
-                        pmax=[MONITOR_SEEK_W, 10],
-                        color=(60, 60, 70, 255),
-                        fill=(35, 35, 45, 255),
-                    )
-                    dpg.draw_rectangle(
-                        pmin=[0, 0],
-                        pmax=[0, 10],
-                        color=(180, 220, 255, 255),
-                        fill=(90, 160, 220, 255),
-                        tag=f"mon_seek_fill_{player_id}",
-                    )
-            else:
-                dpg.add_button(
-                    label="CLICK TO ASSIGN",
-                    width=MONITOR_SEEK_W,
-                    height=60,
-                    callback=assign_monitor_player,
-                    user_data=player_id,
-                )
-    except Exception as e:
-        print(f"[viseq Monitor UI] Error updating player {player_id}: {e}")
-
-
-def video_is_playing(props: dict[str, Any], prev_seek: float, cur_seek: float) -> bool:
-    """True when the source video is moving: explicit play flag, or seek advancing.
-
-    viOSC may report play as a bool, 0/1, or a string; when it is absent, a
-    progressing seek is a reliable playing signal (paused video -> static seek).
-    """
-    play = props.get("play")
-    if isinstance(play, bool):
-        return play
-    if isinstance(play, (int, float)):
-        return play != 0
-    if isinstance(play, str):
-        return play.strip().lower() in ("1", "true", "yes", "on")
-    return cur_seek > prev_seek + 1e-4
-
-
-def refresh_monitor_display(player_id: int) -> None:
-    """Spin the turntable and update the alpha/seek bars from the source props.
-
-    Runs on the main thread every frame; the disc angle advances only while
-    the video plays, at a rate proportional to the speed. Configure calls are
-    skipped when nothing changed (perf e07 P2): the arm only moves while the
-    video plays, and speed/alpha/seek are re-written only on value changes.
-    """
-    idx = find_player_index(player_id)
-    if idx is None:
-        return
-    player = monitor_players[idx]
-    target_id = player["target_id"]
-    if not target_id:
-        return
-    _, props = find_source_by_name(target_id)
-    if props is None:
-        return
-    now = time.time()
-    dt = now - player.get("disc_last", now)
-    player["disc_last"] = now
-    speed = float(props.get("speed") or 1.0)
-    if speed <= 0.0:
-        speed = 1.0
-    seek = max(0.0, min(1.0, float(props.get("seek") or 0.0)))
-    # 33 RPM at speed 1.0 (0.55 rev/s = 3.455 rad/s); the disc spins only while moving
-    disc_rate = MONITOR_DISC_RPM / 60.0 * 2.0 * math.pi
-    playing = video_is_playing(props, player.get("prev_seek", 0.0), seek)
-    if playing:
-        player["disc_angle"] = player.get("disc_angle", 0.0) + disc_rate * speed * dt
-        angle = player["disc_angle"]
-        if dpg.does_item_exist(f"mon_arm_{player_id}"):
-            dpg.configure_item(
-                f"mon_arm_{player_id}",
-                p2=[
-                    MONITOR_DISC_SIZE / 2 + MONITOR_DISC_R * math.sin(angle),
-                    MONITOR_DISC_SIZE / 2 - MONITOR_DISC_R * math.cos(angle),
-                ],
-            )
-    player["prev_seek"] = seek
-
-    if speed != player.get("last_speed", None):
-        player["last_speed"] = speed
-        if dpg.does_item_exist(f"mon_speed_{player_id}"):
-            speed_str = f"{speed:.2f}"
-            dpg.configure_item(
-                f"mon_speed_{player_id}",
-                text=speed_str,
-                pos=(
-                    MONITOR_DISC_SIZE // 2 - 6 * len(speed_str) + 2,
-                    MONITOR_DISC_SIZE // 2 - MONITOR_SPEED_TEXT_SIZE // 2,
-                ),
-            )
-
-    alpha = max(0.0, min(1.0, float(props.get("alpha") or 0.0)))
-    if alpha != player.get("last_alpha", None):
-        player["last_alpha"] = alpha
-        if dpg.does_item_exist(f"mon_alpha_fill_{player_id}"):
-            dpg.configure_item(
-                f"mon_alpha_fill_{player_id}",
-                pmin=[0, MONITOR_DISC_SIZE - alpha * MONITOR_DISC_SIZE],
-            )
-    if seek != player.get("last_seek", None):
-        player["last_seek"] = seek
-        if dpg.does_item_exist(f"mon_seek_fill_{player_id}"):
-            dpg.configure_item(
-                f"mon_seek_fill_{player_id}",
-                pmax=[seek * MONITOR_SEEK_W, 10],
-            )
-
-
-def assign_monitor_player(sender: Any, app_data: Any, user_data: Any) -> None:
-    player_id = user_data
-    idx = find_player_index(player_id)
-    if idx is None:
-        return
-    player = monitor_players[idx]
-    target_id = get_current_target_id()
-    if not target_id:
-        if dpg.does_item_exist(f"mon_head_{player_id}"):
-            dpg.set_value(f"mon_head_{player_id}", "No source selected in the media library.")
-        return
-    for other in monitor_players:
-        if other["id"] != player_id and other.get("target_id") == target_id:
-            if dpg.does_item_exist(f"mon_head_{player_id}"):
-                dpg.set_value(
-                    f"mon_head_{player_id}", f"Already monitored in Player {other['id']}."
-                )
-            return
-    player["target_id"] = target_id
-    player["props"] = list(DEFAULT_MONITOR_PROPS)
-    send_monitor_command(player_id)
-    update_monitor_player_ui(player_id)
-
-
-def open_monitor_props(player_id: int) -> None:
-    idx = find_player_index(player_id)
-    if idx is None:
-        return
-    player = monitor_players[idx]
-    target_id = player["target_id"]
-    if not target_id:
-        return
-    modal_tag = f"mon_props_modal_{player_id}"
-    if dpg.does_item_exist(modal_tag):
-        dpg.delete_item(modal_tag)
-    with dpg.window(
-        label=f"Monitor Properties - {target_id}",
-        tag=modal_tag,
-        modal=True,
-        width=270,
-        height=400,
-        no_resize=True,
-    ):
-        dpg.add_text("Select the properties to monitor:", wrap=240)
-        dpg.add_separator()
-        with dpg.child_window(height=310, border=True):
-            for prop in ALL_PROPERTIES:
-                dpg.add_checkbox(
-                    label=prop,
-                    default_value=(prop in player["props"]),
-                    tag=f"mon_cb_{player_id}_{prop}",
-                    callback=on_monitor_prop_toggle,
-                    user_data=player_id,
-                )
-
-
-def on_monitor_prop_toggle(sender: Any, app_data: Any, user_data: Any) -> None:
-    player_id = user_data
-    idx = find_player_index(player_id)
-    if idx is None:
-        return
-    player = monitor_players[idx]
-    new_props = []
-    for prop in ALL_PROPERTIES:
-        cb_tag = f"mon_cb_{player_id}_{prop}"
-        if dpg.does_item_exist(cb_tag) and dpg.get_value(cb_tag):
-            new_props.append(prop)
-    player["props"] = new_props
-    send_monitor_command(player_id)
-
-
-def remove_monitor_player(player_id: int) -> None:
-    idx = find_player_index(player_id)
-    if idx is None:
-        return
-    player = monitor_players[idx]
-    if player.get("target_id"):
-        addr = f"/viosc/monitor/{player['target_id']}"
-        osc_client.send_message(addr, [])
-        append_log("OUT", f"{addr} (stop)")
-    tag = player["tag"]
-    if dpg.does_item_exist(tag):
-        dpg.delete_item(tag)
-    del monitor_players[idx]
-
-
 # e38: SOURCE VIDEO PREVIEW — dedicated, resizable "Preview" window
 # ==============================================================================
 # 2026-09-07 (user, after rig UAT): the preview moved OUT of the "Vimix sources"
@@ -3080,9 +2853,46 @@ PREVIEW_IMAGE_TAG = "preview_img"
 PREVIEW_TIME_TAG = "preview_time"
 PREVIEW_SEEK_TAG = "preview_seek"
 PREVIEW_PLAYBTN_TAG = "preview_play_btn"
+PREVIEW_SPEED_TAG = "preview_speed"
+PREVIEW_SPEED_RESET_TAG = "preview_speed_reset"
+PREVIEW_SPEED_LABEL_TAG = "preview_speed_label"
+PREVIEW_CLOSE_TAG = "preview_close_btn"
 PREVIEW_WAIT_TAG = "preview_wait_text"
 PREVIEW_STATUS_TAG = "preview_status_text"
 PREVIEW_MSG_TEXT_TAG = "preview_msg_text"
+PREVIEW_TRANSPORT_TAG = "preview_transport"
+PREVIEW_FLOW_ROW_TAGS = ("preview_flow_0", "preview_flow_1", "preview_flow_2")
+
+# Transport layout (BUG-2026-09-12): the seek bar + controls never exceed the
+# video width; the buttons flow onto new lines when the video gets narrow, and
+# the window height hugs the content so no dead space is left below.
+PREVIEW_H_PAD = 20  # px horizontal padding of the video + transport content
+PREVIEW_H_SPACING = 8  # px horizontal spacing used by the button flow
+# Heights measured on DearPyGui 2.3.1 with the default style (the Preview window
+# binds no padding theme): window chrome (titlebar + padding) + the seek row +
+# the status line + the two item gaps = 104 px for a one-row transport; every
+# additional wrapped control row adds 23 px.
+PREVIEW_CONTENT_CHROME_H = 104
+PREVIEW_FLOW_ROW_STEP_H = 23
+PREVIEW_SCREEN_MARGIN_H = 48  # keep the fitted window inside the viewport
+PREVIEW_SEEK_MIN_W = 80
+PREVIEW_BTN_PAUSE_W = 70
+PREVIEW_TIME_RESERVE_W = 92  # px reserved for the timecode label
+PREVIEW_SPEED_LABEL_W = 46  # px reserved for the "Speed" label
+PREVIEW_SPEED_FIELD_W = 64
+PREVIEW_BTN_RESET_W = 30
+PREVIEW_BTN_CLOSE_W = 60
+
+# The transport controls in reading order with their fixed widths; the flow
+# packer uses this to decide where the lines break.
+PREVIEW_TRANSPORT_CONTROLS: tuple[tuple[str, int], ...] = (
+    (PREVIEW_PLAYBTN_TAG, PREVIEW_BTN_PAUSE_W),
+    (PREVIEW_TIME_TAG, PREVIEW_TIME_RESERVE_W),
+    (PREVIEW_SPEED_LABEL_TAG, PREVIEW_SPEED_LABEL_W),
+    (PREVIEW_SPEED_TAG, PREVIEW_SPEED_FIELD_W),
+    (PREVIEW_SPEED_RESET_TAG, PREVIEW_BTN_RESET_W),
+    (PREVIEW_CLOSE_TAG, PREVIEW_BTN_CLOSE_W),
+)
 
 # Default window geometry when no remembered rect exists yet (a session rect
 # is remembered while the app runs and reused for the next preview).
@@ -3094,6 +2904,7 @@ PREVIEW_WIN_Y = 120
 _preview_player: Any = None  # composition-root-owned PreviewPlayer instance
 _preview_tex_dims: tuple[int, int] | None = None
 _preview_win_rect: tuple[int, int, int, int] | None = None
+_preview_layout: tuple[int, int, int] | None = None  # last applied (disp_w, disp_h, content_w)
 _preview_error_shown = False
 
 
@@ -3165,28 +2976,97 @@ def _preview_remember_rect() -> None:
     _preview_win_rect = (int(x), int(y), w, h)
 
 
+def _pack_preview_controls(max_w: int) -> list[list[str]]:
+    """Greedily pack the transport controls into rows no wider than ``max_w``.
+
+    Pure (no dpg): a control that does not fit flows onto the next line, so the
+    transport never exceeds the video width (BUG-2026-09-12).
+    """
+    rows: list[list[str]] = [[] for _ in PREVIEW_FLOW_ROW_TAGS]
+    row = 0
+    used = 0
+    for tag, width in PREVIEW_TRANSPORT_CONTROLS:
+        if rows[row] and used + PREVIEW_H_SPACING + width > max_w and row + 1 < len(rows):
+            row += 1
+            used = 0
+        if rows[row]:
+            used += PREVIEW_H_SPACING
+        rows[row].append(tag)
+        used += width
+    return rows
+
+
+def _layout_preview_transport(content_w: int) -> None:
+    """Reflow the seek bar + transport controls to ``content_w`` (the video
+    width): the slider spans the width, the buttons wrap onto new lines."""
+    if dpg.does_item_exist(PREVIEW_SEEK_TAG):
+        dpg.configure_item(PREVIEW_SEEK_TAG, width=max(PREVIEW_SEEK_MIN_W, content_w))
+    rows = _pack_preview_controls(content_w)
+    for row_tag, tags in zip(PREVIEW_FLOW_ROW_TAGS, rows, strict=True):
+        for tag in tags:
+            if dpg.does_item_exist(tag):
+                dpg.move_item(tag, parent=row_tag)
+        if dpg.does_item_exist(row_tag):
+            dpg.configure_item(row_tag, show=bool(tags))
+
+
+def _preview_available_h() -> int:
+    """Usable window height inside the viewport; 0 when it cannot be read."""
+    try:
+        total = int(dpg.get_viewport_client_height())
+    except (TypeError, ValueError, AttributeError):
+        return 0
+    return max(0, total - PREVIEW_SCREEN_MARGIN_H)
+
+
 def _layout_preview_content() -> None:
-    """Reflow the video + transport to the current window size (resize-safe)."""
+    """Reflow the video + transport to the current window size.
+
+    The video fills the window width and keeps its aspect; the transport never
+    exceeds the video width (the seek bar spans it, the buttons wrap); the
+    window height then HUGS the content, so no dead space is left below the
+    transport. The applied geometry is cached so a per-frame call never reflows
+    (and never disturbs a slider drag); the height is re-fit only when it moved.
+    """
+    global _preview_layout
     if not dpg.does_item_exist(PREVIEW_WINDOW_TAG):
         return
     w = max(260, int(dpg.get_item_width(PREVIEW_WINDOW_TAG) or 0) or PREVIEW_WIN_W)
-    h = max(200, int(dpg.get_item_height(PREVIEW_WINDOW_TAG) or 0) or PREVIEW_WIN_H)
-    # transport row: fixed buttons/time, the seek slider takes the rest
-    if dpg.does_item_exist(PREVIEW_SEEK_TAG):
-        dpg.configure_item(PREVIEW_SEEK_TAG, width=max(80, w - 330))
-    if dpg.does_item_exist(PREVIEW_STATUS_TAG):
-        dpg.configure_item(PREVIEW_STATUS_TAG, wrap=max(200, w - 24))
-    # the video fills the width and keeps its aspect, leaving room for the
-    # transport + status rows below
-    if _preview_tex_dims is not None and dpg.does_item_exist(PREVIEW_IMAGE_TAG):
-        tex_w, tex_h = _preview_tex_dims
-        avail_h = max(120, h - 120)
-        disp_w = max(200, w - 20)
-        disp_h = int(disp_w * tex_h / tex_w)
-        if disp_h > avail_h:
-            disp_h = max(120, avail_h)
-            disp_w = max(200, int(disp_h * tex_w / tex_h))
-        dpg.configure_item(PREVIEW_IMAGE_TAG, width=disp_w, height=disp_h)
+    if _preview_tex_dims is None:
+        content_w = max(200, w - PREVIEW_H_PAD)
+        if (0, 0, content_w) != _preview_layout:
+            _preview_layout = (0, 0, content_w)
+            _layout_preview_transport(content_w)
+        return
+    tex_w, tex_h = _preview_tex_dims
+    disp_w = max(200, w - PREVIEW_H_PAD)
+    disp_h = int(disp_w * tex_h / tex_w)
+    rows = 1
+    window_h = 0
+    avail = _preview_available_h()
+    for _ in range(3):
+        rows = sum(1 for r in _pack_preview_controls(disp_w) if r)
+        window_h = disp_h + PREVIEW_CONTENT_CHROME_H + (rows - 1) * PREVIEW_FLOW_ROW_STEP_H
+        if not avail or window_h <= avail:
+            break
+        # taller than the screen: shrink the video (letterbox on the sides)
+        video_avail = max(
+            120, avail - PREVIEW_CONTENT_CHROME_H - (rows - 1) * PREVIEW_FLOW_ROW_STEP_H
+        )
+        if video_avail >= disp_h:
+            break
+        disp_h = video_avail
+        disp_w = max(200, int(disp_h * tex_w / tex_h))
+    if (disp_w, disp_h, disp_w) != _preview_layout:
+        _preview_layout = (disp_w, disp_h, disp_w)
+        if dpg.does_item_exist(PREVIEW_IMAGE_TAG):
+            dpg.configure_item(PREVIEW_IMAGE_TAG, width=disp_w, height=disp_h)
+        _layout_preview_transport(disp_w)
+        if dpg.does_item_exist(PREVIEW_STATUS_TAG):
+            dpg.configure_item(PREVIEW_STATUS_TAG, wrap=max(200, disp_w))
+    h_now = int(dpg.get_item_height(PREVIEW_WINDOW_TAG) or 0)
+    if h_now and window_h and window_h != h_now:
+        dpg.configure_item(PREVIEW_WINDOW_TAG, height=window_h)
 
 
 def _on_preview_window_resize(
@@ -3203,6 +3083,8 @@ def _open_preview_window(target_id: str, message: str | None = None) -> None:
     ``message`` given: an error window (no transport) so a refused preview is
     visible and closable, never a silent no-op.
     """
+    global _preview_layout
+    _preview_layout = None  # a fresh window must be laid out once
     if _preview_win_rect is not None:
         x, y, w, h = _preview_win_rect
     else:
@@ -3214,32 +3096,64 @@ def _open_preview_window(target_id: str, message: str | None = None) -> None:
             dpg.add_button(label="Close", width=90, callback=close_source_preview)
     else:
         with dpg.window(
-            label=f"Preview — {target_id}",
+            # ASCII separator: window titles use the default font, which has no glyph for "—"
+            label=f"Preview - {target_id}",
             tag=PREVIEW_WINDOW_TAG,
             width=w,
             height=h,
             pos=(x, y),
+            no_scrollbar=True,  # the height hugs the content: nothing ever scrolls
         ):
             with dpg.group(tag=PREVIEW_VIDEO_SLOT_TAG):
                 dpg.add_text("Connecting...", tag=PREVIEW_WAIT_TAG)
-            with dpg.group(horizontal=True):
-                dpg.add_button(
-                    label="Pause",
-                    width=70,
-                    tag=PREVIEW_PLAYBTN_TAG,
-                    callback=on_preview_play_button,
-                )
+            with dpg.group(tag=PREVIEW_TRANSPORT_TAG):
                 dpg.add_slider_float(
                     default_value=0.0,
                     min_value=0.0,
                     max_value=1.0,
-                    width=max(80, w - 330),
+                    width=max(PREVIEW_SEEK_MIN_W, w - PREVIEW_H_PAD),
                     tag=PREVIEW_SEEK_TAG,
                     callback=on_preview_seek,
                 )
-                themed_text("0:00 / 0:00", slot="text", tag=PREVIEW_TIME_TAG)
-                dpg.add_button(label="Close", width=60, callback=close_source_preview)
+                # controls live in the first flow row; _layout_preview_content
+                # moves them onto the next row when they no longer fit the video
+                with dpg.group(horizontal=True, tag=PREVIEW_FLOW_ROW_TAGS[0]):
+                    dpg.add_button(
+                        label="Pause",
+                        width=PREVIEW_BTN_PAUSE_W,
+                        tag=PREVIEW_PLAYBTN_TAG,
+                        callback=on_preview_play_button,
+                    )
+                    themed_text("0:00 / 0:00", slot="text", tag=PREVIEW_TIME_TAG)
+                    themed_text("Speed", slot="text_dim", tag=PREVIEW_SPEED_LABEL_TAG)
+                    dpg.add_drag_float(
+                        default_value=PREVIEW_SPEED_DEFAULT,
+                        min_value=PREVIEW_SPEED_MIN,
+                        max_value=PREVIEW_SPEED_MAX,
+                        speed=PREVIEW_SPEED_STEP,
+                        format="%.2fx",
+                        width=PREVIEW_SPEED_FIELD_W,
+                        tag=PREVIEW_SPEED_TAG,
+                        callback=on_preview_speed,
+                    )
+                    dpg.add_button(
+                        label="1x",
+                        width=PREVIEW_BTN_RESET_W,
+                        tag=PREVIEW_SPEED_RESET_TAG,
+                        callback=on_preview_speed_reset,
+                    )
+                    dpg.add_button(
+                        label="Close",
+                        width=PREVIEW_BTN_CLOSE_W,
+                        tag=PREVIEW_CLOSE_TAG,
+                        callback=close_source_preview,
+                    )
+                for row_tag in PREVIEW_FLOW_ROW_TAGS[1:]:
+                    dpg.add_group(horizontal=True, tag=row_tag)
             themed_text("", slot="text_dim", tag=PREVIEW_STATUS_TAG)
+        # first reflow to the intended geometry (the window may not report its
+        # size yet); the first decoded frame refines it to the video width
+        _layout_preview_content()
     # window resize handler: inner content follows the window size
     if dpg.does_item_exist(PREVIEW_RESIZE_REG_TAG):
         dpg.delete_item(PREVIEW_RESIZE_REG_TAG)
@@ -3283,7 +3197,7 @@ def _preview_apply_frame(rgba: Any) -> None:
 
 def close_source_preview(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     """Clean stop: remember the geometry, close the worker, drop the window."""
-    global _preview_player, _preview_tex_dims
+    global _preview_player, _preview_tex_dims, _preview_layout
     _preview_remember_rect()
     player = _preview_player
     _preview_player = None
@@ -3294,6 +3208,7 @@ def close_source_preview(sender: Any = None, app_data: Any = None, user_data: An
     if dpg.does_item_exist(PREVIEW_WINDOW_TAG):
         dpg.delete_item(PREVIEW_WINDOW_TAG)  # drops the texture/image children too
     _preview_tex_dims = None
+    _preview_layout = None
     state.preview_active = None
     state.preview_playing = False
     state.preview_error = None
@@ -3347,6 +3262,24 @@ def on_preview_play_button(sender: Any = None, app_data: Any = None, user_data: 
         state.preview_playing = True
         if dpg.does_item_exist(PREVIEW_PLAYBTN_TAG):
             dpg.set_item_label(PREVIEW_PLAYBTN_TAG, "Pause")
+
+
+def on_preview_speed(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Speed field changed (e38 BUG-2026-09-12): clamp, drive the transport,
+    and reflect the clamped value back into the widget."""
+    rate = preview.clamp_preview_speed(app_data)
+    if _preview_player is not None:
+        _preview_player.set_speed(rate)
+    if dpg.does_item_exist(PREVIEW_SPEED_TAG):
+        dpg.set_value(PREVIEW_SPEED_TAG, rate)
+
+
+def on_preview_speed_reset(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """One-click reset of the playback rate to real time (the default)."""
+    if _preview_player is not None:
+        _preview_player.set_speed(PREVIEW_SPEED_DEFAULT)
+    if dpg.does_item_exist(PREVIEW_SPEED_TAG):
+        dpg.set_value(PREVIEW_SPEED_TAG, PREVIEW_SPEED_DEFAULT)
 
 
 def on_preview_seek(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -3407,6 +3340,7 @@ def start_osc_server(ip: str, port: int) -> bool:
         disp = dispatcher.Dispatcher()
         disp.set_default_handler(incoming_osc_handler)
         state.local_osc_server = ViseqOSCUDPServer((ip, port), disp)
+        size_receive_buffer(getattr(state.local_osc_server, "socket", None))
         state.local_server_thread = threading.Thread(
             target=state.local_osc_server.serve_forever, daemon=True
         )
@@ -3471,7 +3405,15 @@ def toggle_local_server() -> None:
 def connect_osc_client(ip: str, port: int) -> bool:
     """Create the viOSC client (main thread); True when ready."""
     try:
-        state.viosc_client = udp_client.SimpleUDPClient(ip, port)
+        state.viosc_client = osc.observe_client(
+            udp_client.SimpleUDPClient(ip, port), f"{ip}:{port}"
+        )
+        # e41s03: the HTTP data plane lives on the SAME machine as viOSC, so its
+        # host follows the OSC client and its port comes from the preview config
+        # (the e38 server the thumbnails now use). Refreshed whenever the client
+        # is (re)connected, which is the only place the endpoint can change.
+        state.dataplane_host = str(ip)
+        state.dataplane_port = int(_preview_endpoints(load_config())["port"])
         dpg.set_value("viosc_status", f"Client Status: Ready on {ip}:{port}")
         return True
     except Exception:
@@ -3755,6 +3697,30 @@ def _exec_seq_row_assign(params: dict[str, Any], value: int) -> None:
     assign_target_to_track(row, selected)
 
 
+def _exec_seq_row_active_true(params: dict[str, Any], value: int) -> None:
+    """e36s07: MIDI enable of a whole sequencer row ({row} slot param)."""
+    _exec_seq_row_active(params, value, True)
+
+
+def _exec_seq_row_active_false(params: dict[str, Any], value: int) -> None:
+    """e36s07: MIDI disable of a whole sequencer row ({row} slot param)."""
+    _exec_seq_row_active(params, value, False)
+
+
+def _exec_seq_row_active(params: dict[str, Any], value: int, active: bool) -> None:
+    """Shared MIDI body: the row is a stable slot; low CC and stale rows no-op."""
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    row = int(params.get("row", -1))
+    if row < 0 or row >= NUM_TRACKS:
+        _log_stale_midi_target(
+            MIDI_ACTION_SEQ_ROW_ENABLE if active else MIDI_ACTION_SEQ_ROW_DISABLE,
+            f"no track {row}",
+        )
+        return
+    set_step_row_active(row, active)
+
+
 def _exec_enable_correction(params: dict[str, Any], value: int) -> None:
     """e33s04: arm the color-correction block of the SELECTED source (1.0).
 
@@ -3802,7 +3768,15 @@ _MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
     # e33s04: selection-relative actions — never anchored to a volatile source
     MIDI_ACTION_REGEN_SELECTED: _exec_regen_selected,
     MIDI_ACTION_SEQ_ROW_ASSIGN: _exec_seq_row_assign,
+    MIDI_ACTION_SEQ_ROW_ENABLE: _exec_seq_row_active_true,
+    MIDI_ACTION_SEQ_ROW_DISABLE: _exec_seq_row_active_false,
     MIDI_ACTION_ENABLE_CORRECTION: _exec_enable_correction,
+    # e39s01: the I/O Monitor window toggle (mappable per the e33 rule)
+    MIDI_ACTION_IO_MONITOR_TOGGLE: lambda p, v: _exec_monitor_toggle(p, v),
+    # e40s01: arm/disarm a Mapping's Enabled gate
+    MIDI_ACTION_MAPPING_TOGGLE: lambda p, v: _exec_mapping_toggle(p, v),
+    # e40s08: create a State Mapping on a source line (the State box '+')
+    MIDI_ACTION_MAPPING_ADD: lambda p, v: _exec_mapping_add(p, v),
 }
 
 _last_unknown_action_log: dict[str, float] = {}  # action id -> last log time (throttle)
@@ -3830,6 +3804,7 @@ def midi_execute(action: str, params: dict[str, Any], value: int) -> None:
     one entry here, never a new if/elif branch. An id the registry does not know
     (stale binding) is a logged no-op.
     """
+    action = actions.canonical_action(action)  # e40s09: a Route-era id still resolves
     executor = _MIDI_EXECUTORS.get(action)
     if executor is None:
         _log_unknown_midi_action(action)
@@ -3867,12 +3842,59 @@ def _log_first_midi_message(msg: Any, port_name: str) -> None:
         append_log("MIDI", f"first msg on {port_name}: {msg_type} {number} val {value}")
 
 
+def _monitor_outcome_for(action: str, params: dict[str, Any], value: int) -> tuple[str, str]:
+    """The I/O Monitor's (outcome, detail) for one resolved binding (e39s01).
+
+    A Mapper value binding reports the mapping-level result through the pure
+    preview (SENT / HOLD / MUTED) WITHOUT sending OSC; every other action
+    reports MATCH with its id and raw value.
+    """
+    if action == MIDI_ACTION_MAPPER_MAPPING:
+        mapping_id = int(params.get("mapping_id", 0))
+        mapping = mapper.find_mapping(mapping_id)
+        if mapping is not None:
+            effective, tag = mapper.preview_mapping_value(mapping, float(value))
+            prop = str(mapping.get("property", "?"))
+            return tag, f"mapping #{mapping_id} {prop} -> {effective:.2f}"
+    return IO_MONITOR_OUTCOME_MATCH, f"{action} v={value}"
+
+
+def _record_monitor_rx(
+    port_name: str,
+    msg_type: str | None,
+    channel: int,
+    number: int,
+    value: int,
+    outcome: str,
+    detail: str,
+) -> None:
+    """Report one parsed message to the I/O Monitor (e39s01) — observation only.
+
+    Release edges (note_off / note_on velocity 0) parse to msg_type None and are
+    not messages: they are skipped.
+    """
+    if msg_type is None:
+        return
+    iomonitor.record_rx(
+        port_name, str(msg_type), int(channel), int(number), float(value), outcome, detail
+    )
+
+
 def handle_midi_message(msg: Any, port_name: str) -> None:
-    """Route one incoming message (worker thread): learn capture first, then dispatch."""
+    """Mapping one incoming message (main thread): learn capture first, then dispatch.
+
+    e39s01: every parsed message is also reported to the I/O Monitor with its
+    resolution outcome — observation only, the dispatch below is unchanged.
+    """
     _log_first_midi_message(msg, port_name)
+    msg_type, number, raw = _parse_midi_msg(msg)
+    channel = int(getattr(msg, "channel", 0))
     if state.midi_learn_pending is not None:
         source = binding_source_from_message(msg, port_name)
         if source is not None:
+            _record_monitor_rx(
+                port_name, msg_type, channel, number, raw, IO_MONITOR_OUTCOME_LEARN, "captured"
+            )
             ui_task(lambda: midi_learn_complete(source, port_name))
             return
     controller = find_controller_by_port(port_name)
@@ -3882,12 +3904,15 @@ def handle_midi_message(msg: Any, port_name: str) -> None:
         )
     else:
         bindings = None  # legacy flat lists (pre-e14 paths/tests)
-    resolved = False
+    outcome = IO_MONITOR_OUTCOME_NOBIND if bindings is None else IO_MONITOR_OUTCOME_NOMATCH
+    details: list[str] = []
     for action, params, value in resolve_midi_message(msg, port_name, bindings):
-        resolved = True
         _midi_enqueue_execute(action, params, value)
-    if not resolved and bindings is not None:
+        outcome, detail = _monitor_outcome_for(action, params, value)
+        details.append(detail)
+    if not details and bindings is not None:
         _log_unmatched_midi(msg, port_name)
+    _record_monitor_rx(port_name, msg_type, channel, number, raw, outcome, "; ".join(details))
 
 
 def _exit_midi_learn() -> None:
@@ -3917,6 +3942,9 @@ def _refresh_learn_surfaces() -> None:
         refresh_mapper_ui()
     _sync_media_learn_bar()
     _sync_sequencer_learn_strip()
+    _sync_seq_row_learn_strip()
+    _sync_monitor_learn_marker()
+    _sync_filter_learn_marker()
 
 
 def learn_marker(
@@ -4084,6 +4112,46 @@ def _sync_sequencer_learn_strip() -> None:
 def _strip_marker(strip: Any, action_id: str, params: dict[str, Any], tag: str) -> None:
     """One transport learn marker inside the sequencer strip."""
     learn_marker(action_id, params, parent=strip, tag=tag)
+
+
+def _sync_seq_row_learn_strip() -> None:
+    """Create or drop the sequencer ROW learn strip (e36s07).
+
+    While MIDI Learn is on, a strip below the transport markers offers one red-M
+    marker per row for Enable row and one for Disable row (params carry the
+    stable row slot), so the e33 rule holds for the new context actions. Leaving
+    learn mode removes the strip.
+    """
+    strip_tag = "seq_row_learn"
+    if dpg.does_item_exist(strip_tag):
+        dpg.delete_item(strip_tag)
+    if not state.midi_learn_mode:
+        return
+    if not dpg.does_item_exist("seq_table"):
+        return
+    with dpg.group(
+        parent="sequencer_window",
+        horizontal=True,
+        tag=strip_tag,
+        before="seq_table",
+    ) as strip:
+        for slot in range(1, NUM_TRACKS + 1):
+            learn_marker(
+                MIDI_ACTION_SEQ_ROW_ENABLE,
+                {"row": slot - 1},
+                parent=strip,
+                tag=f"seq_row_mk_en_{slot}",
+                tooltip=f"Map: enable sequencer line {slot}",
+            )
+        _learn_group_gap(strip)
+        for slot in range(1, NUM_TRACKS + 1):
+            learn_marker(
+                MIDI_ACTION_SEQ_ROW_DISABLE,
+                {"row": slot - 1},
+                parent=strip,
+                tag=f"seq_row_mk_dis_{slot}",
+                tooltip=f"Map: disable sequencer line {slot}",
+            )
 
 
 def midi_learn_complete(binding: dict[str, Any], port_name: str | None = None) -> None:
@@ -4344,6 +4412,589 @@ def show_midi_window(sender: Any = None, app_data: Any = None, user_data: Any = 
     render_controllers_ui()
     dpg.show_item("midi_window")
     dpg.focus_item("midi_window")  # e17: a shown window must come to the front
+
+
+# --- MIDI MONITOR (e39s01) ---------------------------------------------------
+# Diagnostic window: the incoming MIDI stream WITH the resolution outcome plus a
+# per-control calibration table. NOT in LAYOUT_WINDOW_TAGS — a saved layout must
+# never pop a debug window at boot; geometry is session-only.
+IO_MONITOR_WINDOW_WIDTH = 980
+IO_MONITOR_WINDOW_HEIGHT = 620
+IO_MONITOR_TEXT_HEIGHT = 250
+IO_MONITOR_ALL_PORTS = "All ports"
+
+_io_monitor_paused = False
+_io_monitor_port: str | None = None
+_io_monitor_ports: list[str] = []
+# e39s05: the direction filter — None = both, else IO_MONITOR_DIRECTION_IN/OUT.
+_io_monitor_direction: str | None = None
+# e39s05: the transport filter — None = both, else IO_MONITOR_TRANSPORT_MIDI/OSC.
+_io_monitor_transport: str | None = None
+_io_monitor_transports: list[str] = []
+_io_monitor_filter_control: tuple[str, str, int, int, str] | None = None
+_io_monitor_control_items: dict[str, tuple[str, str, int, int, str]] = {}
+_io_monitor_mapping_items: dict[str, int] = {}
+_io_monitor_last_revision = -1
+_io_monitor_last_refresh = 0.0
+
+
+IO_MONITOR_DIRECTION_BOTH = "In + Out"
+_IO_MONITOR_DIRECTION_LABELS: dict[str, str | None] = {
+    IO_MONITOR_DIRECTION_BOTH: None,
+    "In only": IO_MONITOR_DIRECTION_IN,
+    "Out only": IO_MONITOR_DIRECTION_OUT,
+}
+
+
+def _io_monitor_direction_label() -> str:
+    """The combo label of the active direction filter (e39s05)."""
+    for label, value in _IO_MONITOR_DIRECTION_LABELS.items():
+        if value == _io_monitor_direction:
+            return label
+    return IO_MONITOR_DIRECTION_BOTH
+
+
+def on_io_monitor_direction(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Direction combo: narrow the stream to what viseq receives or sends (e39s05)."""
+    global _io_monitor_direction
+    _io_monitor_direction = _IO_MONITOR_DIRECTION_LABELS.get(
+        str(app_data or IO_MONITOR_DIRECTION_BOTH)
+    )
+    refresh_io_monitor()
+
+
+IO_MONITOR_TRANSPORT_BOTH = "MIDI + OSC"
+_IO_MONITOR_TRANSPORT_LABELS: dict[str, str | None] = {
+    IO_MONITOR_TRANSPORT_BOTH: None,
+    "MIDI only": IO_MONITOR_TRANSPORT_MIDI,
+    "OSC only": IO_MONITOR_TRANSPORT_OSC,
+}
+
+
+def on_io_monitor_transport(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Transport combo: MIDI, OSC or both in the stream (e39s05)."""
+    global _io_monitor_transport
+    _io_monitor_transport = _IO_MONITOR_TRANSPORT_LABELS.get(
+        str(app_data or IO_MONITOR_TRANSPORT_BOTH)
+    )
+    refresh_io_monitor()
+
+
+def _io_monitor_port_options() -> list[str]:
+    """The Peer-filter options: 'All peers' plus every peer seen or configured.
+
+    e39s05: it lists the MIDI ports AND the OSC peers (host:port) seen in the
+    stream, so the filter covers both transports.
+    """
+    ports = {str(row["port"]) for row in iomonitor.snapshot_controls()}
+    ports.update(iomonitor.peers())
+    ports.update(str(c.get("port", "")) for c in midi_controllers if c.get("port"))
+    return [IO_MONITOR_ALL_PORTS, *sorted(p for p in ports if p)]
+
+
+def _monitor_sync_ports() -> None:
+    """Keep the port combo in sync with the ports seen/configured (e39s01).
+
+    Tracks the last rendered option list in a module global instead of reading
+    the widget: a reconfigure happens only when the set actually changed.
+    """
+    global _io_monitor_ports
+    options = _io_monitor_port_options()
+    if options == _io_monitor_ports:
+        return
+    _io_monitor_ports = options
+    if dpg.does_item_exist("io_monitor_port"):
+        dpg.configure_item("io_monitor_port", items=options)
+
+
+def _control_label(control: tuple[str, str, int, int, str]) -> str:
+    """Picker label of one control: 'cc ch0 #7 @port'."""
+    port, msg_type, channel, number, _direction = control
+    return f"{msg_type} ch{int(channel)} #{int(number)} @{port}"
+
+
+def _mapping_label(mapping: dict[str, Any]) -> str:
+    """Picker label of one Mapper mapping: '#3 speed (clipA)'."""
+    return f"#{int(mapping['id'])} {mapping.get('property', '?')} ({mapping.get('target_id', '?')})"
+
+
+def _monitor_sync_controls() -> None:
+    """Keep the control + mapping pickers in sync (e39s03).
+
+    Tracks the last rendered items in module globals and reconfigures only when
+    the sets changed, so a selected value is never reset per refresh.
+    """
+    global _io_monitor_control_items, _io_monitor_mapping_items
+    controls = {
+        _control_label(tuple(row["key"])): tuple(row["key"])
+        for row in iomonitor.snapshot_controls()
+    }
+    if controls != _io_monitor_control_items:
+        _io_monitor_control_items = controls
+        if dpg.does_item_exist("io_monitor_control_combo"):
+            dpg.configure_item("io_monitor_control_combo", items=list(controls))
+    mappings = {_mapping_label(m): int(m["id"]) for m in state.mapper_mappings}
+    if mappings != _io_monitor_mapping_items:
+        _io_monitor_mapping_items = mappings
+        if dpg.does_item_exist("io_monitor_mapping_combo"):
+            dpg.configure_item("io_monitor_mapping_combo", items=list(mappings))
+
+
+def show_io_monitor(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Open (or raise) the I/O Monitor diagnostic window (e39s01)."""
+    if dpg.does_item_exist("io_monitor_window"):
+        dpg.show_item("io_monitor_window")
+        dpg.focus_item("io_monitor_window")
+        return
+    _build_io_monitor_window()
+
+
+def _build_io_monitor_window() -> None:
+    """Build the monitor window (toolbar + stream/controls panes, e39s01)."""
+    with dpg.window(
+        label="I/O Monitor",
+        tag="io_monitor_window",
+        width=IO_MONITOR_WINDOW_WIDTH,
+        height=IO_MONITOR_WINDOW_HEIGHT,
+        pos=(60, 60),
+    ):
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="Pause", tag="io_monitor_pause", callback=toggle_io_monitor_pause)
+            dpg.add_button(label="Clear", callback=clear_io_monitor)
+            dpg.add_button(label="Reset stats", callback=reset_io_monitor_stats)
+            dpg.add_button(label="Copy report", callback=copy_io_monitor_report)
+            themed_text("Peer", slot="text_dim")
+            dpg.add_combo(
+                items=_io_monitor_port_options(),
+                default_value=IO_MONITOR_ALL_PORTS,
+                width=220,
+                tag="io_monitor_port",
+                callback=on_io_monitor_port,
+            )
+            # e39s05: in / out / both — the stream sees both directions now.
+            themed_text("Direction", slot="text_dim")
+            dpg.add_combo(
+                items=list(_IO_MONITOR_DIRECTION_LABELS),
+                default_value=IO_MONITOR_DIRECTION_BOTH,
+                width=110,
+                tag="io_monitor_direction",
+                callback=on_io_monitor_direction,
+            )
+            themed_text("Transport", slot="text_dim")
+            dpg.add_combo(
+                items=list(_IO_MONITOR_TRANSPORT_LABELS),
+                default_value=IO_MONITOR_TRANSPORT_BOTH,
+                width=130,
+                tag="io_monitor_transport",
+                callback=on_io_monitor_transport,
+            )
+            dpg.add_group(tag="io_monitor_learn_slot", horizontal=True)
+        with dpg.group(horizontal=True):
+            themed_text("Control", slot="text_dim")
+            dpg.add_combo(items=[], width=240, tag="io_monitor_control_combo")
+            dpg.add_button(label="Filter", callback=filter_io_monitor_control)
+            dpg.add_button(label="Copy id", callback=copy_io_monitor_control_id)
+            themed_text("Mapping", slot="text_dim")
+            dpg.add_combo(items=[], width=240, tag="io_monitor_mapping_combo")
+            dpg.add_button(label="Assign", callback=assign_io_monitor_control)
+        themed_text("Stream (newest first, in + out)", slot="text_dim")
+        dpg.add_input_text(
+            tag="io_monitor_stream_text",
+            multiline=True,
+            readonly=True,
+            width=-1,
+            height=IO_MONITOR_TEXT_HEIGHT,
+            default_value="No traffic yet.",
+        )
+        themed_text("Controls", slot="text_dim")
+        dpg.add_input_text(
+            tag="io_monitor_controls_text",
+            multiline=True,
+            readonly=True,
+            width=-1,
+            height=IO_MONITOR_TEXT_HEIGHT,
+            default_value="No control seen yet.",
+        )
+    _sync_monitor_learn_marker()
+    refresh_io_monitor()
+
+
+def toggle_io_monitor_window(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Show / close the I/O Monitor window (IO_MONITOR_TOGGLE executor, e39s01)."""
+    if dpg.does_item_exist("io_monitor_window"):
+        dpg.delete_item("io_monitor_window")
+        return
+    show_io_monitor()
+
+
+def _exec_monitor_toggle(params: dict[str, Any], value: int) -> None:
+    """e39s01: a momentary press (CC >= 64 / note) shows or closes the monitor."""
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    toggle_io_monitor_window()
+
+
+def _exec_mapping_toggle(params: dict[str, Any], value: int) -> None:
+    """e40s01: a momentary press arms/disarms a Mapping (its Enabled gate).
+
+    The arm checkbox follows in place when its row is on screen; a stale
+    mapping id is a logged no-op.
+    """
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    mapping = mapper.find_mapping(int(params.get("mapping_id", 0)))
+    if mapping is None:
+        _log_stale_midi_target(MIDI_ACTION_MAPPING_TOGGLE, f"no mapping {params.get('mapping_id')}")
+        return
+    enabled = not bool(mapping.get("enabled", False))
+    mapper.set_mapping_enabled(int(mapping["id"]), enabled)
+    if dpg.does_item_exist(f"mapping_enable_{mapping['id']}"):
+        dpg.set_value(f"mapping_enable_{mapping['id']}", enabled)
+
+
+def _exec_mapping_add(params: dict[str, Any], value: int) -> None:
+    """e40s08/e40s10: a momentary press opens the Mapping creator.
+
+    ``{"line": n}`` anchors it to that Source line (resolved through
+    mapper.row_targets() at TRIGGER time — a binding never captures a volatile
+    source id), ``{"source_less": true}`` is the Clock+Constant creator and no
+    param is the general creator. A stale line index is a logged no-op.
+    """
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    if "line" in params:
+        line = int(params.get("line", -1))
+        rows = mapper.row_targets()
+        if line < 0 or line >= len(rows):
+            _log_stale_midi_target(MIDI_ACTION_MAPPING_ADD, f"no line {line}")
+            return
+        open_line_mapping_creator(user_data=rows[line])
+        return
+    if params.get("source_less"):
+        open_source_less_mapping_creator()
+        return
+    open_mapping_creator()
+
+
+def _sync_filter_learn_marker() -> None:
+    """(Re)render the filter bar's create-action learn marker (e40s11, e33 rule).
+
+    The filter bar is built once at boot, so its marker cannot be emitted
+    conditionally at render time like the body's; this slot is re-rendered on
+    every learn transition, next to the general '+'.
+    """
+    if not dpg.does_item_exist("mapper_filter_learn_slot"):
+        return
+    dpg.delete_item("mapper_filter_learn_slot", children_only=True)
+    if state.midi_learn_mode:
+        learn_marker(
+            MIDI_ACTION_MAPPING_ADD,
+            {},
+            parent="mapper_filter_learn_slot",
+            tag="mapper_mk_filter",
+        )
+
+
+def _sync_monitor_learn_marker() -> None:
+    """(Re)render the monitor toggle's learn marker (e39s01, e33 rule).
+
+    Markers exist only while learn mode is on; _refresh_learn_surfaces calls
+    this on every learn transition (the slot lives in the window toolbar).
+    """
+    if not dpg.does_item_exist("io_monitor_learn_slot"):
+        return
+    dpg.delete_item("io_monitor_learn_slot", children_only=True)
+    if state.midi_learn_mode:
+        learn_marker(
+            MIDI_ACTION_IO_MONITOR_TOGGLE,
+            {},
+            parent="io_monitor_learn_slot",
+            tag="io_monitor_mk_toggle",
+            tooltip="Map: I/O Monitor window",
+        )
+
+
+def on_io_monitor_port(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Port-filter combo: 'All ports' clears the filter, any port narrows both panes."""
+    global _io_monitor_port
+    value = str(app_data or IO_MONITOR_ALL_PORTS)
+    _io_monitor_port = None if value == IO_MONITOR_ALL_PORTS else value
+    refresh_io_monitor()
+
+
+def toggle_io_monitor_pause(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Pause freezes the view (recording continues); resume repaints at once."""
+    global _io_monitor_paused
+    _io_monitor_paused = not _io_monitor_paused
+    if dpg.does_item_exist("io_monitor_pause"):
+        dpg.set_item_label("io_monitor_pause", "Resume" if _io_monitor_paused else "Pause")
+    if not _io_monitor_paused:
+        refresh_io_monitor()
+
+
+def clear_io_monitor(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Drop both panes' data (Clear button, e39s01)."""
+    iomonitor.clear()
+    refresh_io_monitor()
+
+
+def reset_io_monitor_stats(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Zero the per-control envelopes/counters but keep the rows (e39s02)."""
+    iomonitor.reset_controls()
+    refresh_io_monitor()
+
+
+def _io_monitor_texts() -> tuple[str, str]:
+    """The current (stream, controls) pane texts under the active filters."""
+    port = _io_monitor_port
+    stream = iomonitor.format_stream(
+        iomonitor.snapshot_stream(
+            port=port,
+            control=_io_monitor_filter_control,
+            direction=_io_monitor_direction,
+            transport=_io_monitor_transport,
+        )
+    )
+    return stream, iomonitor.format_controls(iomonitor.snapshot_controls(port=port))
+
+
+def refresh_io_monitor() -> None:
+    """Write both pane texts and remember the engine revision (e39s01)."""
+    global _io_monitor_last_revision, _io_monitor_last_refresh
+    if not dpg.does_item_exist("io_monitor_window"):
+        return
+    _io_monitor_last_revision = iomonitor.revision()
+    _io_monitor_last_refresh = time.monotonic()
+    _monitor_sync_ports()
+    _monitor_sync_controls()
+    stream_text, controls_text = _io_monitor_texts()
+    dpg.set_value("io_monitor_stream_text", stream_text)
+    dpg.set_value("io_monitor_controls_text", controls_text)
+
+
+def copy_io_monitor_report(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Put the stream + controls snapshot on the clipboard (Copy report)."""
+    stream_text, controls_text = _io_monitor_texts()
+    dpg.set_clipboard_text(iomonitor.format_report(stream_text, controls_text))
+
+
+def _io_monitor_selected_control() -> tuple[str, str, int, int, str] | None:
+    """The control picked in the picker (None when nothing is selected)."""
+    return _io_monitor_control_items.get(str(dpg.get_value("io_monitor_control_combo")))
+
+
+def filter_io_monitor_control(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Toggle the stream filter onto the picked control (e39s03)."""
+    global _io_monitor_filter_control
+    control = _io_monitor_selected_control()
+    if control is None:
+        return
+    _io_monitor_filter_control = None if control == _io_monitor_filter_control else control
+    refresh_io_monitor()
+
+
+def copy_io_monitor_control_id(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Put the picked control's id on the clipboard (e39s03)."""
+    control = _io_monitor_selected_control()
+    if control is None:
+        return
+    dpg.set_clipboard_text(iomonitor.control_id(control))
+
+
+def assign_io_monitor_control(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Bind the picked control to the picked Mapper mapping (e39s03)."""
+    control = _io_monitor_selected_control()
+    mapping_id = _io_monitor_mapping_items.get(str(dpg.get_value("io_monitor_mapping_combo")))
+    if control is None or mapping_id is None:
+        return
+    assign_control_to_mapping(control, mapping_id)
+
+
+def assign_control_to_mapping(control: tuple[str, str, int, int, str], mapping_id: int) -> bool:
+    """Bind an already-seen control to a Mapper mapping immediately (e39s03).
+
+    The reverse of a learn session: the monitor already knows the source
+    (device/channel/type/number), so the dispatch binding lands on the owning
+    controller (or the legacy flat list) and the mapping's stored MIDI source
+    plus its 0..127 input range are set at once. An unknown mapping id is a
+    logged no-op.
+    """
+    port, msg_type, channel, number, _direction = control
+    if mapper.find_mapping(mapping_id) is None:
+        log_error("I/O Monitor", f"no mapping {mapping_id}")
+        return False
+    source: dict[str, Any] = {
+        "device": port,
+        "channel": int(channel),
+        "type": msg_type,
+        "number": int(number),
+    }
+    binding = {**source, "action": MIDI_ACTION_MAPPER_MAPPING, "params": {"mapping_id": mapping_id}}
+    controller = find_controller_by_port(port)
+    if controller is not None:
+        controller.setdefault("bindings", []).append(binding)
+    else:
+        midi_bindings.append(binding)
+    save_midi_controllers()
+    mapper.set_mapping_midi(mapping_id, binding)
+    refresh_midi_mappings_ui()
+    refresh_mapper_ui()
+    return True
+
+
+def tick_io_monitor() -> None:
+    """Refresh the I/O Monitor panes at the capped cadence (e39s01).
+
+    Cheap no-op when the window is closed or the engine revision is unchanged;
+    a spinning wheel coalesces to at most one repaint per
+    IO_MONITOR_REFRESH_INTERVAL.
+    """
+    if not dpg.does_item_exist("io_monitor_window") or _io_monitor_paused:
+        return
+    if iomonitor.revision() == _io_monitor_last_revision:
+        return
+    if time.monotonic() - _io_monitor_last_refresh < IO_MONITOR_REFRESH_INTERVAL:
+        return
+    refresh_io_monitor()
+
+
+# --- MAPPINGS (e40s01) ---------------------------------------------------------
+# The main-loop emission tick: refresh the enabled State Mappings, rescale and emit
+# their Destination values with an epsilon dedupe. The Vimix Destination is
+# driven by its own control path; the OSC Destination arrives in e40s03.
+
+_mappings_last_tick = 0.0
+
+
+def _mapping_props_lookup(target_id: str) -> dict[str, Any] | None:
+    """The live properties of a Mapping's source (the viOSC state table)."""
+    _, props = find_source_by_name(target_id)
+    return props
+
+
+def _sync_mapping_subscriptions() -> None:
+    """Hold the State Mappings' transport subscriptions (e40s01 + e40s06).
+
+    Two lanes, coalesced per (source) — ADR-mapping-model decision 2:
+    - the FAST lane: `/viosc/watch/<source> <cadence_ms> <props...>` (e40s06),
+      answered with targeted `/viosc/reply/<source> <prop> <value>` deltas;
+    - the FALLBACK: the 2 s `/viosc/monitor` subscription (e40s01), kept while
+      the fast lane is unproven (an older daemon ignores the watch address).
+      The first reply proves the lane, then the fallback stops for good.
+    Only re-issues what changed; the tick runs this every frame.
+    """
+    plan = emission.state_watch_plan(state.mapper_mappings)
+    if state.osc_watch_supported is not False and plan != state.mapping_watch_plan:
+        for target, spec in plan.items():
+            addr = f"/viosc/watch/{target}"
+            osc_client.send_message(addr, [int(spec["cadence_ms"]), *spec["props"]])
+            append_log("OUT", f"{addr} {spec['cadence_ms']} {spec['props']}")
+        for target in set(state.mapping_watch_plan) - set(plan):
+            osc_client.send_message(f"/viosc/watch/{target}", [])
+            append_log("OUT", f"/viosc/watch/{target} (stop)")
+        state.mapping_watch_plan = plan
+    desired = (
+        {}
+        if state.osc_watch_supported
+        else {target: list(spec["props"]) for target, spec in plan.items()}
+    )
+    if desired == state.mapping_subscriptions:
+        return
+    for target, props in desired.items():
+        addr = f"/viosc/monitor/{target}"
+        osc_client.send_message(addr, list(props))
+        append_log("OUT", f"{addr} {props}")
+    for target in set(state.mapping_subscriptions) - set(desired):
+        addr = f"/viosc/monitor/{target}"
+        osc_client.send_message(addr, [])
+        append_log("OUT", f"{addr} (stop)")
+    state.mapping_subscriptions = desired
+
+
+def _apply_watch_reply(name: str, args: list[Any]) -> None:
+    """Apply one targeted /viosc/reply delta to the state table (e40s06, main thread).
+
+    The reply carries (property, value) pairs; the state table is the same one
+    the Mapping engine and the raw view read, so the fast lane needs no other
+    plumbing. The first reply proves the lane and drops the 2 s fallback.
+    """
+    _, props = find_source_by_name(name)
+    if props is None:
+        return
+    for i in range(0, len(args) - 1, 2):
+        props[str(args[i])] = args[i + 1]
+    if state.osc_watch_supported is not True:
+        state.osc_watch_supported = True
+        _sync_mapping_subscriptions()
+
+
+def _emit_mapping(mapping: dict[str, Any], value: float) -> None:
+    """Send one Mapping's Destination value (e40s01 MIDI, e40s03 OSC)."""
+    destination = mapper.destination_of(mapping)
+    spec = mapping.get("destination_spec") or {}
+    if destination == DEST_OSC:
+        send_mapping_osc(spec, value)
+        return
+    if destination != DEST_MIDI:
+        return
+    controller = find_controller_by_port(str(spec.get("controller_port") or ""))
+    if controller is None or not ensure_mapping_output(controller):
+        return
+    send_mapping_midi(
+        controller,
+        str(spec.get("type") or MIDI_KIND_CC),
+        int(spec.get("channel", 0)),
+        int(spec.get("number", 0)),
+        round(value),
+        detail=f"mapping #{mapping['id']} {mapping.get('property', '?')}",
+    )
+
+
+def _mapping_clock_lookup(kind: str) -> float | None:
+    """The live transport/app value of a Clock Origin (e40s02)."""
+    if kind == "bpm":
+        return float(state.current_bpm)
+    if kind == "step":
+        return float(state.current_step) if state.current_step >= 0 else None
+    if kind == "playing":
+        return 1.0 if state.is_playing else 0.0
+    return None
+
+
+def tick_mappings(now: float | None = None) -> None:
+    """Emit the changed Mapping values, capped at MAPPING_TICK_INTERVAL_S (e40s01)."""
+    global _mappings_last_tick
+    if now is None:
+        now = time.monotonic()
+    if now - _mappings_last_tick < MAPPING_TICK_INTERVAL_S:
+        return
+    _mappings_last_tick = now
+    _sync_mapping_subscriptions()
+    live_ids = {int(m["id"]) for m in state.mapper_mappings}
+    emission.prune_book(state.mapping_book, state.mapping_values, live_ids)
+    for mapping, value in emission.plan_emissions(
+        state.mapper_mappings,
+        _mapping_props_lookup,
+        state.mapping_book,
+        state.mapping_values,
+        now,
+        clock_lookup=_mapping_clock_lookup,
+    ):
+        _emit_mapping(mapping, value)
 
 
 def show_leap_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -4657,14 +5308,14 @@ def on_mapper_row_thumb_click(
         refresh_mapper_ui()
 
 
-def _mapper_row_add(target_id: str, parent: Any, height: int) -> None:
-    """The per-row '+' add button at the end of a mapper row (e34s01).
+def _mapper_row_add(target_id: str, parent: Any, height: int, line_index: int) -> None:
+    """The per-row '+' at the end of a Mapper line (e34s01, e40s10).
 
     A NARROW borderless slot (MAPPER_ADD_SLOT_W, not the card pitch — the 2026-09-05
     rework: the '+' no longer wraps like a 150 px card on resize) as tall as the
-    row, holding a small centered '+' button; a click opens the New-Mapping
-    dialog with the row's source preselected, so the created mapping lands on
-    this row.
+    row, holding a small centered '+' button; a click opens the ONE Mapping
+    editor in create mode with this line's source preselected. While learn mode
+    is on the slot carries the e33 learn marker of the create action.
     """
     with dpg.child_window(
         parent=parent,
@@ -4679,12 +5330,19 @@ def _mapper_row_add(target_id: str, parent: Any, height: int) -> None:
             label="+",
             width=MAPPER_ADD_W,
             height=MAPPER_ADD_H,
-            callback=open_new_mapping_dialog,
+            callback=open_line_mapping_creator,
             user_data=target_id,
             tag=f"mapper_add_btn_{target_id}",
         )
+        if state.midi_learn_mode:  # e33 rule: the line creator is mappable
+            learn_marker(
+                MIDI_ACTION_MAPPING_ADD,
+                {"line": line_index},
+                parent=f"mapper_add_{target_id}",
+                tag=f"mapper_mk_add_{target_id}",
+            )
     with dpg.tooltip(parent=f"mapper_add_btn_{target_id}"):
-        dpg.add_text("Add a mapper to this line")
+        dpg.add_text("Add a Mapping to this line")
 
 
 def _mapper_marker_slot(mapping: dict[str, Any], parent: Any) -> None:
@@ -4909,7 +5567,7 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
                 )
             dpg.add_checkbox(
                 default_value=mapping.get("enabled", False),
-                callback=on_mapper_enable,
+                callback=on_mapping_enable,
                 user_data=mid,
                 tag=f"mapper_enable_{mid}",
             )
@@ -5138,7 +5796,7 @@ def drive_mapper_band(band_id: int, level: float) -> None:
     """Push an audio-band level into every control mapped to that band (e18).
 
     Called by refresh_band_value (main thread, ~30 fps while the band is
-    enabled). e23s02: the raw level (0..1) is remapped through each mapping's
+    enabled). e23s02: the raw level (0..1) is rescaleped through each mapping's
     input range (default 0..1), then through its output range.
     """
     for m in state.mapper_mappings:
@@ -5277,7 +5935,7 @@ def mapper_leap_cancel(sender: Any = None, app_data: Any = None, user_data: Any 
 def midi_mapping_value(mapping_id: int, midi_value: int) -> None:
     """Drive a mapper control from a learned MIDI value (e23s02).
 
-    The raw 0..127 value is remapped through the mapping's input range
+    The raw 0..127 value is rescaleped through the mapping's input range
     (default 0..127), then through its output range, and the control widget
     follows. Cue list (e35s03): the value marker IS the trigger — a value >= 64
     runs/restarts the cue, anything below is ignored.
@@ -5335,6 +5993,787 @@ def _mapper_cards_per_line() -> int:
     return max(1, int((available - lead) // pitch))
 
 
+# --- MAPPINGS IN THE MAPPER (e40s01) -------------------------------------------
+# Each source is one line with a Control band (the input-mapping cards) and a State
+# band (the Mappings reading that source); source-less Mappings (Clock/Constant) live
+# in a Global line on top. Three chips hide a band/line.
+
+_mapper_show_control = True
+_mapper_show_get = True
+_mapper_show_global = True
+
+
+def on_mapper_filter(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Section chips: apply the visibility flags and rebuild the body (e40s01)."""
+    global _mapper_show_control, _mapper_show_get, _mapper_show_global
+    _mapper_show_control = bool(dpg.get_value("mapper_filter_control"))
+    _mapper_show_get = bool(dpg.get_value("mapper_filter_get"))
+    _mapper_show_global = bool(dpg.get_value("mapper_filter_global"))
+    refresh_mapper_ui()
+
+
+def _mapping_destination_label(mapping: dict[str, Any]) -> str:
+    """Short Destination summary of a Mapping row readout (e40s01)."""
+    destination = mapper.destination_of(mapping)
+    spec = mapping.get("destination_spec") or {}
+    if destination == DEST_MIDI:
+        kind = "note" if str(spec.get("type")) == MIDI_KIND_NOTE else "cc"
+        return f"MIDI {spec.get('controller_port', '?')} {kind} {spec.get('number', 0)}"
+    if destination == DEST_OSC:
+        return f"OSC {spec.get('host', '?')}:{spec.get('port', '?')} {spec.get('address', '?')}"
+    return "Vimix"
+
+
+def _mapping_origin_label(mapping: dict[str, Any]) -> str:
+    """Short Origin summary of a Mapping row readout (e40s01).
+
+    e40s08: a State Mapping renders inside its Source's band, so the Source name
+    is redundant there — the row names only the Property.
+    """
+    origin = mapper.origin_of(mapping)
+    if origin == ORIGIN_STATE:
+        return str(mapping["property"])
+    if origin == ORIGIN_CLOCK:
+        return f"clock {mapping.get('origin_spec', {}).get('clock', 'beat')}"
+    if origin == ORIGIN_CONST:
+        return f"const {mapping.get('origin_spec', {}).get('value', 0.0)}"
+    return str(mapping["property"])
+
+
+def _render_mapping_row(mapping: dict[str, Any], parent: Any) -> None:
+    """One State/Global row: Origin -> Destination + arm/edit/delete + learn marker.
+
+    e40s08: the buttons carry an explicit height (MAPPER_STATE_BOX_ROW_H) so the
+    row matches the checkbox-driven 17 px and the State box can compute its own
+    height. The checkbox does NOT: DearPyGui 2.3.1 add_checkbox rejects a height
+    kwarg (SystemError, verified against the real binding) and its own 17 px is
+    what the row settles at anyway.
+
+    e40s14: the arm checkbox carries NO caption — inside a row it can only mean
+    'enable this Mapping', exactly as the Control mini-cards leave theirs
+    unlabelled (the caption was 'Enable state'/'Enable clock'/'Enable constant').
+    """
+    rid = int(mapping["id"])
+    tag = f"mapping_row_{rid}"
+    in_from = float(mapping.get("input_from") or 0.0)
+    in_to = float(mapping.get("input_to") or 0.0)
+    out_from = float(mapping["output_from"])
+    out_to = float(mapping["output_to"])
+    cadence = f" {int(mapping['cadence'])}ms" if mapping.get("cadence") else ""
+    with dpg.group(horizontal=True, parent=parent, tag=tag):
+        themed_text(
+            f"{_mapping_origin_label(mapping)} -> {_mapping_destination_label(mapping)}",
+            slot="text_dim",
+        )
+        themed_text(
+            f"In {in_from:.2f}..{in_to:.2f} Out {out_from:.0f}..{out_to:.0f}{cadence}",
+            slot="text_dim",
+        )
+        dpg.add_checkbox(
+            tag=f"mapping_enable_{rid}",
+            default_value=bool(mapping.get("enabled", False)),
+            callback=on_mapping_enable,
+            user_data=rid,
+        )
+        dpg.add_button(
+            label="Edit",
+            height=MAPPER_STATE_BOX_ROW_H,
+            callback=open_mapping_editor,
+            user_data=rid,
+        )
+        dpg.add_button(
+            label="X",
+            height=MAPPER_STATE_BOX_ROW_H,
+            callback=delete_mapping,
+            user_data=rid,
+        )
+        if state.midi_learn_mode:  # e33 rule: the arm toggle is MIDI-mappable
+            learn_marker(
+                MIDI_ACTION_MAPPING_TOGGLE,
+                {"mapping_id": rid},
+                parent=tag,
+                tag=f"mapping_mk_{rid}",
+            )
+
+
+def _mapping_box_height(mapping_count: int) -> int:
+    """Fixed height of one Mapping box (e40s08, e40s11).
+
+    A bordered child_window (WindowPadding 4 per side = MAPPER_ROW_PAD_V of air)
+    holding the header row and one row per Mapping, separated by
+    MAPPER_ROW_GAP. Rows are height-constant (MAPPER_STATE_BOX_ROW_H), so the
+    box never needs scrolling. Measured against real DPG 2.3.1 on the rig: the
+    formula is exact (content == box minus the padding) at every row count.
+    """
+    rows = max(0, int(mapping_count))
+    return (
+        MAPPER_ROW_PAD_V
+        + MAPPER_STATE_BOX_HEADER_H
+        + rows * (MAPPER_STATE_BOX_ROW_H + MAPPER_ROW_GAP)
+    )
+
+
+def _render_mapping_box(
+    box_tag: str,
+    head_tag: str,
+    label: str,
+    mappings: list[dict[str, Any]],
+    parent: Any,
+    head_extra: Callable[[], None],
+) -> None:
+    """A bordered box holding Mappings under a header (e40s08, e40s11).
+
+    Every Mapping family renders in the SAME box shape — the per-source State
+    band and the source-less Clock+Constant line — so the Mapper reads as one
+    surface. ``head_extra`` adds the header's buttons/markers inside the header
+    row (it must parent them to ``head_tag``).
+    """
+    with dpg.child_window(
+        parent=parent,
+        width=0,
+        height=_mapping_box_height(len(mappings)),
+        border=True,
+        no_scrollbar=True,
+        tag=box_tag,
+    ):
+        with dpg.group(horizontal=True, tag=head_tag):
+            themed_text(label, slot="text_dim")
+            head_extra()
+        for mapping in mappings:
+            _render_mapping_row(mapping, parent=box_tag)
+
+
+def _render_state_box(
+    target_id: str, mappings: list[dict[str, Any]], parent: Any, line_index: int
+) -> None:
+    """The per-source State band: a bordered box on the source line's own sub-line.
+
+    e40s08: a State Origin always has a Source, so its Mappings belong to that
+    Source's block instead of floating under the Control cards. The box carries
+    NO line number — line numbering stays 1:1 with sources, so the tile menu
+    'Add to Mapper > line N' and MIDI_ACTION_MAPPER_LINE keep resolving. Its
+    header '+' adds a State Mapping to THIS source. An orphan Mapping (its source is
+    gone) stays here, disabled, and resumes when the source returns.
+    """
+    head_tag = f"mapper_state_head_{target_id}"
+
+    def head() -> None:
+        dpg.add_button(
+            label="+",
+            width=MAPPER_X_W,
+            height=MAPPER_X_H,
+            callback=open_line_mapping_creator,
+            user_data=target_id,
+            tag=f"mapper_state_add_{target_id}",
+        )
+        if state.midi_learn_mode:  # e33 rule: the add action is MIDI-mappable
+            learn_marker(
+                MIDI_ACTION_MAPPING_ADD,
+                {"line": line_index},
+                parent=head_tag,
+                tag=f"mapper_state_mk_{target_id}",
+            )
+
+    _render_mapping_box(f"mapper_state_box_{target_id}", head_tag, "State", mappings, parent, head)
+
+
+def on_mapping_enable(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Arm checkbox of a Mapping (mini-card OR row): flip the Enabled gate.
+
+    e40s10: the card and the row are two renderings of the same Mapping, so they
+    share ONE handler (an arm is an arm, no body refresh — e24).
+    """
+    mapper.set_mapping_enabled(int(user_data), bool(app_data))
+
+
+def delete_mapping(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """X of a Mapping (mini-card OR row): remove it and its runtime memory (e40s10).
+
+    One path for both renderings: the Mapping leaves the list, its cue run stops
+    and its open editor closes (`_drop_mapping_editor_and_runs`), and the engine's
+    per-Mapping bookkeeping is pruned.
+    """
+    mid = int(user_data)
+    mapper.remove_mapping(mid)
+    _drop_mapping_editor_and_runs(mid)
+    live_ids = {int(m["id"]) for m in state.mapper_mappings}
+    emission.prune_book(state.mapping_book, state.mapping_values, live_ids)
+    refresh_mapper_ui()
+
+
+# --- e40s10: the ONE Mapping editor (create + modify) -------------------------
+# A Mapping is one object: the mini-card and the row are two renderings of it,
+# and create/modify share one modal. Creation lives ONLY on the "+" buttons: the
+# Global line's "+" is the general entry (every Type, asking for the Source when
+# the Type is source-bound — also the only way to start a NEW Source line), a
+# line's "+" fixes the Source. Clock/Constant Mappings have no Source, so they
+# are created from the Global "+" only.
+MAPPER_EDITOR_TAG = "mapper_mapping_window"
+MAPPER_SOURCE_BOUND_ORIGINS: tuple[str, ...] = (ORIGIN_CONTROL, ORIGIN_STATE)
+MAPPER_SOURCE_LESS_ORIGINS: tuple[str, ...] = (ORIGIN_CLOCK, ORIGIN_CONST)
+MAPPER_ALL_ORIGINS: tuple[str, ...] = (
+    ORIGIN_CONTROL,
+    ORIGIN_STATE,
+    ORIGIN_CLOCK,
+    ORIGIN_CONST,
+)
+MAPPER_CONTROL_KINDS: tuple[str, ...] = tuple(
+    c for c in mapper.MAPPER_CONTROLS if c != mapper.MAPPER_CONTROL_MAPPING
+)
+
+
+def open_line_mapping_creator(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """A line's '+' (and the tile menu): create a Mapping on THAT Source (e40s10).
+
+    Only the source-bound Types are offered — a Clock/Constant Mapping has no
+    Source and is created from the Global '+'.
+    """
+    target_id = str(user_data or "")
+    if not target_id:
+        return
+    _open_mapping_editor(None, target_id=target_id, origins=MAPPER_SOURCE_BOUND_ORIGINS)
+
+
+def open_mapping_creator(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """The filter bar's '+': the GENERAL creator for every Type (e40s10, e40s11).
+
+    It sits next to the Show chips and is the only truly general entry: any
+    Type, the Source asked when the Type is source-bound.
+    """
+    _open_mapping_editor(None, target_id=None, origins=MAPPER_ALL_ORIGINS)
+
+
+def open_source_less_mapping_creator(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """The Clock+Constant box '+': only the source-less Types (e40s11)."""
+    _open_mapping_editor(None, target_id=None, origins=MAPPER_SOURCE_LESS_ORIGINS)
+
+
+def open_mapping_editor(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """'Edit' on a Mapping row: open the editor in modify mode (e40s01)."""
+    _open_mapping_editor(int(user_data))
+
+
+def _sync_mapping_component_picker(prop: str) -> None:
+    """Populate + reveal the component picker for a vector property (e36s03)."""
+    entry = catalog.PROPERTY_CATALOG.get(prop)
+    keys = (
+        [c["key"] for c in entry["components"]]
+        if entry is not None and len(entry["components"]) > 1
+        else []
+    )
+    if keys:
+        dpg.configure_item("mapping_component_combo", items=keys)
+        dpg.set_value("mapping_component_combo", keys[0])
+    dpg.configure_item("mapping_comp_group", show=bool(keys))
+
+
+def on_mapping_prop_change(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Property combo: reveal the component picker for a vector property and
+    suggest the right control kind for the toggle/trigger families (e36s03)."""
+    prop = str(app_data)
+    if prop not in catalog.PROPERTY_CATALOG:
+        return
+    family = catalog.family_of(prop)
+    suggests_button = (
+        family in (catalog.FAMILY_TOGGLE, catalog.FAMILY_TRIGGER)
+        and dpg.does_item_exist("mapping_control_combo")
+        and str(dpg.get_value("mapping_control_combo")) != "cue list"
+    )
+    if suggests_button:
+        dpg.set_value("mapping_control_combo", "button")
+    _sync_mapping_component_picker(prop)
+
+
+def on_mapping_control_kind_change(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Control-kind combo: a 'cue list' needs no property (its trigger runs an
+    editable OSC macro), so hide the property row and pin it to the inert
+    'play' — the card caption only (e35s04, e36s03)."""
+    is_cue = str(app_data) == "cue list"
+    if is_cue:
+        dpg.set_value("mapping_property_combo", "play")
+    dpg.configure_item("mapping_property_group", show=not is_cue)
+    dpg.configure_item("mapping_cue_hint", show=is_cue)
+    if not is_cue:
+        _sync_mapping_component_picker(str(dpg.get_value("mapping_property_combo")))
+
+
+def on_mapping_destination_change(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Destination combo: reveal only its own fields (e40s03)."""
+    destination = str(app_data or DEST_MIDI)
+    dpg.configure_item("mapping_midi_fields", show=destination == DEST_MIDI)
+    dpg.configure_item("mapping_osc_fields", show=destination == DEST_OSC)
+
+
+def on_mapping_origin_change(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Type combo: reveal the chosen Type's fields and re-filter the Destination
+    list from MAPPING_DIRECTIONS (e40s02, e40s10)."""
+    origin = str(app_data or ORIGIN_STATE)
+    options = [d for d in DESTINATIONS if d in MAPPING_DIRECTIONS[origin]]
+    destination = str(dpg.get_value("mapping_destination_combo"))
+    if destination not in options:
+        destination = options[0]
+    dpg.configure_item("mapping_destination_combo", items=options)
+    dpg.set_value("mapping_destination_combo", destination)
+    on_mapping_destination_change(None, destination)
+    _apply_mapping_editor_visibility(origin)
+
+
+def _apply_mapping_editor_visibility(origin: str) -> None:
+    """Show exactly the fields of one Origin type (e40s10).
+
+    The Destination-dependent fields are handled by on_mapping_destination_change;
+    the Destination itself is hidden for a Control Mapping, whose Destination is
+    Vimix by the v1 direction matrix — the hint says so instead of showing an
+    impossible choice.
+    """
+    is_control = origin == ORIGIN_CONTROL
+    is_cue = is_control and str(dpg.get_value("mapping_control_combo")) == "cue list"
+    dpg.configure_item("mapping_source_group", show=origin in MAPPER_SOURCE_BOUND_ORIGINS)
+    dpg.configure_item("mapping_control_kind_group", show=is_control)
+    dpg.configure_item(
+        "mapping_property_group", show=origin in MAPPER_SOURCE_BOUND_ORIGINS and not is_cue
+    )
+    dpg.configure_item("mapping_cue_hint", show=is_cue)
+    dpg.configure_item("mapping_state_group", show=origin == ORIGIN_STATE)
+    dpg.configure_item("mapping_clock_fields", show=origin == ORIGIN_CLOCK)
+    dpg.configure_item("mapping_const_fields", show=origin == ORIGIN_CONST)
+    dpg.configure_item("mapping_destination_group", show=not is_control)
+    dpg.configure_item("mapping_vimix_hint", show=is_control)
+    dpg.configure_item("mapping_steps_group", show=not is_control)
+    if not is_cue:
+        _sync_mapping_component_picker(str(dpg.get_value("mapping_property_combo")))
+
+
+def _open_mapping_editor(
+    mapping_id: int | None = None,
+    *,
+    target_id: str | None = None,
+    origins: tuple[str, ...] = MAPPER_ALL_ORIGINS,
+) -> None:
+    """The ONE Mapping editor: CREATE (``mapping_id`` None) or MODIFY (e40s10).
+
+    Create mode builds NO Mapping until OK, so a cancel leaves nothing behind.
+    Modify mode never offers the Source as an editable field: re-pointing a Line
+    onto another Source is the row thumbnail's job (``mapper.retarget_source``),
+    never a side effect of editing a Mapping. A Control Mapping is not edited
+    here — its mini-card carries the live control. The whole window is rebuilt on
+    every open, so the mode is fixed at build time.
+    """
+    mapping: dict[str, Any] = {}
+    if mapping_id is None:
+        origin = origins[0]
+    else:
+        found = mapper.find_mapping(int(mapping_id))
+        if found is None or mapper.origin_of(found) == ORIGIN_CONTROL:
+            return
+        mapping = found
+        origin = mapper.origin_of(mapping)
+    creating = mapping_id is None
+    if dpg.does_item_exist(MAPPER_EDITOR_TAG):
+        dpg.delete_item(MAPPER_EDITOR_TAG)
+    destination = (
+        mapper.DEST_VIMIX
+        if origin == ORIGIN_CONTROL
+        else (mapper.destination_of(mapping) if not creating else DEST_MIDI)
+    )
+    spec = dict(mapping.get("destination_spec") or {})
+    ports = [str(c.get("port", "")) for c in midi_controllers if c.get("port")]
+    default_prop = {ORIGIN_CONTROL: "brightness", ORIGIN_STATE: "seek"}.get(origin, "alpha")
+    prop = default_prop if creating else str(mapping["property"])
+    clock = str((mapping.get("origin_spec") or {}).get("clock") or CLOCK_DEFAULT)
+    const = float((mapping.get("origin_spec") or {}).get("value", MAPPING_CONST_VALUE_DEFAULT))
+    cadence = int(mapping.get("cadence") or MAPPING_DEFAULT_CADENCE_MS)
+    steps = int(mapping.get("steps", MAPPING_STEPS_CONTINUOUS))
+    with dpg.window(
+        label="New Mapping" if creating else "Edit Mapping",
+        tag=MAPPER_EDITOR_TAG,
+        modal=True,
+        width=460,
+        height=540,
+        no_resize=True,
+    ):
+        themed_text("Type", slot="text_dim")
+        dpg.add_combo(
+            items=list(origins),
+            default_value=origin,
+            width=280,
+            tag="mapping_origin_combo",
+            callback=on_mapping_origin_change,
+        )
+        with dpg.group(tag="mapping_source_group"):
+            themed_text("Source", slot="text_dim")
+            has_source = bool(mapping.get("target_id"))
+            dpg.add_combo(
+                items=list(mapper.row_targets()),
+                default_value=str(target_id or "")
+                if creating
+                else str(mapping.get("target_id") or ""),
+                width=280,
+                show=creating or not has_source,
+                tag="mapping_source_combo",
+            )
+            if not creating and has_source:
+                # e40s10: on modify the Source is INFORMATION, not a picker —
+                # re-pointing a Line is the row thumbnail's job (retarget_source).
+                # The hidden combo above keeps the current value, so a confirm can
+                # never re-point by accident.
+                themed_text(
+                    f"{mapping['target_id']} (use the row thumbnail to re-point)",
+                    slot="text_dim",
+                    tag="mapping_source_text",
+                )
+        with dpg.group(tag="mapping_control_kind_group"):
+            themed_text("Control", slot="text_dim")
+            dpg.add_combo(
+                items=list(MAPPER_CONTROL_KINDS),
+                default_value="slider" if creating else str(mapping.get("control") or "slider"),
+                width=200,
+                tag="mapping_control_combo",
+                callback=on_mapping_control_kind_change,
+            )
+        with dpg.group(tag="mapping_property_group"):
+            themed_text("Property", slot="text_dim")
+            dpg.add_combo(
+                items=mapper.mappable_properties(),
+                default_value=prop,
+                width=280,
+                tag="mapping_property_combo",
+                callback=on_mapping_prop_change,
+            )
+            with dpg.group(tag="mapping_comp_group", show=False):
+                themed_text("Component", slot="text_dim")
+                dpg.add_combo(items=[], default_value="", width=280, tag="mapping_component_combo")
+        themed_text(
+            "The trigger runs the mapping's OSC macro (cue list) — no property needed.",
+            slot="text_dim",
+            tag="mapping_cue_hint",
+            wrap=420,
+        )
+        with dpg.group(tag="mapping_state_group"):
+            themed_text("Cadence (ms)", slot="text_dim")
+            dpg.add_drag_int(
+                default_value=cadence,
+                min_value=MAPPING_MIN_CADENCE_MS,
+                max_value=60_000,
+                width=160,
+                tag="mapping_cadence",
+            )
+        with dpg.group(tag="mapping_clock_fields"):
+            themed_text("Clock", slot="text_dim")
+            dpg.add_combo(
+                items=list(CLOCK_SOURCES), default_value=clock, width=200, tag="mapping_clock_combo"
+            )
+        with dpg.group(tag="mapping_const_fields"):
+            themed_text("Value", slot="text_dim")
+            dpg.add_drag_float(
+                default_value=const,
+                min_value=MAPPING_CONST_VALUE_MIN,
+                max_value=MAPPING_CONST_VALUE_MAX,
+                width=160,
+                format="%.3f",
+                speed=0.01,
+                tag="mapping_const_value",
+            )
+        with dpg.group(tag="mapping_destination_group"):
+            themed_text("Destination", slot="text_dim")
+            dpg.add_combo(
+                items=[d for d in DESTINATIONS if d in MAPPING_DIRECTIONS[origin]],
+                default_value=destination,
+                width=280,
+                tag="mapping_destination_combo",
+                callback=on_mapping_destination_change,
+            )
+        themed_text(
+            "A Control Mapping always writes Vimix (its card holds the control).",
+            slot="text_dim",
+            tag="mapping_vimix_hint",
+            wrap=420,
+        )
+        with dpg.group(tag="mapping_midi_fields"):
+            themed_text("Controller", slot="text_dim")
+            dpg.add_combo(
+                items=ports,
+                default_value=str(spec.get("controller_port") or (ports[0] if ports else "")),
+                width=280,
+                tag="mapping_controller_combo",
+            )
+        with dpg.group(horizontal=True, tag="mapping_midi_row"):
+            themed_text("Channel", slot="text_dim")
+            dpg.add_drag_int(
+                default_value=int(spec.get("channel", 0)),
+                min_value=0,
+                max_value=15,
+                width=70,
+                tag="mapping_channel",
+            )
+            themed_text("Message", slot="text_dim")
+            dpg.add_combo(
+                items=[MIDI_KIND_CC, MIDI_KIND_NOTE],
+                default_value=str(spec.get("type") or MIDI_KIND_CC),
+                width=90,
+                tag="mapping_message_combo",
+            )
+            themed_text("Number", slot="text_dim")
+            dpg.add_drag_int(
+                default_value=int(spec.get("number", 0)),
+                min_value=0,
+                max_value=127,
+                width=70,
+                tag="mapping_number",
+            )
+        with dpg.group(tag="mapping_osc_fields"):
+            themed_text("Host", slot="text_dim")
+            dpg.add_input_text(
+                default_value=str(spec.get("host") or MAPPING_OSC_DEFAULT_HOST),
+                width=280,
+                tag="mapping_osc_host",
+            )
+            themed_text("Port", slot="text_dim")
+            dpg.add_input_int(
+                default_value=int(spec.get("port") or MAPPING_OSC_DEFAULT_PORT),
+                width=160,
+                tag="mapping_osc_port",
+            )
+            themed_text("Address", slot="text_dim")
+            dpg.add_input_text(
+                default_value=str(spec.get("address") or MAPPING_OSC_DEFAULT_ADDRESS),
+                width=280,
+                tag="mapping_osc_address",
+            )
+        with dpg.group(tag="mapping_steps_group"):
+            themed_text("Steps (1 = continuous)", slot="text_dim")
+            dpg.add_drag_int(
+                default_value=steps,
+                min_value=1,
+                max_value=64,
+                width=160,
+                tag="mapping_steps",
+            )
+        dpg.add_separator()
+        with dpg.group(horizontal=True):
+            dpg.add_button(
+                label="OK",
+                width=120,
+                callback=mapping_editor_confirm,
+                user_data=0 if mapping_id is None else int(mapping_id),
+            )
+            dpg.add_button(
+                label="Cancel",
+                width=120,
+                callback=lambda s, a: dpg.delete_item(MAPPER_EDITOR_TAG),
+            )
+    on_mapping_destination_change(None, destination)
+    _apply_mapping_editor_visibility(origin)
+    dpg.show_item(MAPPER_EDITOR_TAG)
+
+
+def _mapping_editor_values(mapping: dict[str, Any], *, creating: bool) -> dict[str, Any]:
+    """Read the editor widgets into a plain dict (ONE reader for both modes).
+
+    The Source is read ONLY where it is editable (create, or a source-less
+    Mapping being turned into a State one): on a plain modify it stays whatever
+    the Mapping already had, so the editor can never re-point a Line.
+    """
+    origin = str(dpg.get_value("mapping_origin_combo"))
+    destination = str(dpg.get_value("mapping_destination_combo"))
+    source_editable = origin in MAPPER_SOURCE_BOUND_ORIGINS and (
+        creating or not mapping.get("target_id")
+    )
+    values: dict[str, Any] = {
+        "origin": origin,
+        "destination": destination,
+        "component": None,
+        "target_id": (str(dpg.get_value("mapping_source_combo")) or None)
+        if source_editable
+        else None,
+        "property": str(dpg.get_value("mapping_property_combo")),
+    }
+    if origin == ORIGIN_CONTROL:
+        values["control"] = str(dpg.get_value("mapping_control_combo"))
+    if origin == ORIGIN_STATE:
+        values["cadence"] = max(MAPPING_MIN_CADENCE_MS, int(dpg.get_value("mapping_cadence")))
+    if origin == ORIGIN_CLOCK:
+        values["clock"] = str(dpg.get_value("mapping_clock_combo"))
+    if origin == ORIGIN_CONST:
+        values["value"] = float(dpg.get_value("mapping_const_value"))
+    if origin != ORIGIN_CONTROL:
+        values["steps"] = max(MAPPING_STEPS_CONTINUOUS, int(dpg.get_value("mapping_steps")))
+    if destination == DEST_MIDI:
+        values["destination_spec"] = {
+            "controller_port": str(dpg.get_value("mapping_controller_combo")),
+            "channel": int(dpg.get_value("mapping_channel")),
+            "type": str(dpg.get_value("mapping_message_combo")),
+            "number": int(dpg.get_value("mapping_number")),
+        }
+    elif destination == DEST_OSC:
+        values["destination_spec"] = {
+            "host": str(dpg.get_value("mapping_osc_host")),
+            "port": int(dpg.get_value("mapping_osc_port")),
+            "address": str(dpg.get_value("mapping_osc_address")),
+        }
+    entry = catalog.PROPERTY_CATALOG.get(values["property"])
+    if entry is not None and len(entry["components"]) > 1 and values.get("control") != "cue list":
+        keys = [c["key"] for c in entry["components"]]
+        candidate = str(dpg.get_value("mapping_component_combo"))
+        values["component"] = candidate if candidate in keys else keys[0]
+    return values
+
+
+def _validate_mapping_editor(values: dict[str, Any], mapping: dict[str, Any]) -> str | None:
+    """The editor's error message for a pair that cannot become a Mapping."""
+    origin = values["origin"]
+    destination = values["destination"]
+    if destination not in MAPPING_DIRECTIONS[origin]:
+        return f"destination {destination!r} is not allowed for type {origin!r}"
+    known_source = bool(values.get("target_id") or mapping.get("target_id"))
+    if origin in MAPPER_SOURCE_BOUND_ORIGINS and not known_source:
+        return f"a {origin} mapping needs a source"
+    if destination == DEST_OSC:
+        return validate_osc_destination(values["destination_spec"])
+    return None
+
+
+def _create_mapping_from_editor(values: dict[str, Any]) -> None:
+    """Create the Mapping with the single mapper factory (e40s10)."""
+    origin = values["origin"]
+    if origin == ORIGIN_CONTROL:
+        mapper.add_mapping(
+            values["target_id"],
+            values["property"],
+            values["control"],
+            component=values["component"],
+        )
+        return
+    origin_spec: dict[str, Any] = {}
+    if origin == ORIGIN_CLOCK:
+        origin_spec = {"clock": values["clock"]}
+    elif origin == ORIGIN_CONST:
+        origin_spec = {"value": values["value"]}
+    mapper.add_mapping(
+        values["target_id"],
+        values["property"],
+        origin=origin,
+        destination=values["destination"],
+        destination_spec=values["destination_spec"],
+        origin_spec=origin_spec,
+        cadence=values.get("cadence"),
+        steps=values.get("steps", MAPPING_STEPS_CONTINUOUS),
+    )
+
+
+def _update_mapping_from_editor(mapping: dict[str, Any], values: dict[str, Any]) -> None:
+    """Store the edited fields, reseeding the Origin window (e40s02)."""
+    origin = values["origin"]
+    destination = values["destination"]
+    previous_destination = mapper.destination_of(mapping)
+    mapping["origin"] = origin
+    mapping["destination"] = destination
+    mapping["cadence"] = None
+    if origin in MAPPER_SOURCE_BOUND_ORIGINS:
+        if values.get("target_id"):
+            mapping["target_id"] = values["target_id"]
+        entry = catalog.PROPERTY_CATALOG.get(values["property"])
+        in_from, in_to = 0.0, 1.0
+        if entry is not None:
+            mapping["property"] = values["property"]
+            comp = entry["components"][0]
+            mapping["component"] = comp["key"] if len(entry["components"]) > 1 else None
+            in_from, in_to = float(comp["min"]), float(comp["max"])
+        mapping["control"] = values.get("control") or mapper.MAPPER_CONTROL_MAPPING
+        mapping["origin_spec"] = {}
+        if origin == ORIGIN_STATE:
+            mapping["control"] = mapper.MAPPER_CONTROL_MAPPING
+            mapping["cadence"] = values["cadence"]
+    elif origin == ORIGIN_CLOCK:
+        mapping["origin_spec"] = {"clock": values["clock"]}
+        mapping["target_id"] = None
+        mapping["control"] = mapper.MAPPER_CONTROL_MAPPING
+        in_from, in_to = CLOCK_SOURCES.get(values["clock"], (0.0, 1.0))
+    else:
+        mapping["origin_spec"] = {"value": values["value"]}
+        mapping["target_id"] = None
+        mapping["control"] = mapper.MAPPER_CONTROL_MAPPING
+        in_from, in_to = 0.0, 1.0
+    mapper.set_mapping_input(mapping["id"], float(in_from), float(in_to))
+    mapping["steps"] = values.get("steps", MAPPING_STEPS_CONTINUOUS)
+    mapping["destination_spec"] = values["destination_spec"]
+    if destination != previous_destination:
+        out_from, out_to = mapper.default_output_range(
+            destination, str(mapping["property"]), mapping.get("component")
+        )
+        mapper.set_mapping_output(mapping["id"], out_from, out_to)
+
+
+def mapping_editor_confirm(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """OK of the ONE Mapping editor: CREATE (user_data 0) or MODIFY (e40s10).
+
+    The widget values are read BEFORE the window is deleted — real dpg get_value
+    on a deleted widget returns None (BUG-2026-09-08T120000).
+    """
+    mapping_id = int(user_data or 0)
+    creating = mapping_id == 0
+    mapping = {} if creating else mapper.find_mapping(mapping_id)
+    if mapping is None:
+        return
+    values = _mapping_editor_values(mapping, creating=creating)
+    error = _validate_mapping_editor(values, mapping)
+    if error is not None:
+        log_error("Mapper", f"mapping editor: {error}")
+        return  # keep the editor open so the user can fix the input
+    if creating:
+        _create_mapping_from_editor(values)
+    else:
+        _update_mapping_from_editor(mapping, values)
+    dpg.delete_item(MAPPER_EDITOR_TAG)
+    refresh_mapper_ui()
+    dpg.show_item("mapper_window")
+
+
+def _render_global_block(global_mappings: list[dict[str, Any]]) -> None:
+    """The source-less (Clock/Constant) Mappings in their own box (e40s01, e40s11).
+
+    Rendered even when empty so its '+' is always reachable: that '+' offers
+    ONLY Clock and Constant (the general creator lives in the filter bar). The
+    box is the same shape as the per-source State band, for a uniform surface.
+    """
+    head_tag = "mapper_global_head"
+
+    def head() -> None:
+        dpg.add_button(
+            label="+",
+            width=MAPPER_X_W,
+            height=MAPPER_X_H,
+            callback=open_source_less_mapping_creator,
+            tag="mapper_global_add",
+        )
+        if state.midi_learn_mode:  # e33 rule: the source-less creator is mappable
+            learn_marker(
+                MIDI_ACTION_MAPPING_ADD,
+                {"source_less": True},
+                parent=head_tag,
+                tag="mapper_mk_global",
+            )
+
+    _render_mapping_box(
+        "mapper_global_block",
+        head_tag,
+        "Clock+Constant",
+        global_mappings,
+        "mapper_mappings_group",
+        head,
+    )
+
+
 def refresh_mapper_ui() -> None:
     """Rebuild the Mapper window body from state.mapper_mappings (main thread).
 
@@ -5360,76 +6799,127 @@ def refresh_mapper_ui() -> None:
             wrap=MAPPER_WINDOW_WIDTH - 40,
             parent="mapper_mappings_group",
         )
+        if _mapper_show_global:
+            # e40s10: the Global '+' is the general creator, so a source-less
+            # Mapping (Clock/Constant) is creatable even from an empty Mapper
+            _render_global_block([])
         return
-    # group the flat list by source; row order = mapper.row_targets() (the one
-    # source of row order, e31s01 — the tile menu "line N" items use it too)
-    rows: dict[str, list[dict[str, Any]]] = {target: [] for target in mapper.row_targets()}
+    # e40s01: split the flat list into Control Origins (the card bands, grouped
+    # by source) and the other Mappings (the State bands + the source-less Global
+    # line). Row order stays mapper.row_targets() (e31s01).
+    targets = list(mapper.row_targets())
+    rows: dict[str, list[dict[str, Any]]] = {target: [] for target in targets}
+    mapping_rows: dict[str, list[dict[str, Any]]] = {target: [] for target in targets}
+    global_mappings: list[dict[str, Any]] = []
     for mapping in state.mapper_mappings:
-        target = mapping["target_id"]
-        if target in rows:
-            rows[target].append(mapping)
+        if mapper.origin_of(mapping) == ORIGIN_CONTROL:
+            target = mapping["target_id"]
+            if target in rows:
+                rows[target].append(mapping)
+        elif str(mapping.get("target_id") or "") in mapping_rows:
+            mapping_rows[str(mapping["target_id"])].append(mapping)
+        else:
+            global_mappings.append(mapping)
+    if _mapper_show_global:
+        _render_global_block(global_mappings)
     per_line = _mapper_cards_per_line()
     width = dpg.get_item_width("mapper_window") or MAPPER_WINDOW_WIDTH
     card_area = width - 8 - (_mapper_row_lead_px() + 4)
     pitch = MAPPER_MINI_W + 4
-    for row_no, (target_id, mappings) in enumerate(rows.items(), start=1):
+    for row_no, (target_id, control_mappings) in enumerate(rows.items(), start=1):
+        value_mappings = mapping_rows.get(target_id, [])
+        # e40s08: the State box shows its Mappings, and stays in learn mode so its
+        # '+' learn marker has a home on every source.
+        show_state_box = _mapper_show_get and (bool(value_mappings) or state.midi_learn_mode)
+        if not (_mapper_show_control and control_mappings) and not show_state_box:
+            continue
         block = dpg.add_group(parent="mapper_mappings_group")
-        row_height = _mapper_row_height(mappings)
-        # e34s01 (2026-09-05 rework): the per-row '+' is a SMALL trailing
-        # button, not a card slot — it rides the row's last card line when the
-        # pixel room fits it (mapper.add_fits_last_line) and only moves to its
-        # own narrow line when a very narrow window leaves no room.
-        add_inline = mapper.add_fits_last_line(
-            len(mappings), per_line, card_area, pitch, MAPPER_ADD_SLOT_W
-        )
-        lines = mapper.row_slots(len(mappings), per_line)
-        for line_no, slot_line in enumerate(lines):
-            line = dpg.add_group(horizontal=True, parent=block)
-            if line_no == 0:
-                # e32s02: the row number leads the line (1-based window order,
-                # matches the tile menu "Add to Mapper > line N")
-                _mapper_line_number(row_no, target_id, parent=line, height=row_height)
-                _mapper_row_thumb(target_id, parent=line, height=row_height)
-                if state.midi_learn_mode:  # e33s03: map this row's line-assign action
-                    learn_marker(
-                        MIDI_ACTION_MAPPER_LINE,
-                        {"line": row_no - 1},
+        if control_mappings and _mapper_show_control:
+            row_height = _mapper_row_height(control_mappings)
+            # e34s01 (2026-09-05 rework): the per-row '+' is a SMALL trailing
+            # button, not a card slot — it rides the row's last card line when the
+            # pixel room fits it (mapper.add_fits_last_line) and only moves to its
+            # own narrow line when a very narrow window leaves no room.
+            add_inline = mapper.add_fits_last_line(
+                len(control_mappings), per_line, card_area, pitch, MAPPER_ADD_SLOT_W
+            )
+            lines = mapper.row_slots(len(control_mappings), per_line)
+            for line_no, slot_line in enumerate(lines):
+                line = dpg.add_group(horizontal=True, parent=block)
+                if line_no == 0:
+                    # e32s02: the row number leads the line (1-based window order,
+                    # matches the tile menu "Add to Mapper > line N")
+                    _mapper_line_number(row_no, target_id, parent=line, height=row_height)
+                    _mapper_row_thumb(target_id, parent=line, height=row_height)
+                    if state.midi_learn_mode:  # e33s03: map this row's line-assign action
+                        learn_marker(
+                            MIDI_ACTION_MAPPER_LINE,
+                            {"line": row_no - 1},
+                            parent=line,
+                            tag=f"mapper_mk_line_{target_id}",
+                        )
+                else:
+                    # alignment slot: continuation lines start where the cards of
+                    # the first line start (row lead, e32s02/e33s03)
+                    dpg.add_spacer(
+                        width=_mapper_row_lead_px(),
                         parent=line,
-                        tag=f"mapper_mk_line_{target_id}",
                     )
-            else:
-                # alignment slot: continuation lines start where the cards of
-                # the first line start (row lead, e32s02/e33s03)
-                dpg.add_spacer(
-                    width=_mapper_row_lead_px(),
-                    parent=line,
-                )
-            for slot in slot_line:
-                if slot < len(mappings):
-                    _render_mapper_card(mappings[slot], parent=line, height=row_height)
-            # e34s01: the small '+' rides the last card line when it fits
-            if add_inline and line_no == len(lines) - 1:
-                _mapper_row_add(target_id, parent=line, height=row_height)
-            # e34s03 (answer D): while learn mode is on every card LINE gets a
-            # marker strip line directly UNDER it — the cards' markers live
-            # outside the bordered cards, aligned under each card slot. The
-            # add-only slot lines carry no markers.
-            if state.midi_learn_mode and any(slot < len(mappings) for slot in slot_line):
-                strip = dpg.add_group(
-                    horizontal=True,
-                    parent=block,
-                    tag=f"mapper_mk_strip_{row_no}_{line_no}",
-                )
-                dpg.add_spacer(width=_mapper_row_lead_px(), parent=strip)
                 for slot in slot_line:
-                    if slot < len(mappings):
-                        _mapper_marker_slot(mappings[slot], parent=strip)
-        if not add_inline:
-            # a very narrow window: the '+' gets its own narrow line under the
-            # cards (aligned with them) instead of overflowing the edge
+                    if slot < len(control_mappings):
+                        _render_mapper_card(control_mappings[slot], parent=line, height=row_height)
+                # e34s01: the small '+' rides the last card line when it fits
+                if add_inline and line_no == len(lines) - 1:
+                    _mapper_row_add(
+                        target_id, parent=line, height=row_height, line_index=row_no - 1
+                    )
+                # e34s03 (answer D): while learn mode is on every card LINE gets a
+                # marker strip line directly UNDER it — the cards' markers live
+                # outside the bordered cards, aligned under each card slot. The
+                # add-only slot lines carry no markers.
+                if state.midi_learn_mode and any(
+                    slot < len(control_mappings) for slot in slot_line
+                ):
+                    strip = dpg.add_group(
+                        horizontal=True,
+                        parent=block,
+                        tag=f"mapper_mk_strip_{row_no}_{line_no}",
+                    )
+                    dpg.add_spacer(width=_mapper_row_lead_px(), parent=strip)
+                    for slot in slot_line:
+                        if slot < len(control_mappings):
+                            _mapper_marker_slot(control_mappings[slot], parent=strip)
+            if not add_inline:
+                # a very narrow window: the '+' gets its own narrow line under the
+                # cards (aligned with them) instead of overflowing the edge
+                line = dpg.add_group(horizontal=True, parent=block)
+                dpg.add_spacer(width=_mapper_row_lead_px(), parent=line)
+                _mapper_row_add(target_id, parent=line, height=row_height, line_index=row_no - 1)
+        else:
+            # A State-only line — or a line whose Control band the filter hides —
+            # keeps its identity lead (number + thumbnail) without cards. The lead
+            # must fit the 70 px thumbnail: MAPPER_CTRL_H (14) clipped it to a
+            # sliver of image, which read as a graphical defect (e40s12).
+            lead_height = MAPPER_ROW_THUMB_H + 2
             line = dpg.add_group(horizontal=True, parent=block)
-            dpg.add_spacer(width=_mapper_row_lead_px(), parent=line)
-            _mapper_row_add(target_id, parent=line, height=row_height)
+            _mapper_line_number(row_no, target_id, parent=line, height=lead_height)
+            _mapper_row_thumb(target_id, parent=line, height=lead_height)
+            if state.midi_learn_mode:
+                learn_marker(
+                    MIDI_ACTION_MAPPER_LINE,
+                    {"line": row_no - 1},
+                    parent=line,
+                    tag=f"mapper_mk_line_{target_id}",
+                )
+        if show_state_box:
+            # e40s08: the box starts where the cards start — after the row lead
+            # (line number + thumbnail), so the Control cards and the State band
+            # share the same left edge.
+            state_line = dpg.add_group(
+                horizontal=True, parent=block, tag=f"mapper_state_line_{target_id}"
+            )
+            dpg.add_spacer(width=_mapper_row_lead_px(), parent=state_line)
+            _render_state_box(target_id, value_mappings, parent=state_line, line_index=row_no - 1)
     # e35s03/UAT: rebuilt cards relabel their running triggers and progress
     # readouts (the caches are stale after the body rebuild — re-seed in one pass)
     state.cue_trigger_label_cache.clear()
@@ -5442,11 +6932,6 @@ def show_mapper_window(sender: Any = None, app_data: Any = None, user_data: Any 
     refresh_mapper_ui()
     dpg.show_item("mapper_window")
     dpg.focus_item("mapper_window")  # e17: a shown window must come to the front
-
-
-def on_mapper_enable(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Tick the enable checkbox: arm/mute the mapping (no body refresh, e24)."""
-    mapper.set_mapping_enabled(int(user_data), bool(app_data))
 
 
 def on_mapper_control(sender: Any, app_data: Any, user_data: Any) -> None:
@@ -5688,158 +7173,6 @@ def reset_mapping(sender: Any = None, app_data: Any = None, user_data: Any = Non
     _sync_mapper_control(mid)
 
 
-def delete_mapping(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """X on a mapping card: remove the mapping, stop its cue, close its editor."""
-    mid = int(user_data)
-    mapper.remove_mapping(mid)
-    _drop_mapping_editor_and_runs(mid)
-    refresh_mapper_ui()
-
-
-def open_new_mapping_dialog(
-    sender: Any = None, app_data: Any = None, user_data: Any = None
-) -> None:
-    """Mediagrid tile right-click > Add to Mapper: modal asking TYPE first (e35s04).
-
-    The type is the mapper control; the property only matters for the value
-    controls (slider/knob/button), so it is hidden for 'cue list' — its
-    trigger runs an editable OSC macro and no single property applies.
-    """
-    state.mapper_pending_target = str(user_data)
-    if dpg.does_item_exist("mapper_new_dialog"):
-        dpg.delete_item("mapper_new_dialog")
-    with dpg.window(
-        label="New Mapping",
-        tag="mapper_new_dialog",
-        modal=True,
-        width=340,
-        height=260,
-        no_resize=True,
-    ):
-        themed_text(f"Source: {state.mapper_pending_target}", slot="text")
-        dpg.add_separator()
-        themed_text("Type", slot="text_dim")
-        dpg.add_combo(
-            items=list(mapper.MAPPER_CONTROLS),
-            default_value="slider",
-            width=260,
-            tag="mapper_control_combo",
-            callback=on_mapper_control_type_change,
-        )
-        with dpg.group(tag="mapper_prop_group", show=True):
-            themed_text("Property", slot="text_dim")
-            dpg.add_combo(
-                items=mapper.mappable_properties(),  # e36s03: catalog minus the Cue-only rates
-                default_value="brightness",
-                width=260,
-                tag="mapper_prop_combo",
-                callback=on_mapper_prop_change,
-            )
-        with dpg.group(tag="mapper_comp_group", show=False):
-            # e36s03: multi-value properties pick the controlled component/axis
-            themed_text("Component", slot="text_dim")
-            dpg.add_combo(
-                items=[],
-                default_value="",
-                width=260,
-                tag="mapper_component_combo",
-            )
-        themed_text(
-            "The trigger runs the mapping's OSC macro (cue list) — no property needed.",
-            slot="text_dim",
-            tag="mapper_cue_hint",
-            wrap=300,
-        )
-        dpg.configure_item("mapper_cue_hint", show=False)
-        dpg.add_separator()
-        with dpg.group(horizontal=True):
-            dpg.add_button(label="Create", callback=mapper_dialog_confirm, width=120)
-            dpg.add_button(label="Cancel", callback=mapper_dialog_cancel, width=120)
-    dpg.show_item("mapper_new_dialog")
-
-
-def _sync_mapper_component_picker(prop: str) -> None:
-    """Populate + reveal the dialog's component picker for a vector property
-    (e36s03); hide it for scalar/toggle/trigger/enum properties.
-    """
-    entry = catalog.PROPERTY_CATALOG.get(prop)
-    keys = (
-        [c["key"] for c in entry["components"]]
-        if entry is not None and len(entry["components"]) > 1
-        else []
-    )
-    if keys:
-        dpg.configure_item("mapper_component_combo", items=keys)
-        dpg.set_value("mapper_component_combo", keys[0])
-    dpg.configure_item("mapper_comp_group", show=bool(keys))
-
-
-def on_mapper_prop_change(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """New-Mapping property combo: reveal the component picker for a vector
-    property and suggest the right control type for toggle/trigger families
-    (e36s03)."""
-    prop = str(app_data)
-    if prop not in catalog.PROPERTY_CATALOG:
-        return
-    family = catalog.family_of(prop)
-    control = str(dpg.get_value("mapper_control_combo"))
-    if family in (catalog.FAMILY_TOGGLE, catalog.FAMILY_TRIGGER) and control != "cue list":
-        dpg.set_value("mapper_control_combo", "button")
-    _sync_mapper_component_picker(prop)
-
-
-def on_mapper_control_type_change(sender: Any, app_data: Any, user_data: Any = None) -> None:
-    """New-Mapping type combo: a 'cue list' needs no property — hide the
-    property row (and the component picker) and pin it to 'play' (inert; the
-    card caption only); the value controls show the property picker (e35s04,
-    e36s03)."""
-    control = str(app_data)
-    is_cue = control == "cue list"
-    if is_cue:
-        dpg.set_value("mapper_prop_combo", "play")
-    dpg.configure_item("mapper_prop_group", show=not is_cue)
-    dpg.configure_item("mapper_comp_group", show=False)
-    dpg.configure_item("mapper_cue_hint", show=is_cue)
-    if not is_cue:
-        _sync_mapper_component_picker(str(dpg.get_value("mapper_prop_combo")))
-
-
-def mapper_dialog_confirm(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Dialog Create: add the mapping chosen in the combos and open the Mapper window.
-
-    e36s03: a multi-value property reads the component picker (defaulting to its
-    first component when the combo was never populated); cue-list controls skip
-    it (their property is inert). BUG-2026-09-08T120000: the component picker
-    must be read BEFORE the dialog is deleted — real dpg get_value() on a
-    deleted widget returns None, and the fallback would silently bind every
-    vector mapping to its FIRST component (color -> always R).
-    """
-    if not dpg.does_item_exist("mapper_new_dialog"):
-        return
-    prop = str(dpg.get_value("mapper_prop_combo"))
-    control = str(dpg.get_value("mapper_control_combo"))
-    target = state.mapper_pending_target
-    component: str | None = None
-    if target is not None and control != "cue list":
-        entry = catalog.PROPERTY_CATALOG.get(prop)
-        if entry is not None and len(entry["components"]) > 1:
-            keys = [c["key"] for c in entry["components"]]
-            candidate = str(dpg.get_value("mapper_component_combo"))
-            component = candidate if candidate in keys else keys[0]
-    dpg.delete_item("mapper_new_dialog")
-    if target is None:
-        return
-    mapper.add_mapping(target, prop, control, component=component)
-    refresh_mapper_ui()
-    dpg.show_item("mapper_window")
-
-
-def mapper_dialog_cancel(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Dialog Cancel: close without creating a mapping."""
-    if dpg.does_item_exist("mapper_new_dialog"):
-        dpg.delete_item("mapper_new_dialog")
-
-
 def _cue_row_label(mapping: dict[str, Any], row: dict[str, Any]) -> str:
     """Human row text: 'alpha = 0.80', 'color (0.20, 0.90, 0.70)',
     'burst turn 0.50 for 500 ms', 'wait 500 ms', 'mapper #7: clipA lock'
@@ -6035,6 +7368,23 @@ def cue_row_delete(sender: Any = None, app_data: Any = None, user_data: Any = No
     _safe_refresh_cue_rows(mid)
 
 
+# Cue row dialog geometry (BUG-2026-09-12T191000): the window must FIT its
+# editors — corner renders 8 components + ms (9 rows) and overflowed the old
+# fixed 470 px height, hiding the OK/Cancel row.
+CUE_DLG_DEFAULT_HEIGHT = 470
+CUE_DLG_BASE_HEIGHT = 150  # kind + property pickers, separator, OK/Cancel
+CUE_DLG_EDITOR_ROW_HEIGHT = 45  # one labelled drag row
+CUE_DLG_MAX_HEIGHT = 640  # cap; taller content scrolls
+# A no-argument trigger fires without a value, so the row dialog shows a hint
+# instead of an editor whose content compose_send_args would discard.
+CUE_DLG_FIRE_HINT = "Fire (no value: this message takes no argument)"
+# The property and burst groups SHARE these fixed editor tags, so only the
+# active kind may hold them (BUG-2026-09-12T191000: a cleanup loop that reused
+# the renderer's ``container`` parameter sent every editor to the hidden burst
+# group, so the property kind never showed its value editors).
+CUE_DLG_VALUE_CONTAINERS = ("cue_prop_values", "cue_burst_values")
+
+
 def on_cue_kind_change(sender: Any, app_data: Any, user_data: Any = None) -> None:
     """Row-dialog kind combo: reveal ONLY the fields of the chosen kind
     (e35s04 + e36s05: a 'burst' kind runs one bounded rate message).
@@ -6076,9 +7426,32 @@ def _cue_dlg_render_kind_editors(kind: str) -> None:
             dpg.set_value("cue_dlg_burst_combo", prop)
         _cue_dlg_render_values("cue_burst_values", prop)
     else:
-        for container in ("cue_prop_values", "cue_burst_values"):
-            if dpg.does_item_exist(container):
-                dpg.delete_item(container, children_only=True)
+        _cue_dlg_clear_editors()
+        _cue_dlg_fit_height(None)
+
+
+def _cue_dlg_clear_editors() -> None:
+    """Drop the shared editor widgets so the next kind renders clean tags."""
+    for shared_tag in CUE_DLG_VALUE_CONTAINERS:
+        if dpg.does_item_exist(shared_tag):
+            dpg.delete_item(shared_tag, children_only=True)
+
+
+def _cue_dlg_fit_height(prop: str | None) -> None:
+    """Fit the row dialog to the active property's editors (BUG-2026-09-12T191000).
+
+    corner renders 8 components + ms = 9 editor rows, which the fixed 470 px
+    window pushed below the visible area; a small property keeps the default
+    height and a named cap keeps the modal sane (taller content scrolls).
+    """
+    rows = 0
+    if prop is not None:
+        entry = catalog.PROPERTY_CATALOG[prop]
+        rows = len(entry["components"]) + (1 if entry["ms"] else 0)
+    height = CUE_DLG_BASE_HEIGHT + rows * CUE_DLG_EDITOR_ROW_HEIGHT
+    height = max(CUE_DLG_DEFAULT_HEIGHT, min(height, CUE_DLG_MAX_HEIGHT))
+    if dpg.does_item_exist("cue_dialog"):
+        dpg.configure_item("cue_dialog", height=height)
 
 
 def _dlg_float(tag: str, default: float) -> float:
@@ -6103,22 +7476,37 @@ def _cue_dlg_render_values(
     container: str, prop: str, prefilled: list[float] | None = None, ms_value: float = 0.0
 ) -> None:
     """Render the value/component + optional ms editors of a row property into
-    the given container (e36s05): one drag for a single-value property (tag
+    the given container (e36s05): one editor for a single-value property (tag
     cue_dlg_value), one labelled drag per component for multi-value properties
     (tags cue_dlg_v0..), plus an 'Animate (ms)' drag on ms-capable properties.
 
-    e36s06 real-DPG fix: the property and burst containers SHARE the fixed
-    editor tags, so both are cleared before rendering (a stale second set
-    would duplicate tags — real DPG raises) and the labels use themed_text:
-    raw dpg.add_text has no ``slot`` keyword, which raised and killed the
-    value area (user report: the Add cue row dialog cannot insert values).
+    The shared editor tags mean both containers are cleared first and the
+    labels use themed_text (raw dpg.add_text has no ``slot`` keyword, e36s06).
+    BUG-2026-09-12T191000: the cleanup loop must NOT reuse this function's
+    ``container`` parameter — doing so parented every editor to the hidden
+    burst group, so the property kind never showed its value. Family-aware
+    editors: an enum offers its named options, a no-argument trigger shows a
+    'fire' hint, everything else a drag.
     """
-    for container in ("cue_prop_values", "cue_burst_values"):
-        if dpg.does_item_exist(container):
-            dpg.delete_item(container, children_only=True)
+    _cue_dlg_clear_editors()
     entry = catalog.PROPERTY_CATALOG[prop]
     comps = entry["components"]
     pre = prefilled or [float(c["neutral"]) for c in comps]
+    if entry["family"] == catalog.FAMILY_TRIGGER and not catalog.trigger_carries_value(prop):
+        themed_text(CUE_DLG_FIRE_HINT, slot="text_dim", parent=container)
+    elif entry["family"] == catalog.FAMILY_ENUM:
+        _cue_dlg_add_enum_editor(container, entry, pre)
+    else:
+        _cue_dlg_add_component_editors(container, comps, pre)
+    if entry["ms"]:
+        _cue_dlg_add_ms_editor(container, ms_value)
+    _cue_dlg_fit_height(prop)
+
+
+def _cue_dlg_add_component_editors(
+    container: str, comps: list[dict[str, Any]], pre: list[float]
+) -> None:
+    """One labelled drag per component under the fixed editor tags."""
     if len(comps) == 1:
         comp = comps[0]
         themed_text("Value", slot="text_dim", parent=container)
@@ -6132,49 +7520,78 @@ def _cue_dlg_render_values(
             speed=0.01,
             tag="cue_dlg_value",
         )
-    else:
-        for i, comp in enumerate(comps):
-            themed_text(f"{comp['label']}", slot="text_dim", parent=container)
-            dpg.add_drag_float(
-                parent=container,
-                default_value=pre[i] if i < len(pre) else float(comp["neutral"]),
-                min_value=float(comp["min"]),
-                max_value=float(comp["max"]),
-                width=140,
-                format="%.2f",
-                speed=0.01,
-                tag=f"cue_dlg_v{i}",
-            )
-    if entry["ms"]:
-        themed_text("Animate (ms)", slot="text_dim", parent=container)
+        return
+    for i, comp in enumerate(comps):
+        themed_text(str(comp["label"]), slot="text_dim", parent=container)
         dpg.add_drag_float(
             parent=container,
-            default_value=ms_value if ms_value > 0 else 0.0,
+            default_value=pre[i] if i < len(pre) else float(comp["neutral"]),
+            min_value=float(comp["min"]),
+            max_value=float(comp["max"]),
             width=140,
-            format="%.0f",
-            speed=10.0,
-            min_value=0.0,
-            max_value=60_000.0,
-            tag="cue_dlg_ms",
+            format="%.2f",
+            speed=0.01,
+            tag=f"cue_dlg_v{i}",
         )
+
+
+def _cue_dlg_add_enum_editor(container: str, entry: dict[str, Any], pre: list[float]) -> None:
+    """An enum row picks its named option; the payload stores the index."""
+    options = [str(o) for o in entry["options"] or []]
+    index = max(0, min(round(pre[0]), len(options) - 1)) if options else 0
+    themed_text("Value", slot="text_dim", parent=container)
+    dpg.add_combo(
+        items=options,
+        default_value=options[index] if options else "",
+        width=140,
+        tag="cue_dlg_value",
+        parent=container,
+    )
+
+
+def _cue_dlg_add_ms_editor(container: str, ms_value: float) -> None:
+    """The optional native-animation duration of an ms-capable property."""
+    themed_text("Animate (ms)", slot="text_dim", parent=container)
+    dpg.add_drag_float(
+        parent=container,
+        default_value=ms_value if ms_value > 0 else 0.0,
+        width=140,
+        format="%.0f",
+        speed=10.0,
+        min_value=0.0,
+        max_value=60_000.0,
+        tag="cue_dlg_ms",
+    )
 
 
 def _cue_dlg_read_payload(prop: str) -> dict[str, Any]:
     """Read the value/ms fields rendered by _cue_dlg_render_values into the
-    model payload shape {property, value|values, ms?} (e36s05)."""
+    model payload shape {property, value|values, ms?} (e36s05). A no-argument
+    trigger carries no value: compose_send_args fires [] regardless."""
     entry = catalog.PROPERTY_CATALOG[prop]
     payload: dict[str, Any] = {"property": prop}
+    if entry["family"] == catalog.FAMILY_TRIGGER and not catalog.trigger_carries_value(prop):
+        return payload
     if len(entry["components"]) > 1:
         payload["values"] = [
             _dlg_float(f"cue_dlg_v{i}", float(c["neutral"]))
             for i, c in enumerate(entry["components"])
         ]
     else:
-        payload["value"] = _dlg_float("cue_dlg_value", 0.0)
+        payload["value"] = _cue_dlg_read_single_value(entry)
     ms = _dlg_float("cue_dlg_ms", 0.0)
     if ms > 0 and entry["ms"]:
         payload["ms"] = ms
     return payload
+
+
+def _cue_dlg_read_single_value(entry: dict[str, Any]) -> float:
+    """The single-value editor: an enum combo maps its option label to the index."""
+    options = [str(o) for o in entry["options"] or []]
+    if entry["family"] == catalog.FAMILY_ENUM and options:
+        label = str(dpg.get_value("cue_dlg_value"))
+        return float(options.index(label)) if label in options else 0.0
+    return _dlg_float("cue_dlg_value", 0.0)
 
 
 def _open_cue_row_dialog(mid: int, insert_after: int = -1, edit_index: int | None = None) -> None:
@@ -6206,7 +7623,7 @@ def _open_cue_row_dialog(mid: int, insert_after: int = -1, edit_index: int | Non
         tag="cue_dialog",
         modal=True,
         width=360,
-        height=470,
+        height=CUE_DLG_DEFAULT_HEIGHT,
         no_resize=True,
     ):
         themed_text("Kind", slot="text_dim")
@@ -6452,7 +7869,7 @@ def open_cue_list_window(sender: Any = None, app_data: Any = None, user_data: An
 
 
 def midi_control_loop() -> None:
-    """MIDI control worker (e14s02): poll every controller input port, route messages,
+    """MIDI control worker (e14s02): poll every controller input port, mapping messages,
     push executions to the main thread via ui_task_queue (HIGH-1 — no direct dpg calls).
     """
     try:
@@ -6852,8 +8269,8 @@ def _window_menu_entries() -> list[tuple[str, str]]:
     """Windows in switching order: (tag, real window-title label).
 
     The main window (Step Sequencer) is always on screen and is not a switching
-    target; Monitor Players are appended live so the list (and Ctrl+Tab) always
-    match the windows that exist.
+    target; the workspace windows are appended live so the list (and Ctrl+Tab)
+    always match the windows that exist.
     """
     entries = [
         ("sequencer_window", "Step Sequencer"),
@@ -6862,7 +8279,6 @@ def _window_menu_entries() -> list[tuple[str, str]]:
         ("logs_window", "Logs"),
         ("mapper_window", "Mapper"),
     ]
-    entries += [(p["tag"], f"Monitor Player {p['id']}") for p in monitor_players]
     if state.preview_active is not None:  # the preview window exists while a preview is active
         entries.append((PREVIEW_WINDOW_TAG, "Preview"))
     return entries
@@ -6890,7 +8306,7 @@ _FOCUS_TRACKED_WINDOWS: tuple[str, ...] = (
 def _is_tracked_window(tag: Any) -> bool:
     """True when the active item is one of the app's windows, not a menu/popup."""
     s = str(tag)
-    return s in _FOCUS_TRACKED_WINDOWS or s.startswith("monitor_player_")
+    return s in _FOCUS_TRACKED_WINDOWS
 
 
 def _active_window_tag(tag: Any) -> str | None:
@@ -6927,7 +8343,7 @@ def refresh_window_menu() -> None:
 
     The list lives under the ``Windows`` menu (after its separator); each entry
     is a checkable item wired to ``switch_to_window``. Missing windows are
-    skipped so a pruned Monitor Player never leaves a dead entry.
+    skipped so a closed window never leaves a dead entry.
     """
     for tag in _window_menu_dynamic_tags:
         if dpg.does_item_exist(tag):
@@ -7171,38 +8587,19 @@ def visual_metronome_loop() -> None:
 # NEW ASYNC THREAD FOR HIGH-RESOLUTION FADES
 # ==============================================================================
 def fade_tick_loop() -> None:
+    """Advance the active beat-fades at 100 Hz (e41s02: coalesced emission).
+
+    The per-track work lives in ``sequencer.advance_fade`` (dpg-free, unit
+    tested): this loop owns only the cadence and the worker-thread survival
+    guarantee — a failing send must never kill the thread (HIGH-1 / Defensive
+    Code).
+    """
     while True:
         if state.is_playing:
             current_time = time.time()
             for track in tracks_data:
-                fade = track.get("active_fade", {})
-                if fade and fade.get("active"):
-                    elapsed = current_time - fade["start_time"]
-                    expected_msg_index = int(elapsed / fade["msg_interval"])
-
-                    # If we fell behind, or it is time for the next tick
-                    if expected_msg_index > fade["last_msg_index"]:
-                        max_msg = min(expected_msg_index, fade["total_msgs"] - 1)
-
-                        # Send all the accumulated intermediate messages
-                        for i in range(fade["last_msg_index"] + 1, max_msg + 1):
-                            progress = (
-                                i / float(fade["total_msgs"] - 1) if fade["total_msgs"] > 1 else 1.0
-                            )
-                            val = (
-                                fade["start_val"] + (fade["end_val"] - fade["start_val"]) * progress
-                            )
-                            try:
-                                osc_client.send_message(fade["address"], float(val))
-                                append_log("OUT", f"{fade['address']} [FADE: {val:.2f}]")
-                            except Exception:
-                                pass
-
-                        fade["last_msg_index"] = max_msg
-
-                        # Deactivate when the fade is finished
-                        if fade["last_msg_index"] >= fade["total_msgs"] - 1:
-                            fade["active"] = False
+                with contextlib.suppress(Exception):
+                    advance_fade(track.get("active_fade", {}), current_time)
         time.sleep(0.01)  # 100 FPS check loop for smooth fades
 
 
@@ -8053,13 +9450,46 @@ with (
         show=False,
     ),
     dpg.child_window(
-        height=MAPPER_WINDOW_HEIGHT - 8,
+        height=MAPPER_SCROLL_HEIGHT,
         border=False,
         tag="mapper_scroll",
     ),
-    dpg.group(tag="mapper_mappings_group"),
 ):
-    pass
+    # e40s01: the section chips + New Mapping sit above the body inside the scroll
+    with dpg.group(horizontal=True, tag="mapper_filter_group"):
+        themed_text("Show", slot="text_dim")
+        dpg.add_checkbox(
+            label="Control",
+            tag="mapper_filter_control",
+            default_value=True,
+            callback=on_mapper_filter,
+        )
+        dpg.add_checkbox(
+            label="State", tag="mapper_filter_get", default_value=True, callback=on_mapper_filter
+        )
+        dpg.add_checkbox(
+            label="Clock+Constant",
+            tag="mapper_filter_global",
+            default_value=True,
+            callback=on_mapper_filter,
+        )
+        # e40s11/e40s12: the GENERAL creator lives here, set apart from the
+        # Show chips and captioned, so it reads as an action and not a filter;
+        # the '+' of a line and of the Clock+Constant line stay contextual.
+        dpg.add_spacer(width=MAPPER_FILTER_ADD_GAP)
+        dpg.add_button(
+            label="+",
+            width=MAPPER_ADD_W,
+            height=MAPPER_ADD_H,
+            callback=open_mapping_creator,
+            tag="mapper_filter_add",
+        )
+        themed_text("New mapping", slot="text_dim")
+        dpg.add_group(tag="mapper_filter_learn_slot", horizontal=True)
+    # NOTE: a bare dpg.group(...) call does NOT create the item — the context
+    # manager must be entered (dearpygui 2.x), same as the original tuple-with.
+    with dpg.group(tag="mapper_mappings_group"):
+        pass
 dpg.bind_item_theme("mapper_window", theme_mapper_compact)
 with dpg.item_handler_registry(tag="mapper_resize_reg"):
     # e24s02: reflow the wrapping body whenever the user resizes the window
@@ -8078,6 +9508,8 @@ threading.Thread(target=sequencer_tick, daemon=True).start()
 threading.Thread(target=visual_metronome_loop, daemon=True).start()
 threading.Thread(target=essentia_analyzer_loop, daemon=True).start()
 threading.Thread(target=thumbnail_decoder_worker, daemon=True).start()
+threading.Thread(target=thumbnail_fetch_worker, daemon=True).start()  # e41s03 data plane
+threading.Thread(target=state_poll_worker, daemon=True).start()  # e41s04 state pull
 
 dpg.create_viewport(title="viSeq - Audio-Reactive VJ Controller", width=1700, height=1080)
 # e19/e37s04: closing the main window goes through the dirty-gated request — a
@@ -8098,9 +9530,9 @@ with dpg.viewport_menu_bar():
         dpg.add_separator()
         dpg.add_menu_item(label="Exit", callback=exit_app)
     with dpg.menu(label="Windows", tag="menu_windows"):  # e12s01 + e17 (window list)
-        dpg.add_menu_item(label="New Monitor Player", callback=new_monitor_player)
         dpg.add_menu_item(label="Show Mapper", callback=show_mapper_window)  # e16
         dpg.add_menu_item(label="Show Logs", callback=show_logs_window)
+        dpg.add_menu_item(label="Show I/O Monitor", callback=show_io_monitor)  # e39s01
         dpg.add_menu_item(label="Show Info", callback=show_help_window)
         dpg.add_separator(parent="menu_windows")  # e17: open windows below the actions
         # the live window list is rebuilt by refresh_window_menu() (e17)
@@ -8155,6 +9587,10 @@ try:
         if latest_json:
             update_vimix_sources_ui(latest_json)
 
+        while not state.watch_state_queue.empty():
+            watch_name, watch_args = state.watch_state_queue.get()
+            _apply_watch_reply(watch_name, watch_args)
+
         while not texture_queue.empty():
             name, idx, img_data, w, h = texture_queue.get()
             apply_thumbnail_texture(name, idx, img_data, w, h)
@@ -8167,6 +9603,10 @@ try:
 
         tick_cue_triggers()  # e35s03: cue-list card running labels (idle-cheap)
 
+        tick_io_monitor()  # e39s01: I/O Monitor panes (idle-cheap, revision-gated)
+
+        tick_mappings()  # e40s01: state Origin -> MIDI/OSC Destination emissions
+
         tick_midi_learn_timeout()  # e18: expire stale MIDI Learn sessions (incl. mapper)
 
         tick_leap_monitor()  # e26s02: live two-hand values in the Leap Motion window
@@ -8176,17 +9616,6 @@ try:
         tick_source_preview(time.time())  # e38s03: preview frames + transport sync
 
         request_missing_thumbnails(time.time())
-
-        # monitor players: cleanup closed windows and refresh values
-        for p in list(monitor_players):
-            if not dpg.does_item_exist(p["tag"]):
-                if p.get("target_id"):
-                    addr = f"/viosc/monitor/{p['target_id']}"
-                    osc_client.send_message(addr, [])
-                    append_log("OUT", f"{addr} (stop)")
-                monitor_players.remove(p)
-                continue
-            refresh_monitor_display(p["id"])
 
         dpg.render_dearpygui_frame()
         time.sleep(frame_sleep())  # perf e07 P1: throttle the idle render cadence
