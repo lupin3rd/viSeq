@@ -1,12 +1,21 @@
-"""Live MIDI-input monitor for viseq (e39s01).
+"""Live MIDI I/O monitor for viseq (e39s01, e39s05).
 
-Diagnostic only: records every incoming MIDI message (as parsed by
-``viseqapp.midi``) plus the OUTCOME of its resolution and a per-control
-calibration envelope, so the composition root can render a live stream and a
-controls table. The monitor never sends, never persists and never alters
-dispatch — it observes. Dpg-free (HIGH-1) and bounded by the named caps in
-``constants`` so a spinning wheel cannot grow memory; coalescing is for display
-only: one row per ``(port, type, channel, number)`` with last/min/max/count.
+Diagnostic only: records every INCOMING MIDI message (as parsed by
+``viseqapp.midi``) with the OUTCOME of its resolution, and every OUTGOING one
+(the Mapping Destination, the grid LEDs, the controller setup) with the sender
+that produced it, plus a per-control calibration envelope. The composition root
+renders a live stream and a controls table. The monitor never sends, never
+persists and never alters dispatch — it observes. Dpg-free (HIGH-1) and bounded
+by the named caps in ``constants`` so a spinning wheel cannot grow memory;
+coalescing is for display only: one row per
+``(port, type, channel, number, direction)`` with last/min/max/count — the
+DIRECTION is part of the key, so an outgoing LED note and an incoming note on
+the same number never share an envelope.
+
+Every entry carries a common shape (``ts``, ``transport``, ``direction``,
+``kind``, ``port``, ``type``, ``channel``, ``number``, ``value``,
+``normalized``, ``outcome``, ``detail``) so the OSC side can join in without a
+second engine (e39s05 task 2).
 
 A ``revision`` counter lets the UI update its text blocks only when something
 actually changed (the ``osc_log_text`` refresh pattern).
@@ -17,20 +26,28 @@ from typing import Any
 
 from viseqapp.constants import (
     MIDI_MONITOR_CONTROL_LIMIT,
+    MIDI_MONITOR_DIRECTION_IN,
+    MIDI_MONITOR_DIRECTION_OUT,
+    MIDI_MONITOR_KIND_MIDI_IN,
+    MIDI_MONITOR_KIND_MIDI_OUT,
     MIDI_MONITOR_NEUTRAL_CENTRE,
+    MIDI_MONITOR_OUTCOME_SENT,
     MIDI_MONITOR_STREAM_LIMIT,
+    MIDI_MONITOR_TRANSPORT_MIDI,
     MIDI_MONITOR_VALUE_MAX,
 )
 
 __all__ = [
     "centre_offset",
     "clear",
+    "control_id",
     "control_key",
     "format_controls",
     "format_report",
     "format_stream",
     "normalize_value",
     "record_rx",
+    "record_tx",
     "reset_controls",
     "revision",
     "snapshot_controls",
@@ -40,13 +57,33 @@ __all__ = [
 
 # Oldest-first; newest entries are at the end (snapshots reverse for display).
 _stream: list[dict[str, Any]] = []
-_controls: dict[tuple[str, str, int, int], dict[str, Any]] = {}
+_controls: dict[tuple[str, str, int, int, str], dict[str, Any]] = {}
 _revision = 0
 
 
-def control_key(port: str, msg_type: str, channel: int, number: int) -> tuple[str, str, int, int]:
-    """The coalescing key of one physical control (one CC on one channel/port)."""
-    return (str(port), str(msg_type), int(channel), int(number))
+def control_key(
+    port: str,
+    msg_type: str,
+    channel: int,
+    number: int,
+    direction: str = MIDI_MONITOR_DIRECTION_IN,
+) -> tuple[str, str, int, int, str]:
+    """The coalescing key of one control (one CC/note on one channel/port).
+
+    e39s05: the DIRECTION belongs to the key — an outgoing LED note and an
+    incoming note on the same number are different things, and sharing an
+    envelope between them would make the calibration table meaningless.
+    """
+    return (str(port), str(msg_type), int(channel), int(number), str(direction))
+
+
+def control_id(control: tuple[str, str, int, int, str]) -> str:
+    """The copyable id of one control ('PORT type ch N') — a Binding is about input.
+
+    e39s05: the key carries the direction, but the id does not: a physical control
+    is an input by definition, so a trailing 'in' would just be noise in a ticket.
+    """
+    return " ".join(str(part) for part in control[:4])
 
 
 def normalize_value(value: float) -> float:
@@ -78,18 +115,68 @@ def record_rx(
     detail: str = "",
     now: float | None = None,
 ) -> None:
-    """Record one incoming message + its resolution outcome (main thread).
+    """Record one INCOMING message + its resolution outcome (main thread)."""
+    _record(
+        MIDI_MONITOR_DIRECTION_IN,
+        (port, msg_type, channel, number),
+        value,
+        MIDI_MONITOR_KIND_MIDI_IN,
+        outcome,
+        detail,
+        now,
+    )
 
-    Appends a bounded stream entry and coalesces the message into its control
-    row (last value, min/max envelope, count, last outcome, age). ``now`` is
-    injectable for deterministic tests.
+
+def record_tx(
+    port: str,
+    msg_type: str,
+    channel: int,
+    number: int,
+    value: float,
+    detail: str = "",
+    now: float | None = None,
+) -> None:
+    """Record one OUTGOING message (e39s05) — a Mapping CC/note, a grid LED, a sysex.
+
+    No resolution outcome exists on this side: the message left viseq, so the row
+    reads SENT and ``detail`` names the sender ('mapping #7 alpha', 'grid led
+    r2c3', 'controller setup'). Same bounded stream and coalescing as the RX side.
+    """
+    _record(
+        MIDI_MONITOR_DIRECTION_OUT,
+        (port, msg_type, channel, number),
+        value,
+        MIDI_MONITOR_KIND_MIDI_OUT,
+        MIDI_MONITOR_OUTCOME_SENT,
+        detail,
+        now,
+    )
+
+
+def _record(
+    direction: str,
+    peer: tuple[str, str, int, int],
+    value: float,
+    kind: str,
+    outcome: str,
+    detail: str,
+    now: float | None,
+) -> None:
+    """Append a bounded stream entry and coalesce it into its control row.
+
+    ``now`` is injectable for deterministic tests. Shared by record_rx and
+    record_tx so the two directions can never drift in shape or caps.
     """
     global _revision
+    port, msg_type, channel, number = peer
     ts = time.time() if now is None else float(now)
-    key = control_key(port, msg_type, channel, number)
+    key = control_key(port, msg_type, channel, number, direction)
     raw = float(value)
     entry: dict[str, Any] = {
         "ts": ts,
+        "transport": MIDI_MONITOR_TRANSPORT_MIDI,
+        "direction": direction,
+        "kind": str(kind),
         "port": key[0],
         "type": key[1],
         "channel": key[2],
@@ -130,28 +217,53 @@ def _evict_controls() -> None:
 
 
 def snapshot_stream(
-    port: str | None = None, control: tuple[str, str, int, int] | None = None
+    port: str | None = None,
+    control: tuple[str, str, int, int, str] | None = None,
+    direction: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Newest-first stream entries, optionally filtered by port and/or control."""
-    return [dict(entry) for entry in reversed(_stream) if _entry_matches(entry, port, control)]
+    """Newest-first stream entries, filtered by port, control and/or direction."""
+    return [
+        dict(entry)
+        for entry in reversed(_stream)
+        if _entry_matches(entry, port, control, direction)
+    ]
 
 
 def _entry_matches(
-    entry: dict[str, Any], port: str | None, control: tuple[str, str, int, int] | None
+    entry: dict[str, Any],
+    port: str | None,
+    control: tuple[str, str, int, int, str] | None,
+    direction: str | None = None,
 ) -> bool:
-    """True when a stream entry passes the active port/control filters."""
+    """True when a stream entry passes the active port/control/direction filters."""
     if port is not None and entry["port"] != port:
+        return False
+    if direction is not None and entry["direction"] != direction:
         return False
     if control is None:
         return True
-    return control_key(entry["port"], entry["type"], entry["channel"], entry["number"]) == control
+    return (
+        control_key(
+            entry["port"], entry["type"], entry["channel"], entry["number"], entry["direction"]
+        )
+        == control
+    )
 
 
-def snapshot_controls(port: str | None = None) -> list[dict[str, Any]]:
-    """Control rows, most recently active first, with the centre offset derived."""
+def snapshot_controls(
+    port: str | None = None, direction: str | None = MIDI_MONITOR_DIRECTION_IN
+) -> list[dict[str, Any]]:
+    """Control rows, most recently active first, with the centre offset derived.
+
+    Defaults to the INCOMING direction: the table is the learn/calibration view
+    (e39s02/e39s03), and an outgoing LED is not a control you can learn from.
+    Pass ``direction=None`` for both directions.
+    """
     rows = []
     for key, row in _controls.items():
         if port is not None and key[0] != port:
+            continue
+        if direction is not None and key[4] != direction:
             continue
         out = dict(row)
         out["key"] = key
@@ -197,11 +309,13 @@ def stats() -> dict[str, int]:
 def format_stream(entries: list[dict[str, Any]]) -> str:
     """The stream pane text: one line per message, newest first (ASCII only)."""
     if not entries:
-        return "No MIDI input yet."
-    lines = ["TIME      PORT            TYPE  CH  NUM   RAW  NORM   OUTCOME  DETAIL"]
+        return "No traffic yet."
+    lines = ["TIME      DIR  KIND     PORT            TYPE  CH  NUM   RAW  NORM   OUTCOME  DETAIL"]
     for entry in entries:
         lines.append(
             f"{time.strftime('%H:%M:%S', time.localtime(float(entry['ts'])))}  "
+            f"{entry['direction']!s:<3}  "
+            f"{str(entry['kind'])[:8]:<8} "
             f"{str(entry['port'])[:15]:<15} "
             f"{str(entry['type'])[:4]:<4}  "
             f"{int(entry['channel']):>2}  "
@@ -218,9 +332,12 @@ def format_controls(rows: list[dict[str, Any]]) -> str:
     """The controls pane text: one aligned row per control (ASCII only)."""
     if not rows:
         return "No control seen yet."
-    lines = ["PORT            TYPE  CH  NUM   LAST   NORM   MIN..MAX      OFF   CNT   AGE  OUTCOME"]
+    lines = [
+        "DIR  PORT            TYPE  CH  NUM   LAST   NORM   MIN..MAX      OFF   CNT   AGE  OUTCOME"
+    ]
     for row in rows:
         lines.append(
+            f"{row['direction']!s:<3}  "
             f"{str(row['port'])[:15]:<15} "
             f"{str(row['type'])[:4]:<4}  "
             f"{int(row['channel']):>2}  "
@@ -239,9 +356,11 @@ def format_controls(rows: list[dict[str, Any]]) -> str:
 def format_report(stream_text: str, controls_text: str) -> str:
     """The 'Copy report' payload: header + both panes, for pasting in a ticket."""
     stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    incoming = sum(1 for e in _stream if e["direction"] == MIDI_MONITOR_DIRECTION_IN)
     return (
         f"viSeq MIDI Monitor report - {stamp}\n"
-        f"messages: {len(_stream)}  controls: {len(_controls)}\n\n"
+        f"messages: {len(_stream)} (in {incoming} / out {len(_stream) - incoming})  "
+        f"controls: {len(_controls)}\n\n"
         f"--- STREAM (newest first) ---\n{stream_text}\n\n"
         f"--- CONTROLS ---\n{controls_text}\n"
     )

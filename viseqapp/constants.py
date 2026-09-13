@@ -458,6 +458,18 @@ MIDI_ACTION_MAPPING_ADD = "mapping_add"  # e40s08: add a State Mapping on a sour
 # control with last/min/max/count). The neutral centre is the app-wide CC/pitch
 # midpoint used by _parse_midi_msg; the outcome tags are what the stream and
 # controls panes render.
+# e39s05: the monitor observes both directions (the I/O Monitor from task 3 on).
+MIDI_MONITOR_TRANSPORT_MIDI = "midi"
+MIDI_MONITOR_TRANSPORT_OSC = "osc"  # the OSC lanes join the same engine (task 2)
+MIDI_MONITOR_DIRECTION_IN = "in"
+MIDI_MONITOR_DIRECTION_OUT = "out"
+MIDI_MONITOR_DIRECTIONS: tuple[str, ...] = (
+    MIDI_MONITOR_DIRECTION_IN,
+    MIDI_MONITOR_DIRECTION_OUT,
+)
+MIDI_MONITOR_KIND_MIDI_IN = "midi_in"
+MIDI_MONITOR_KIND_MIDI_OUT = "midi_out"
+
 MIDI_MONITOR_STREAM_LIMIT = 400  # newest stream entries kept
 MIDI_MONITOR_CONTROL_LIMIT = 256  # distinct controls tracked (oldest activity evicted)
 MIDI_MONITOR_NEUTRAL_CENTRE = 64

@@ -142,6 +142,8 @@ from viseqapp.constants import (
     MIDI_KIND_CC,
     MIDI_KIND_NOTE,
     MIDI_LEARN_TIMEOUT_SECONDS,
+    MIDI_MONITOR_DIRECTION_IN,
+    MIDI_MONITOR_DIRECTION_OUT,
     MIDI_MONITOR_OUTCOME_LEARN,
     MIDI_MONITOR_OUTCOME_MATCH,
     MIDI_MONITOR_OUTCOME_NOBIND,
@@ -4371,11 +4373,40 @@ MIDI_MONITOR_ALL_PORTS = "All ports"
 _midi_monitor_paused = False
 _midi_monitor_port: str | None = None
 _midi_monitor_ports: list[str] = []
-_midi_monitor_filter_control: tuple[str, str, int, int] | None = None
-_midi_monitor_control_items: dict[str, tuple[str, str, int, int]] = {}
+# e39s05: the direction filter — None = both, else MIDI_MONITOR_DIRECTION_IN/OUT.
+_midi_monitor_direction: str | None = None
+_midi_monitor_filter_control: tuple[str, str, int, int, str] | None = None
+_midi_monitor_control_items: dict[str, tuple[str, str, int, int, str]] = {}
 _midi_monitor_mapping_items: dict[str, int] = {}
 _midi_monitor_last_revision = -1
 _midi_monitor_last_refresh = 0.0
+
+
+MIDI_MONITOR_DIRECTION_BOTH = "In + Out"
+_MIDI_MONITOR_DIRECTION_LABELS: dict[str, str | None] = {
+    MIDI_MONITOR_DIRECTION_BOTH: None,
+    "In only": MIDI_MONITOR_DIRECTION_IN,
+    "Out only": MIDI_MONITOR_DIRECTION_OUT,
+}
+
+
+def _midi_monitor_direction_label() -> str:
+    """The combo label of the active direction filter (e39s05)."""
+    for label, value in _MIDI_MONITOR_DIRECTION_LABELS.items():
+        if value == _midi_monitor_direction:
+            return label
+    return MIDI_MONITOR_DIRECTION_BOTH
+
+
+def on_midi_monitor_direction(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Direction combo: narrow the stream to what viseq receives or sends (e39s05)."""
+    global _midi_monitor_direction
+    _midi_monitor_direction = _MIDI_MONITOR_DIRECTION_LABELS.get(
+        str(app_data or MIDI_MONITOR_DIRECTION_BOTH)
+    )
+    refresh_midi_monitor()
 
 
 def _midi_monitor_port_options() -> list[str]:
@@ -4400,9 +4431,9 @@ def _monitor_sync_ports() -> None:
         dpg.configure_item("midi_monitor_port", items=options)
 
 
-def _control_label(control: tuple[str, str, int, int]) -> str:
+def _control_label(control: tuple[str, str, int, int, str]) -> str:
     """Picker label of one control: 'cc ch0 #7 @port'."""
-    port, msg_type, channel, number = control
+    port, msg_type, channel, number, _direction = control
     return f"{msg_type} ch{int(channel)} #{int(number)} @{port}"
 
 
@@ -4466,6 +4497,15 @@ def _build_midi_monitor_window() -> None:
                 tag="midi_monitor_port",
                 callback=on_midi_monitor_port,
             )
+            # e39s05: in / out / both — the stream sees both directions now.
+            themed_text("Direction", slot="text_dim")
+            dpg.add_combo(
+                items=list(_MIDI_MONITOR_DIRECTION_LABELS),
+                default_value=MIDI_MONITOR_DIRECTION_BOTH,
+                width=110,
+                tag="midi_monitor_direction",
+                callback=on_midi_monitor_direction,
+            )
             dpg.add_group(tag="midi_monitor_learn_slot", horizontal=True)
         with dpg.group(horizontal=True):
             themed_text("Control", slot="text_dim")
@@ -4475,14 +4515,14 @@ def _build_midi_monitor_window() -> None:
             themed_text("Mapping", slot="text_dim")
             dpg.add_combo(items=[], width=240, tag="midi_monitor_mapping_combo")
             dpg.add_button(label="Assign", callback=assign_midi_monitor_control)
-        themed_text("Stream (newest first)", slot="text_dim")
+        themed_text("Stream (newest first, in + out)", slot="text_dim")
         dpg.add_input_text(
             tag="midi_monitor_stream_text",
             multiline=True,
             readonly=True,
             width=-1,
             height=MIDI_MONITOR_TEXT_HEIGHT,
-            default_value="No MIDI input yet.",
+            default_value="No traffic yet.",
         )
         themed_text("Controls", slot="text_dim")
         dpg.add_input_text(
@@ -4632,7 +4672,9 @@ def _midi_monitor_texts() -> tuple[str, str]:
     """The current (stream, controls) pane texts under the active filters."""
     port = _midi_monitor_port
     stream = midimonitor.format_stream(
-        midimonitor.snapshot_stream(port=port, control=_midi_monitor_filter_control)
+        midimonitor.snapshot_stream(
+            port=port, control=_midi_monitor_filter_control, direction=_midi_monitor_direction
+        )
     )
     return stream, midimonitor.format_controls(midimonitor.snapshot_controls(port=port))
 
@@ -4659,7 +4701,7 @@ def copy_midi_monitor_report(
     dpg.set_clipboard_text(midimonitor.format_report(stream_text, controls_text))
 
 
-def _midi_monitor_selected_control() -> tuple[str, str, int, int] | None:
+def _midi_monitor_selected_control() -> tuple[str, str, int, int, str] | None:
     """The control picked in the picker (None when nothing is selected)."""
     return _midi_monitor_control_items.get(str(dpg.get_value("midi_monitor_control_combo")))
 
@@ -4683,7 +4725,7 @@ def copy_midi_monitor_control_id(
     control = _midi_monitor_selected_control()
     if control is None:
         return
-    dpg.set_clipboard_text(" ".join(str(part) for part in control))
+    dpg.set_clipboard_text(midimonitor.control_id(control))
 
 
 def assign_midi_monitor_control(
@@ -4697,7 +4739,7 @@ def assign_midi_monitor_control(
     assign_control_to_mapping(control, mapping_id)
 
 
-def assign_control_to_mapping(control: tuple[str, str, int, int], mapping_id: int) -> bool:
+def assign_control_to_mapping(control: tuple[str, str, int, int, str], mapping_id: int) -> bool:
     """Bind an already-seen control to a Mapper mapping immediately (e39s03).
 
     The reverse of a learn session: the monitor already knows the source
@@ -4706,7 +4748,7 @@ def assign_control_to_mapping(control: tuple[str, str, int, int], mapping_id: in
     plus its 0..127 input range are set at once. An unknown mapping id is a
     logged no-op.
     """
-    port, msg_type, channel, number = control
+    port, msg_type, channel, number, _direction = control
     if mapper.find_mapping(mapping_id) is None:
         log_error("MIDI Monitor", f"no mapping {mapping_id}")
         return False
@@ -4833,6 +4875,7 @@ def _emit_mapping(mapping: dict[str, Any], value: float) -> None:
         int(spec.get("channel", 0)),
         int(spec.get("number", 0)),
         round(value),
+        detail=f"mapping #{mapping['id']} {mapping.get('property', '?')}",
     )
 
 

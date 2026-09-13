@@ -11,7 +11,7 @@ import threading
 import time
 from typing import Any
 
-from viseqapp import state
+from viseqapp import midimonitor, state
 from viseqapp.config import load_config, save_config
 from viseqapp.constants import (
     DEST_MIDI,
@@ -452,7 +452,16 @@ def controller_connect(controller: dict[str, Any], mido: Any) -> None:
         with _controller_lock:
             controller["output"] = mido.open_output(out_name)
         if leds and profile is not None and profile.get("setup_sysex"):
-            controller["output"].send(mido.Message("sysex", data=profile["setup_sysex"]))
+            setup = profile["setup_sysex"]
+            _send_observed(
+                controller["output"],
+                mido.Message("sysex", data=setup),
+                str(controller.get("port") or "?"),
+                "sysex",
+                0,
+                0,
+                f"controller setup ({len(setup)} bytes)",
+            )
         if (
             leds
             and profile is not None
@@ -513,8 +522,42 @@ def ensure_mapping_output(controller: dict[str, Any]) -> bool:
         return False
 
 
+def _send_observed(
+    output: Any,
+    message: Any,
+    port: str,
+    msg_type: str,
+    number: int,
+    value: int,
+    detail: str,
+) -> None:
+    """Send one MIDI message under the controller lock and report it (e39s05).
+
+    The ONE place an outgoing MIDI message leaves viseq, so the I/O Monitor sees
+    every send (Mapping Destination, grid LED, controller setup) without a second
+    wrapper per caller. Observation only: a monitor failure must never break a
+    send, so the recording is best-effort.
+    """
+    with _controller_lock:
+        output.send(message)
+    with contextlib.suppress(Exception):
+        midimonitor.record_tx(
+            str(port),
+            str(msg_type),
+            int(getattr(message, "channel", 0) or 0),
+            int(number),
+            float(value),
+            detail=str(detail),
+        )
+
+
 def send_mapping_midi(
-    controller: dict[str, Any], kind: str, channel: int, number: int, value: int
+    controller: dict[str, Any],
+    kind: str,
+    channel: int,
+    number: int,
+    value: int,
+    detail: str = "mapping",
 ) -> bool:
     """Send a note (velocity) or CC (value) on a controller's output (e40s01).
 
@@ -535,10 +578,13 @@ def send_mapping_midi(
 
         if kind == MIDI_KIND_NOTE:
             message = mido.Message("note_on", channel=channel, note=number, velocity=value)
+            msg_type = "note"
         else:
             message = mido.Message("control_change", channel=channel, control=number, value=value)
-        with _controller_lock:
-            output.send(message)
+            msg_type = "cc"
+        _send_observed(
+            output, message, str(controller.get("port") or "?"), msg_type, number, value, detail
+        )
         return True
     except Exception as e:
         log_error("MIDI", f"mapping output {controller.get('port')}: {e}")
@@ -563,9 +609,17 @@ def grid_led(row: int, col: int, color: str) -> None:
         import mido
 
         velocity = _controller_velocity(controller, color)
-        msg = mido.Message("note_on", note=grid_note(controller, row, col), velocity=velocity)
-        with _controller_lock:
-            output.send(msg)
+        note = grid_note(controller, row, col)
+        msg = mido.Message("note_on", note=note, velocity=velocity)
+        _send_observed(
+            output,
+            msg,
+            str(controller.get("port") or "?"),
+            "note",
+            note,
+            velocity,
+            f"grid led r{row}c{col}",
+        )
     except Exception as e:
         log_error("MIDI", f"grid LED ({row},{col}): {e}")
 
