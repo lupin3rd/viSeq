@@ -232,8 +232,11 @@ def kind_of(address: str) -> str:
 
 
 def viosc_peer() -> str:
-    """The 'host:port' of the configured viOSC client (the Monitor's Peer column)."""
+    """The 'host:port' of the viOSC client actually in use (the Monitor's Peer column)."""
     client = state.viosc_client or osc_client
+    peer = getattr(client, "_peer", None)
+    if peer:
+        return str(peer)
     host = getattr(client, "_address", None) or VIOSC_IP
     port = getattr(client, "_port", None) or VIOSC_PORT
     return f"{host}:{port}"
@@ -301,10 +304,41 @@ def observe_client(client: Any, peer: str) -> ObservedClient:
     return ObservedClient(client, peer)
 
 
-# The module default client, wrapped: a constant endpoint used until the
-# composition root connects the configured one (connect_osc_client).
-osc_client = observe_client(
-    udp_client.SimpleUDPClient(VIOSC_IP, VIOSC_PORT), f"{VIOSC_IP}:{VIOSC_PORT}"
+class VioscClientRouter:
+    """The module-level client: routes each send to the client actually in use.
+
+    BUG-2026-09-13T135000: every sender writes ``osc_client.send_message(...)``,
+    while the endpoint the user configures lives in ``state.viosc_client`` (set by
+    ``connect_osc_client`` from the persisted endpoints). The module client used
+    to be bound to the VIOSC_IP/VIOSC_PORT constants forever, so on a rig with a
+    non-default host/port the sequencer, the fades, the cue rows and the Mapper
+    values went to the WRONG address while the e40 state lane (which reads
+    ``state.viosc_client`` directly) worked — the most confusing symptom possible.
+
+    The router resolves at CALL time, so no call site changes and the wired
+    endpoint is a single source of truth. It is transparent: attribute access
+    delegates to the active client (a test that reads ``osc_client.messages``
+    follows whichever client is in use).
+    """
+
+    def __init__(self, default: Any) -> None:
+        self._default = default
+
+    def active(self) -> Any:
+        """The client in use: the configured one when connected, else the default."""
+        return state.viosc_client or self._default
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.active(), name)
+
+    def send_message(self, address: str, args: Any = None) -> Any:
+        return self.active().send_message(address, args)
+
+
+# The module client: a constant-endpoint default for the case where the
+# composition root has not connected a configured one yet.
+osc_client = VioscClientRouter(
+    observe_client(udp_client.SimpleUDPClient(VIOSC_IP, VIOSC_PORT), f"{VIOSC_IP}:{VIOSC_PORT}")
 )
 
 
