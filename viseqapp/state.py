@@ -427,6 +427,11 @@ mapping_subscriptions: dict[str, list[str]] = {}
 # e40s02: Mappings the orphan policy disabled (their source is gone); they are
 # re-enabled automatically when the source comes back.
 mapping_orphans: set[int] = set()
+# BUG-2026-09-13T231500: every source NAME the state table has ever reported.
+# A Mapping's target absent from a state update is only evidence of removal if
+# the name was seen before — the first tables after boot/pairing can be empty or
+# still carry another session, and pruning against them deleted user Mappings.
+known_sources: set[str] = set()
 # e40s06: the targeted watch lane — the /viosc/reply deltas land on this queue
 # from the OSC server thread and are applied on the main thread; the plan last
 # sent to viOSC and whether the lane is proven alive (None = unknown, still

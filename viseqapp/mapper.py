@@ -823,7 +823,7 @@ def find_mapping(mapping_id: int) -> dict[str, Any] | None:
     return None
 
 
-def prune_mappings(live_ids: set[str]) -> list[dict[str, Any]]:
+def prune_mappings(live_ids: set[str], known_ids: set[str] | None = None) -> list[dict[str, Any]]:
     """Drop Control->Vimix mappings whose source is gone; DISABLE other Mappings.
 
     Returns the removed entries (the L-1 live-sources prune in
@@ -833,6 +833,13 @@ def prune_mappings(live_ids: set[str]) -> list[dict[str, Any]]:
     re-enabled automatically when the source comes back (the disabled ids are
     tracked in state.mapping_orphans, so a user-disarmed Mapping is never re-armed).
     Source-less Mappings (Clock/Constant, target_id None) are never affected.
+
+    ``known_ids`` (BUG-2026-09-13T231500): when given, a target that was NEVER
+    seen in the state table is not treated as removed — the first tables after
+    boot or pairing can be empty or still carry another session, and deleting a
+    user's Control Mappings on that transient evidence was the bug. A target seen
+    before and now absent is still removed immediately (the e16 rule); the
+    caller passes ``state.known_sources``.
     """
     removed: list[dict[str, Any]] = []
     for mapping in state.mapper_mappings:
@@ -845,6 +852,8 @@ def prune_mappings(live_ids: set[str]) -> list[dict[str, Any]]:
                 mapping["enabled"] = True
                 state.mapping_orphans.discard(int(mapping["id"]))
             continue
+        if known_ids is not None and mapping["target_id"] not in known_ids:
+            continue  # never seen: not proven removed (transient table)
         if origin_of(mapping) == ORIGIN_CONTROL:
             removed.append(mapping)
         else:

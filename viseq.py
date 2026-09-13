@@ -2501,13 +2501,14 @@ def request_missing_thumbnails(now: float) -> None:
             thumb_frames_at_last_request[target_id] = received
 
 
-def _prune_state_consumers(live_ids: set[str]) -> None:
+def _prune_state_consumers(live_ids: set[str], known_ids: set[str]) -> None:
     """Drop cached UI that belongs to sources which no longer exist (L-1).
 
     The caller MUST pass a NON-EMPTY ``live_ids``: an empty state table means
     "viOSC has not synced yet" (or, under pairing, "not authenticated yet"),
-    never "every source was removed". Pruning against it deleted every Control
-    Mapping and every cached tile (BUG-2026-09-13T231500).
+    never "every source was removed". ``known_ids`` is every name the table has
+    ever reported, so a Mapping whose target was never seen is not pruned on a
+    transient table (BUG-2026-09-13T231500).
     """
     for target_id in list(thumbnails_data):
         if target_id not in live_ids:
@@ -2533,7 +2534,7 @@ def _prune_state_consumers(live_ids: set[str]) -> None:
         if target_id not in live_ids:
             thumb_frames_at_last_request.pop(target_id)
     mapper.prune_anchors(live_ids)  # e36s06: the anchor cache follows source churn
-    removed_mappings = mapper.prune_mappings(live_ids)
+    removed_mappings = mapper.prune_mappings(live_ids, known_ids)
     if removed_mappings:
         for removed in removed_mappings:
             _drop_mapping_editor_and_runs(int(removed["id"]))  # e35s05
@@ -2571,10 +2572,12 @@ def update_vimix_sources_ui(json_string: str) -> None:
             live_ids.add(str(name) if name else str(k))
         # BUG-2026-09-13T231500: an EMPTY state table is not evidence that every
         # source is gone (viOSC holds no sources until its first sync; under
-        # pairing the table stays empty until the peer authenticates), so the
-        # L-1 prune must not run against it.
+        # pairing the table stays empty until the peer authenticates), and a
+        # table that never listed a target is not evidence either — only a name
+        # seen before and now absent removes a Mapping.
         if live_ids:
-            _prune_state_consumers(live_ids)
+            _prune_state_consumers(live_ids, state.known_sources)
+            state.known_sources |= live_ids
 
         current_source = state.global_vimix_state["current_source"]
         data_dict = state.global_vimix_state["sources"]
@@ -7022,7 +7025,15 @@ def refresh_mapper_ui() -> None:
                     )
                 for slot in slot_line:
                     if slot < len(control_mappings):
-                        _render_mapper_card(control_mappings[slot], parent=line, height=row_height)
+                        try:
+                            _render_mapper_card(
+                                control_mappings[slot], parent=line, height=row_height
+                            )
+                        except Exception as exc:  # one bad card must not kill the body
+                            log_error(
+                                "Mapper card",
+                                f"mapping {control_mappings[slot].get('id')}: {exc!r}",
+                            )
                 # e34s01: the small '+' rides the last card line when it fits
                 if add_inline and line_no == len(lines) - 1:
                     _mapper_row_add(
