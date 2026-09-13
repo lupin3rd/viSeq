@@ -62,6 +62,7 @@ from viseqapp.constants import (
     MAPPER_CB_W,
     MAPPER_CTRL_H,
     MAPPER_DRAG_W,
+    MAPPER_FILTER_ADD_GAP,
     MAPPER_KNOB_H,
     MAPPER_LEARN_SLOTS,
     MAPPER_LINE_NO_DIGIT_PX,
@@ -6779,8 +6780,11 @@ def refresh_mapper_ui() -> None:
                 dpg.add_spacer(width=_mapper_row_lead_px(), parent=line)
                 _mapper_row_add(target_id, parent=line, height=row_height, line_index=row_no - 1)
         else:
-            # a State-only source keeps its line lead (number + thumbnail) without cards
-            lead_height = MAPPER_CTRL_H
+            # A State-only line — or a line whose Control band the filter hides —
+            # keeps its identity lead (number + thumbnail) without cards. The lead
+            # must fit the 70 px thumbnail: MAPPER_CTRL_H (14) clipped it to a
+            # sliver of image, which read as a graphical defect (e40s12).
+            lead_height = MAPPER_ROW_THUMB_H + 2
             line = dpg.add_group(horizontal=True, parent=block)
             _mapper_line_number(row_no, target_id, parent=line, height=lead_height)
             _mapper_row_thumb(target_id, parent=line, height=lead_height)
@@ -9372,8 +9376,10 @@ with (
             default_value=True,
             callback=on_mapper_filter,
         )
-        # e40s11: the GENERAL creator lives here, next to the chips; the box
-        # '+' of a line and of the Clock+Constant line are contextual.
+        # e40s11/e40s12: the GENERAL creator lives here, set apart from the
+        # Show chips and captioned, so it reads as an action and not a filter;
+        # the '+' of a line and of the Clock+Constant line stay contextual.
+        dpg.add_spacer(width=MAPPER_FILTER_ADD_GAP)
         dpg.add_button(
             label="+",
             width=MAPPER_ADD_W,
@@ -9381,6 +9387,7 @@ with (
             callback=open_mapping_creator,
             tag="mapper_filter_add",
         )
+        themed_text("New mapping", slot="text_dim")
         dpg.add_group(tag="mapper_filter_learn_slot", horizontal=True)
     # NOTE: a bare dpg.group(...) call does NOT create the item — the context
     # manager must be entered (dearpygui 2.x), same as the original tuple-with.

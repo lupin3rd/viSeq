@@ -222,6 +222,10 @@ MAPPER_LEARN_SLOTS = 4
 MAPPER_MARKER_W = 15
 MAPPER_MARKER_H = 15
 
+# e40s12: gap between the Mapper's Show chips and the general '+' creator, so
+# the create action reads as its own control and not as a fourth filter.
+MAPPER_FILTER_ADD_GAP = 24
+
 # e40s08: the per-source State band — a bordered box on the source line's OWN
 # sub-line (no line number) holding that source's State Mappings, plus a header
 # row ('State' + a small '+'). Height = the box WindowPadding air
