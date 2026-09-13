@@ -1103,15 +1103,16 @@ def save_current_project(sender: Any = None, app_data: Any = None, user_data: An
 
 
 def exit_app(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """viSeq > Exit menu voice: the dirty-gated close request (e19/e37s04)."""
+    """viSeq > Exit menu voice: the close request (e19/e37s04, always confirmed)."""
     request_exit()
 
 
-# e19/e37s04: exit confirmation — the modal is shared by viSeq > Exit and the
-# OS main-window X (set_exit_callback + disable_close), but it opens ONLY when
-# the project is dirty; a clean session quits immediately. ``_exiting_app``
-# guards the shutdown-time re-invocation of the exit callback (destroy_context
-# queues it again while tearing down, when no modal may be created).
+# e19/e37s04, e40s11: exit confirmation — the modal is shared by viSeq > Exit and
+# the OS main-window X (set_exit_callback + disable_close) and opens ALWAYS.
+# viSeq is a live-performance tool: the window X sits next to the controls, so a
+# stray click must never kill the session; the prompt names the dirty case.
+# ``_exiting_app`` guards the shutdown-time re-invocation of the exit callback
+# (destroy_context queues it again while tearing down, when no modal may exist).
 EXIT_CONFIRM_TAG = "exit_confirm_modal"
 
 
@@ -1119,22 +1120,28 @@ _exiting_app = False
 
 
 def request_exit(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Close request (menu Exit or the OS window X): ask when dirty, else quit (e37s04)."""
+    """Close request (menu Exit or the OS window X): ALWAYS confirm first (e40s11).
+
+    The dirty check is refreshed only to WORD the prompt: a clean session is
+    confirmed too, because a live tool must never close on a stray click.
+    """
     if _exiting_app:
         return  # already confirmed — destroy_context re-invokes the exit callback
     _sync_project_dirty()  # fresh dirt: the ~0.5 s cadence may lag a just-made edit
-    if state.project_dirty:
-        show_exit_confirm()
-    else:
-        confirm_exit()
+    show_exit_confirm()
 
 
 def show_exit_confirm(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Open the Exit-confirmation modal (called only when the project is dirty, e37s04)."""
+    """Open the Exit-confirmation modal (menu Exit, the OS window X, e37s04/e40s11)."""
     if _exiting_app:
         return  # already confirmed — destroy_context re-invokes the exit callback
     if dpg.does_item_exist(EXIT_CONFIRM_TAG):
         dpg.delete_item(EXIT_CONFIRM_TAG)
+    warning = (
+        "Any unsaved changes will be lost."
+        if state.project_dirty
+        else "The current session will close."
+    )
     with dpg.window(
         label="Exit viSeq",
         tag=EXIT_CONFIRM_TAG,
@@ -1144,7 +1151,7 @@ def show_exit_confirm(sender: Any = None, app_data: Any = None, user_data: Any =
         no_resize=True,
     ):
         themed_text("Close viSeq?", slot="text")
-        themed_text("Any unsaved changes will be lost.", slot="text_dim")
+        themed_text(warning, slot="text_dim")
         dpg.add_separator()
         with dpg.group(horizontal=True):
             dpg.add_button(label="Cancel", callback=cancel_exit, width=140)
@@ -3880,6 +3887,7 @@ def _refresh_learn_surfaces() -> None:
     _sync_sequencer_learn_strip()
     _sync_seq_row_learn_strip()
     _sync_monitor_learn_marker()
+    _sync_filter_learn_marker()
 
 
 def learn_marker(
@@ -4525,22 +4533,44 @@ def _exec_mapping_toggle(params: dict[str, Any], value: int) -> None:
 def _exec_mapping_add(params: dict[str, Any], value: int) -> None:
     """e40s08/e40s10: a momentary press opens the Mapping creator.
 
-    A ``line`` param anchors it to that Source line (resolved through
+    ``{"line": n}`` anchors it to that Source line (resolved through
     mapper.row_targets() at TRIGGER time — a binding never captures a volatile
-    source id); no ``line`` is the Global creator (every Type, the Source asked
-    when the Type needs one). A stale line index is a logged no-op.
+    source id), ``{"source_less": true}`` is the Clock+Constant creator and no
+    param is the general creator. A stale line index is a logged no-op.
     """
     if value < MIDI_CC_TRIGGER_THRESHOLD:
         return
-    if "line" not in params:
-        open_global_mapping_creator()
+    if "line" in params:
+        line = int(params.get("line", -1))
+        rows = mapper.row_targets()
+        if line < 0 or line >= len(rows):
+            _log_stale_midi_target(MIDI_ACTION_MAPPING_ADD, f"no line {line}")
+            return
+        open_line_mapping_creator(user_data=rows[line])
         return
-    line = int(params.get("line", -1))
-    rows = mapper.row_targets()
-    if line < 0 or line >= len(rows):
-        _log_stale_midi_target(MIDI_ACTION_MAPPING_ADD, f"no line {line}")
+    if params.get("source_less"):
+        open_source_less_mapping_creator()
         return
-    open_line_mapping_creator(user_data=rows[line])
+    open_mapping_creator()
+
+
+def _sync_filter_learn_marker() -> None:
+    """(Re)render the filter bar's create-action learn marker (e40s11, e33 rule).
+
+    The filter bar is built once at boot, so its marker cannot be emitted
+    conditionally at render time like the body's; this slot is re-rendered on
+    every learn transition, next to the general '+'.
+    """
+    if not dpg.does_item_exist("mapper_filter_learn_slot"):
+        return
+    dpg.delete_item("mapper_filter_learn_slot", children_only=True)
+    if state.midi_learn_mode:
+        learn_marker(
+            MIDI_ACTION_MAPPING_ADD,
+            {},
+            parent="mapper_filter_learn_slot",
+            tag="mapper_mk_filter",
+        )
 
 
 def _sync_monitor_learn_marker() -> None:
@@ -5949,11 +5979,11 @@ def _render_mapping_row(mapping: dict[str, Any], parent: Any) -> None:
             )
 
 
-def _mapper_state_box_height(mapping_count: int) -> int:
-    """Fixed height of one source's State box (e40s08).
+def _mapping_box_height(mapping_count: int) -> int:
+    """Fixed height of one Mapping box (e40s08, e40s11).
 
     A bordered child_window (WindowPadding 4 per side = MAPPER_ROW_PAD_V of air)
-    holding the header row and one row per State Mapping, separated by
+    holding the header row and one row per Mapping, separated by
     MAPPER_ROW_GAP. Rows are height-constant (MAPPER_STATE_BOX_ROW_H), so the
     box never needs scrolling. Measured against real DPG 2.3.1 on the rig: the
     formula is exact (content == box minus the padding) at every row count.
@@ -5964,6 +5994,36 @@ def _mapper_state_box_height(mapping_count: int) -> int:
         + MAPPER_STATE_BOX_HEADER_H
         + rows * (MAPPER_STATE_BOX_ROW_H + MAPPER_ROW_GAP)
     )
+
+
+def _render_mapping_box(
+    box_tag: str,
+    head_tag: str,
+    label: str,
+    mappings: list[dict[str, Any]],
+    parent: Any,
+    head_extra: Callable[[], None],
+) -> None:
+    """A bordered box holding Mappings under a header (e40s08, e40s11).
+
+    Every Mapping family renders in the SAME box shape — the per-source State
+    band and the source-less Clock+Constant line — so the Mapper reads as one
+    surface. ``head_extra`` adds the header's buttons/markers inside the header
+    row (it must parent them to ``head_tag``).
+    """
+    with dpg.child_window(
+        parent=parent,
+        width=0,
+        height=_mapping_box_height(len(mappings)),
+        border=True,
+        no_scrollbar=True,
+        tag=box_tag,
+    ):
+        with dpg.group(horizontal=True, tag=head_tag):
+            themed_text(label, slot="text_dim")
+            head_extra()
+        for mapping in mappings:
+            _render_mapping_row(mapping, parent=box_tag)
 
 
 def _render_state_box(
@@ -5978,35 +6038,26 @@ def _render_state_box(
     header '+' adds a State Mapping to THIS source. An orphan Mapping (its source is
     gone) stays here, disabled, and resumes when the source returns.
     """
-    box_tag = f"mapper_state_box_{target_id}"
     head_tag = f"mapper_state_head_{target_id}"
-    with dpg.child_window(
-        parent=parent,
-        width=0,
-        height=_mapper_state_box_height(len(mappings)),
-        border=True,
-        no_scrollbar=True,
-        tag=box_tag,
-    ):
-        with dpg.group(horizontal=True, tag=head_tag):
-            themed_text("State", slot="text_dim")
-            dpg.add_button(
-                label="+",
-                width=MAPPER_X_W,
-                height=MAPPER_X_H,
-                callback=open_line_mapping_creator,
-                user_data=target_id,
-                tag=f"mapper_state_add_{target_id}",
+
+    def head() -> None:
+        dpg.add_button(
+            label="+",
+            width=MAPPER_X_W,
+            height=MAPPER_X_H,
+            callback=open_line_mapping_creator,
+            user_data=target_id,
+            tag=f"mapper_state_add_{target_id}",
+        )
+        if state.midi_learn_mode:  # e33 rule: the add action is MIDI-mappable
+            learn_marker(
+                MIDI_ACTION_MAPPING_ADD,
+                {"line": line_index},
+                parent=head_tag,
+                tag=f"mapper_state_mk_{target_id}",
             )
-            if state.midi_learn_mode:  # e33 rule: the add action is MIDI-mappable
-                learn_marker(
-                    MIDI_ACTION_MAPPING_ADD,
-                    {"line": line_index},
-                    parent=head_tag,
-                    tag=f"mapper_state_mk_{target_id}",
-                )
-        for mapping in mappings:
-            _render_mapping_row(mapping, parent=box_tag)
+
+    _render_mapping_box(f"mapper_state_box_{target_id}", head_tag, "State", mappings, parent, head)
 
 
 def on_mapping_enable(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -6042,6 +6093,7 @@ def delete_mapping(sender: Any = None, app_data: Any = None, user_data: Any = No
 # are created from the Global "+" only.
 MAPPER_EDITOR_TAG = "mapper_mapping_window"
 MAPPER_SOURCE_BOUND_ORIGINS: tuple[str, ...] = (ORIGIN_CONTROL, ORIGIN_STATE)
+MAPPER_SOURCE_LESS_ORIGINS: tuple[str, ...] = (ORIGIN_CLOCK, ORIGIN_CONST)
 MAPPER_ALL_ORIGINS: tuple[str, ...] = (
     ORIGIN_CONTROL,
     ORIGIN_STATE,
@@ -6067,11 +6119,20 @@ def open_line_mapping_creator(
     _open_mapping_editor(None, target_id=target_id, origins=MAPPER_SOURCE_BOUND_ORIGINS)
 
 
-def open_global_mapping_creator(
+def open_mapping_creator(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """The filter bar's '+': the GENERAL creator for every Type (e40s10, e40s11).
+
+    It sits next to the Show chips and is the only truly general entry: any
+    Type, the Source asked when the Type is source-bound.
+    """
+    _open_mapping_editor(None, target_id=None, origins=MAPPER_ALL_ORIGINS)
+
+
+def open_source_less_mapping_creator(
     sender: Any = None, app_data: Any = None, user_data: Any = None
 ) -> None:
-    """The Global line's '+': the general creator for every Type (e40s10)."""
-    _open_mapping_editor(None, target_id=None, origins=MAPPER_ALL_ORIGINS)
+    """The Clock+Constant box '+': only the source-less Types (e40s11)."""
+    _open_mapping_editor(None, target_id=None, origins=MAPPER_SOURCE_LESS_ORIGINS)
 
 
 def open_mapping_editor(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -6562,33 +6623,38 @@ def mapping_editor_confirm(sender: Any = None, app_data: Any = None, user_data: 
 
 
 def _render_global_block(global_mappings: list[dict[str, Any]]) -> None:
-    """The Global line's header + its source-less Mappings (e40s01, e40s10).
+    """The source-less (Clock/Constant) Mappings in their own box (e40s01, e40s11).
 
-    Its '+' is the GENERAL creator: every Type, and the Source is asked when the
-    Type needs one — which is also how a NEW Source line starts (a Line exists
-    only if some Mapping already names its Source). The header is rendered even
-    when the line is empty, so Clock/Constant (and a brand-new source) are
-    always creatable.
+    Rendered even when empty so its '+' is always reachable: that '+' offers
+    ONLY Clock and Constant (the general creator lives in the filter bar). The
+    box is the same shape as the per-source State band, for a uniform surface.
     """
-    global_block = dpg.add_group(parent="mapper_mappings_group", tag="mapper_global_block")
-    with dpg.group(horizontal=True, parent=global_block, tag="mapper_global_head"):
-        themed_text("Clock+Constant", slot="text_dim")
+    head_tag = "mapper_global_head"
+
+    def head() -> None:
         dpg.add_button(
             label="+",
             width=MAPPER_X_W,
             height=MAPPER_X_H,
-            callback=open_global_mapping_creator,
+            callback=open_source_less_mapping_creator,
             tag="mapper_global_add",
         )
-        if state.midi_learn_mode:  # e33 rule: the general creator is mappable
+        if state.midi_learn_mode:  # e33 rule: the source-less creator is mappable
             learn_marker(
                 MIDI_ACTION_MAPPING_ADD,
-                {},
-                parent="mapper_global_head",
+                {"source_less": True},
+                parent=head_tag,
                 tag="mapper_mk_global",
             )
-    for mapping in global_mappings:
-        _render_mapping_row(mapping, parent=global_block)
+
+    _render_mapping_box(
+        "mapper_global_block",
+        head_tag,
+        "Clock+Constant",
+        global_mappings,
+        "mapper_mappings_group",
+        head,
+    )
 
 
 def refresh_mapper_ui() -> None:
@@ -9306,6 +9372,16 @@ with (
             default_value=True,
             callback=on_mapper_filter,
         )
+        # e40s11: the GENERAL creator lives here, next to the chips; the box
+        # '+' of a line and of the Clock+Constant line are contextual.
+        dpg.add_button(
+            label="+",
+            width=MAPPER_ADD_W,
+            height=MAPPER_ADD_H,
+            callback=open_mapping_creator,
+            tag="mapper_filter_add",
+        )
+        dpg.add_group(tag="mapper_filter_learn_slot", horizontal=True)
     # NOTE: a bare dpg.group(...) call does NOT create the item — the context
     # manager must be entered (dearpygui 2.x), same as the original tuple-with.
     with dpg.group(tag="mapper_mappings_group"):
