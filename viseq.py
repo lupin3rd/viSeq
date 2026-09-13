@@ -20,7 +20,18 @@ from PIL import Image
 from pythonosc import dispatcher, udp_client
 
 import viseqapp  # noqa: F401  scaffold hook (REFACTOR_LATEST.md commit 1): proves the package import path works at boot
-from viseqapp import actions, catalog, cue, emission, leap, mapper, midimonitor, preview, state
+from viseqapp import (
+    actions,
+    catalog,
+    cue,
+    emission,
+    leap,
+    mapper,
+    midimonitor,
+    osc,
+    preview,
+    state,
+)
 from viseqapp.audio import (
     _set_band_variable,
     apply_spectrum_agc,
@@ -144,11 +155,14 @@ from viseqapp.constants import (
     MIDI_LEARN_TIMEOUT_SECONDS,
     MIDI_MONITOR_DIRECTION_IN,
     MIDI_MONITOR_DIRECTION_OUT,
+    MIDI_MONITOR_KIND_FADE,
     MIDI_MONITOR_OUTCOME_LEARN,
     MIDI_MONITOR_OUTCOME_MATCH,
     MIDI_MONITOR_OUTCOME_NOBIND,
     MIDI_MONITOR_OUTCOME_NOMATCH,
     MIDI_MONITOR_REFRESH_INTERVAL,
+    MIDI_MONITOR_TRANSPORT_MIDI,
+    MIDI_MONITOR_TRANSPORT_OSC,
     MIDI_OPEN_RETRY_COOLDOWN_SECONDS,
     NUM_STEPS,
     NUM_TRACKS,
@@ -3360,7 +3374,9 @@ def toggle_local_server() -> None:
 def connect_osc_client(ip: str, port: int) -> bool:
     """Create the viOSC client (main thread); True when ready."""
     try:
-        state.viosc_client = udp_client.SimpleUDPClient(ip, port)
+        state.viosc_client = osc.observe_client(
+            udp_client.SimpleUDPClient(ip, port), f"{ip}:{port}"
+        )
         dpg.set_value("viosc_status", f"Client Status: Ready on {ip}:{port}")
         return True
     except Exception:
@@ -4375,6 +4391,9 @@ _midi_monitor_port: str | None = None
 _midi_monitor_ports: list[str] = []
 # e39s05: the direction filter — None = both, else MIDI_MONITOR_DIRECTION_IN/OUT.
 _midi_monitor_direction: str | None = None
+# e39s05: the transport filter — None = both, else MIDI_MONITOR_TRANSPORT_MIDI/OSC.
+_midi_monitor_transport: str | None = None
+_midi_monitor_transports: list[str] = []
 _midi_monitor_filter_control: tuple[str, str, int, int, str] | None = None
 _midi_monitor_control_items: dict[str, tuple[str, str, int, int, str]] = {}
 _midi_monitor_mapping_items: dict[str, int] = {}
@@ -4409,9 +4428,33 @@ def on_midi_monitor_direction(
     refresh_midi_monitor()
 
 
+MIDI_MONITOR_TRANSPORT_BOTH = "MIDI + OSC"
+_MIDI_MONITOR_TRANSPORT_LABELS: dict[str, str | None] = {
+    MIDI_MONITOR_TRANSPORT_BOTH: None,
+    "MIDI only": MIDI_MONITOR_TRANSPORT_MIDI,
+    "OSC only": MIDI_MONITOR_TRANSPORT_OSC,
+}
+
+
+def on_midi_monitor_transport(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Transport combo: MIDI, OSC or both in the stream (e39s05)."""
+    global _midi_monitor_transport
+    _midi_monitor_transport = _MIDI_MONITOR_TRANSPORT_LABELS.get(
+        str(app_data or MIDI_MONITOR_TRANSPORT_BOTH)
+    )
+    refresh_midi_monitor()
+
+
 def _midi_monitor_port_options() -> list[str]:
-    """The port-filter options: 'All ports' plus every port seen or configured."""
+    """The Peer-filter options: 'All peers' plus every peer seen or configured.
+
+    e39s05: it lists the MIDI ports AND the OSC peers (host:port) seen in the
+    stream, so the filter covers both transports.
+    """
     ports = {str(row["port"]) for row in midimonitor.snapshot_controls()}
+    ports.update(midimonitor.peers())
     ports.update(str(c.get("port", "")) for c in midi_controllers if c.get("port"))
     return [MIDI_MONITOR_ALL_PORTS, *sorted(p for p in ports if p)]
 
@@ -4489,7 +4532,7 @@ def _build_midi_monitor_window() -> None:
             dpg.add_button(label="Clear", callback=clear_midi_monitor)
             dpg.add_button(label="Reset stats", callback=reset_midi_monitor_stats)
             dpg.add_button(label="Copy report", callback=copy_midi_monitor_report)
-            themed_text("Port", slot="text_dim")
+            themed_text("Peer", slot="text_dim")
             dpg.add_combo(
                 items=_midi_monitor_port_options(),
                 default_value=MIDI_MONITOR_ALL_PORTS,
@@ -4505,6 +4548,14 @@ def _build_midi_monitor_window() -> None:
                 width=110,
                 tag="midi_monitor_direction",
                 callback=on_midi_monitor_direction,
+            )
+            themed_text("Transport", slot="text_dim")
+            dpg.add_combo(
+                items=list(_MIDI_MONITOR_TRANSPORT_LABELS),
+                default_value=MIDI_MONITOR_TRANSPORT_BOTH,
+                width=130,
+                tag="midi_monitor_transport",
+                callback=on_midi_monitor_transport,
             )
             dpg.add_group(tag="midi_monitor_learn_slot", horizontal=True)
         with dpg.group(horizontal=True):
@@ -4673,7 +4724,10 @@ def _midi_monitor_texts() -> tuple[str, str]:
     port = _midi_monitor_port
     stream = midimonitor.format_stream(
         midimonitor.snapshot_stream(
-            port=port, control=_midi_monitor_filter_control, direction=_midi_monitor_direction
+            port=port,
+            control=_midi_monitor_filter_control,
+            direction=_midi_monitor_direction,
+            transport=_midi_monitor_transport,
         )
     )
     return stream, midimonitor.format_controls(midimonitor.snapshot_controls(port=port))
@@ -8524,7 +8578,8 @@ def fade_tick_loop() -> None:
                                 fade["start_val"] + (fade["end_val"] - fade["start_val"]) * progress
                             )
                             try:
-                                osc_client.send_message(fade["address"], float(val))
+                                with osc.sent_by(MIDI_MONITOR_KIND_FADE):
+                                    osc_client.send_message(fade["address"], float(val))
                                 append_log("OUT", f"{fade['address']} [FADE: {val:.2f}]")
                             except Exception:
                                 pass

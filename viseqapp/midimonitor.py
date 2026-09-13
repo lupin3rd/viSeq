@@ -31,9 +31,12 @@ from viseqapp.constants import (
     MIDI_MONITOR_KIND_MIDI_IN,
     MIDI_MONITOR_KIND_MIDI_OUT,
     MIDI_MONITOR_NEUTRAL_CENTRE,
+    MIDI_MONITOR_OUTCOME_RECV,
     MIDI_MONITOR_OUTCOME_SENT,
     MIDI_MONITOR_STREAM_LIMIT,
+    MIDI_MONITOR_SUMMARY_TEXT_MAX,
     MIDI_MONITOR_TRANSPORT_MIDI,
+    MIDI_MONITOR_TRANSPORT_OSC,
     MIDI_MONITOR_VALUE_MAX,
 )
 
@@ -46,6 +49,8 @@ __all__ = [
     "format_report",
     "format_stream",
     "normalize_value",
+    "peers",
+    "record_osc",
     "record_rx",
     "record_tx",
     "reset_controls",
@@ -53,6 +58,7 @@ __all__ = [
     "snapshot_controls",
     "snapshot_stream",
     "stats",
+    "summarize_osc_args",
 ]
 
 # Oldest-first; newest entries are at the end (snapshots reverse for display).
@@ -75,6 +81,69 @@ def control_key(
     envelope between them would make the calibration table meaningless.
     """
     return (str(port), str(msg_type), int(channel), int(number), str(direction))
+
+
+def summarize_osc_args(args: Any) -> str:
+    """A bounded, human summary of an OSC payload (e39s05).
+
+    The payload itself is NEVER stored: a short scalar list is shown (that IS the
+    interesting bit), a long text/blob collapses to its size, and a mixed list to
+    its arity. This is what keeps a per-frame fade from ballooning memory.
+    """
+    if args is None:
+        return "no args"
+    if isinstance(args, (bool, int, float)):
+        return f"{float(args):.3f}"
+    if isinstance(args, (bytes, bytearray)):
+        return f"blob {len(args)} B"
+    if isinstance(args, str):
+        return args if len(args) <= MIDI_MONITOR_SUMMARY_TEXT_MAX else f"text {len(args)} B"
+    if isinstance(args, (list, tuple)):
+        if not args:
+            return "no args"
+        if all(isinstance(a, (bool, int, float)) for a in args):
+            if len(args) <= 4:
+                return ", ".join(f"{float(a):.3f}" for a in args)
+            return f"{len(args)} values"
+        return f"{len(args)} args"
+    return str(type(args).__name__)
+
+
+def record_osc(
+    direction: str,
+    kind: str,
+    address: str,
+    detail: str = "",
+    peer: str = "",
+    now: float | None = None,
+) -> None:
+    """Record one OSC entry in the stream (e39s05) — payload never retained.
+
+    OSC does NOT feed the coalesced control table: that is the MIDI learn and
+    calibration instrument (e39s02/e39s03), and an OSC address is not a control.
+    The chatty senders are handled by the stream's consecutive-message collapse
+    (see ``_append_stream``): a fade at 60 Hz becomes one row with a count.
+    """
+    ts = time.time() if now is None else float(now)
+    _append_stream(
+        {
+            "ts": ts,
+            "transport": MIDI_MONITOR_TRANSPORT_OSC,
+            "direction": str(direction),
+            "kind": str(kind),
+            "port": str(peer),
+            "type": "osc",
+            "channel": 0,
+            "number": 0,
+            "value": 0.0,
+            "normalized": 0.0,
+            "outcome": MIDI_MONITOR_OUTCOME_RECV
+            if direction == MIDI_MONITOR_DIRECTION_IN
+            else MIDI_MONITOR_OUTCOME_SENT,
+            "detail": f"{address}{f' ({detail})' if detail else ''}",
+            "subject": str(address),
+        }
+    )
 
 
 def control_id(control: tuple[str, str, int, int, str]) -> str:
@@ -186,9 +255,8 @@ def _record(
         "outcome": str(outcome),
         "detail": str(detail),
     }
-    _stream.append(entry)
-    if len(_stream) > MIDI_MONITOR_STREAM_LIMIT:
-        del _stream[: len(_stream) - MIDI_MONITOR_STREAM_LIMIT]
+    entry["subject"] = f"{key[0]} {key[1]} ch{key[2]} #{key[3]}"
+    _append_stream(entry)
     row = _controls.get(key)
     if row is None:
         _controls[key] = {
@@ -209,6 +277,38 @@ def _record(
     _revision += 1
 
 
+def _append_stream(entry: dict[str, Any]) -> None:
+    """Append one entry, capped, collapsing a CONSECUTIVE identical OSC message.
+
+    e39s05: a per-frame fade, a BPM sequencer row and the 2 s state mirror would
+    otherwise own the whole stream. Two consecutive OSC entries with the same
+    (direction, kind, peer, subject) become ONE row whose count grows, so the pane
+    keeps saying "this is happening N times right now" instead of scrolling.
+    MIDI entries never collapse (one physical event is one entry, and the
+    calibration table already coalesces them per control).
+    """
+    global _revision
+    last = _stream[-1] if _stream else None
+    if (
+        last is not None
+        and entry["transport"] == MIDI_MONITOR_TRANSPORT_OSC
+        and last.get("transport") == MIDI_MONITOR_TRANSPORT_OSC
+        and (last.get("direction"), last.get("kind"), last.get("port"), last.get("subject"))
+        == (entry["direction"], entry["kind"], entry["port"], entry["subject"])
+    ):
+        last["repeat"] = int(last.get("repeat", 1)) + 1
+        last["ts"] = entry["ts"]
+        last["value"] = entry["value"]
+        last["outcome"] = entry["outcome"]
+        _revision += 1
+        return
+    entry.setdefault("repeat", 1)
+    _stream.append(entry)
+    if len(_stream) > MIDI_MONITOR_STREAM_LIMIT:
+        del _stream[: len(_stream) - MIDI_MONITOR_STREAM_LIMIT]
+    _revision += 1
+
+
 def _evict_controls() -> None:
     """Keep the control table bounded by dropping the least recently seen row."""
     while len(_controls) > MIDI_MONITOR_CONTROL_LIMIT:
@@ -220,13 +320,24 @@ def snapshot_stream(
     port: str | None = None,
     control: tuple[str, str, int, int, str] | None = None,
     direction: str | None = None,
+    transport: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Newest-first stream entries, filtered by port, control and/or direction."""
+    """Newest-first stream entries, filtered by peer, control, direction, transport."""
     return [
         dict(entry)
         for entry in reversed(_stream)
-        if _entry_matches(entry, port, control, direction)
+        if _entry_matches(entry, port, control, direction, transport)
     ]
+
+
+def peers() -> list[str]:
+    """The distinct peers seen so far (MIDI ports and OSC host:port), sorted.
+
+    e39s05: the window's Peer filter lists these beside the configured MIDI ports,
+    so an OSC destination you sent to once is selectable without retyping it.
+    """
+    seen = {str(entry["port"]) for entry in _stream if entry.get("port")}
+    return sorted(seen)
 
 
 def _entry_matches(
@@ -234,11 +345,14 @@ def _entry_matches(
     port: str | None,
     control: tuple[str, str, int, int, str] | None,
     direction: str | None = None,
+    transport: str | None = None,
 ) -> bool:
-    """True when a stream entry passes the active port/control/direction filters."""
+    """True when a stream entry passes the active peer/control/direction/transport filters."""
     if port is not None and entry["port"] != port:
         return False
     if direction is not None and entry["direction"] != direction:
+        return False
+    if transport is not None and entry["transport"] != transport:
         return False
     if control is None:
         return True
@@ -312,18 +426,26 @@ def format_stream(entries: list[dict[str, Any]]) -> str:
         return "No traffic yet."
     lines = ["TIME      DIR  KIND     PORT            TYPE  CH  NUM   RAW  NORM   OUTCOME  DETAIL"]
     for entry in entries:
+        # an OSC entry has no channel/number/value: those columns stay BLANK, so an
+        # OSC row does not read as a pile of zeros (e39s05)
+        midi_columns = (
+            f"{int(entry['channel']):>2}  "
+            f"{int(entry['number']):>3}  "
+            f"{float(entry['value']):>4.0f}  "
+            f"{float(entry['normalized']):>5.2f}  "
+            if entry["transport"] == MIDI_MONITOR_TRANSPORT_MIDI
+            else f"{'':>2}  {'':>3}  {'':>4}  {'':>5}  "
+        )
         lines.append(
             f"{time.strftime('%H:%M:%S', time.localtime(float(entry['ts'])))}  "
             f"{entry['direction']!s:<3}  "
             f"{str(entry['kind'])[:8]:<8} "
             f"{str(entry['port'])[:15]:<15} "
             f"{str(entry['type'])[:4]:<4}  "
-            f"{int(entry['channel']):>2}  "
-            f"{int(entry['number']):>3}  "
-            f"{float(entry['value']):>4.0f}  "
-            f"{float(entry['normalized']):>5.2f}  "
+            f"{midi_columns}"
             f"{entry['outcome']!s:<7}  "
             f"{entry['detail']}"
+            f"{f'  x{entry["repeat"]}' if int(entry.get('repeat', 1)) > 1 else ''}"
         )
     return "\n".join(lines)
 

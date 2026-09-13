@@ -9,23 +9,34 @@ import random
 import time
 from typing import Any
 
-from viseqapp import catalog, state
+from viseqapp import catalog, osc, state
 from viseqapp.constants import (
     BEAT_SOURCE_BAND1,
     BEAT_SOURCE_MANUAL,
     BEAT_SOURCE_MIDI,
     BPM_DETECTION_STALE_SECONDS,
+    MIDI_MONITOR_KIND_SEQUENCER,
 )
 from viseqapp.osc import osc_client
 from viseqapp.palette import dpg_color_rgba
 from viseqapp.queues import append_log, enqueue_set_value
 
 
+def _send(address: str, args: Any) -> None:
+    """Send one sequencer OSC message, tagged for the I/O Monitor (e39s05).
+
+    A sequencer step and a fade both write ``/vimix/...``: the ADDRESS says what
+    it is, the KIND says why it exists, and only the caller knows that.
+    """
+    with osc.sent_by(MIDI_MONITOR_KIND_SEQUENCER):
+        osc_client.send_message(address, args)
+
+
 def send_colorv_step(track: dict[str, Any], row: int, col: int) -> None:
     """Send the picked RGB (0..1) for a ColorV step (HIGH-1 safe)."""
     target_addr = f"{track['base_address']}/color"
     r_val, g_val, b_val = [float(c) for c in track["steps"][col]["color"]]
-    osc_client.send_message(target_addr, [r_val, g_val, b_val])
+    _send(target_addr, [r_val, g_val, b_val])
     append_log("OUT", f"{target_addr} [{r_val:.2f}, {g_val:.2f}, {b_val:.2f}]")
 
 
@@ -37,7 +48,7 @@ def send_colorr_step(track: dict[str, Any], row: int, col: int) -> None:
         random.uniform(0.0, 1.0),
         random.uniform(0.0, 1.0),
     )
-    osc_client.send_message(target_addr, [r_val, g_val, b_val])
+    _send(target_addr, [r_val, g_val, b_val])
     append_log("OUT", f"{target_addr} [{r_val:.2f}, {g_val:.2f}, {b_val:.2f}]")
 
     step_data = track["steps"][col]
@@ -50,7 +61,7 @@ def send_seekr_step(track: dict[str, Any], row: int, col: int) -> None:
     """Send a random seek (0..1) for a SeekR step and show the value in the cell."""
     target_addr = f"{track['base_address']}/seek"
     rand_val = random.uniform(0.0, 1.0)
-    osc_client.send_message(target_addr, float(rand_val))
+    _send(target_addr, float(rand_val))
     append_log("OUT", f"{target_addr} [{rand_val:.2f}]")
 
     step_data = track["steps"][col]
@@ -238,16 +249,16 @@ def execute_step(
             # single flag makes the no-argument form a no-op (BUG-2026-09-12)
             value = float(raw) if raw is not None else -1.0
             flag_id = float(round(max(lo, min(hi, value))))
-            osc_client.send_message(target_addr, flag_id)
+            _send(target_addr, flag_id)
             append_log("OUT", f"{target_addr} [{flag_id:.0f}]")
         else:
             val = max(lo, min(hi, float(raw or 0.0)))
-            osc_client.send_message(target_addr, float(val))
+            _send(target_addr, float(val))
             append_log("OUT", f"{target_addr} [{val:.2f}]")
 
     elif mode == "random":
         rand_val = random.uniform(lo, hi)
-        osc_client.send_message(target_addr, float(rand_val))
+        _send(target_addr, float(rand_val))
         append_log("OUT", f"{target_addr} [{rand_val:.2f}]")
         step_data["last_rand_v1"] = rand_val
         enqueue_set_value(_rand_tag(row, col), f"{rand_val:.2f}")
@@ -272,17 +283,17 @@ def execute_step(
             "start_time": time.time(),
             "last_msg_index": 0,
         }
-        osc_client.send_message(target_addr, float(start_val))
+        _send(target_addr, float(start_val))
         append_log("OUT", f"{target_addr} [FADE START: {start_val:.2f}]")
 
     elif mode == "fire":
         family = catalog.family_of(prop)
         if family == catalog.FAMILY_TOGGLE:
             val = max(0.0, min(1.0, float(step_data.get("v1") or 0.0)))
-            osc_client.send_message(target_addr, float(val))
+            _send(target_addr, float(val))
             append_log("OUT", f"{target_addr} [{val:.2f}]")
         else:  # trigger: replay/reset/reload no-arg
-            osc_client.send_message(target_addr, [])
+            _send(target_addr, [])
             append_log("OUT", f"{target_addr} (fire)")
 
     elif mode == "cycle":
@@ -292,6 +303,6 @@ def execute_step(
         last = int(raw) if raw is not None else -1
         index = (last + 1) % count
         step_data["last_idx"] = index
-        osc_client.send_message(target_addr, float(index))
+        _send(target_addr, float(index))
         append_log("OUT", f"{target_addr} [{index}.00]")
         enqueue_set_value(_rand_tag(row, col), f"{index}")

@@ -469,6 +469,23 @@ MIDI_MONITOR_DIRECTIONS: tuple[str, ...] = (
 )
 MIDI_MONITOR_KIND_MIDI_IN = "midi_in"
 MIDI_MONITOR_KIND_MIDI_OUT = "midi_out"
+# e39s05: the OSC kinds say WHY a message exists (the address says what it is).
+MIDI_MONITOR_KIND_VIOSC = "viosc"
+MIDI_MONITOR_KIND_VIMIX = "vimix"
+MIDI_MONITOR_KIND_SYNC = "viosc_sync"
+MIDI_MONITOR_KIND_MONITOR = "viosc_monitor"
+MIDI_MONITOR_KIND_WATCH = "viosc_watch"
+MIDI_MONITOR_KIND_WATCH_REPLY = "watch_reply"
+MIDI_MONITOR_KIND_STATE = "state_broadcast"
+MIDI_MONITOR_KIND_THUMBNAIL = "thumbnail"
+MIDI_MONITOR_KIND_DESTINATION = "destination"
+MIDI_MONITOR_KIND_FADE = "fade"
+MIDI_MONITOR_KIND_SEQUENCER = "sequencer"
+MIDI_MONITOR_KIND_CUE = "cue"
+MIDI_MONITOR_KIND_OSC = "osc"
+MIDI_MONITOR_OUTCOME_RECV = "RECV"
+# e39s05: a SHORT text/byte arg is summarised by size only beyond this many chars.
+MIDI_MONITOR_SUMMARY_TEXT_MAX = 48
 
 MIDI_MONITOR_STREAM_LIMIT = 400  # newest stream entries kept
 MIDI_MONITOR_CONTROL_LIMIT = 256  # distinct controls tracked (oldest activity evicted)

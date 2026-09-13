@@ -8,25 +8,41 @@ UI status wiring (server/client buttons) and reply rendering stay in the
 composition root until the ui commit.
 """
 
+import contextlib
+import contextvars
 import io
+from collections.abc import Iterator
 from typing import Any
 
 import numpy as np
 from PIL import Image
 from pythonosc import osc_server, udp_client
 
-from viseqapp import state
+from viseqapp import midimonitor, state
 from viseqapp.constants import (
     MAPPING_OSC_MAX_PORT,
     MAX_STATE_JSON_BYTES,
     MAX_THUMBNAIL_BLOB_BYTES,
     MAX_THUMBNAIL_PIXELS,
+    MIDI_MONITOR_DIRECTION_IN,
+    MIDI_MONITOR_DIRECTION_OUT,
+    MIDI_MONITOR_KIND_DESTINATION,
+    MIDI_MONITOR_KIND_MONITOR,
+    MIDI_MONITOR_KIND_OSC,
+    MIDI_MONITOR_KIND_STATE,
+    MIDI_MONITOR_KIND_SYNC,
+    MIDI_MONITOR_KIND_THUMBNAIL,
+    MIDI_MONITOR_KIND_VIMIX,
+    MIDI_MONITOR_KIND_VIOSC,
+    MIDI_MONITOR_KIND_WATCH,
+    MIDI_MONITOR_KIND_WATCH_REPLY,
     VIOSC_IP,
     VIOSC_PORT,
 )
 from viseqapp.queues import append_log, log_error
 
-osc_client = udp_client.SimpleUDPClient(VIOSC_IP, VIOSC_PORT)
+# NOTE: the client is created at the END of the module, once observe_client
+# exists (the wrapper is defined further down with the I/O Monitor plumbing).
 
 
 ALL_PROPERTIES = [
@@ -100,8 +116,61 @@ def find_source_by_name(name: str) -> Any:
     return None, None
 
 
+def _reply_detail(address: str, args: Any) -> str:
+    """The DETAIL of one incoming OSC entry (e39s05).
+
+    The ADDRESS decides, not the payload shape: the state table and a thumbnail
+    are reported by SIZE whatever their length (a short JSON is still a payload
+    the Monitor must not retain), while the watch lane keeps its values because
+    they are exactly what you debug when a LED stutters.
+    """
+    if address == "/viosc/replydata" and args:
+        return f"state table {len(args[0])} B"
+    if address.startswith("/viosc/replythumb/") and args:
+        return f"thumb {len(args[0])} B"
+    if isinstance(args, (list, tuple)) and len(args) >= 2:
+        pairs = [
+            f"{args[i]}={float(args[i + 1]):.2f}"
+            for i in range(0, len(args) - 1, 2)
+            if isinstance(args[i + 1], (int, float))
+        ]
+        if pairs:
+            return " ".join(pairs[:6])
+    return midimonitor.summarize_osc_args(args)
+
+
+def _incoming_kind(address: str) -> str:
+    """The monitor kind of an incoming OSC address (e39s05)."""
+    if address == "/viosc/replydata":
+        return MIDI_MONITOR_KIND_STATE
+    if address.startswith("/viosc/replythumb/"):
+        return MIDI_MONITOR_KIND_THUMBNAIL
+    if address.startswith("/viosc/reply/"):
+        return MIDI_MONITOR_KIND_WATCH_REPLY
+    return MIDI_MONITOR_KIND_OSC
+
+
+def listen_peer() -> str:
+    """The 'host:port' the local OSC server listens on (the Monitor's Peer column)."""
+    server = state.local_osc_server
+    address = getattr(server, "server_address", None)
+    if isinstance(address, tuple) and len(address) == 2:
+        return f"{address[0]}:{address[1]}"
+    return "osc-in"
+
+
 def incoming_osc_handler(address: str, *args: Any) -> None:
     append_log("IN ", address)
+    try:
+        midimonitor.record_osc(
+            MIDI_MONITOR_DIRECTION_IN,
+            _incoming_kind(address),
+            address,
+            _reply_detail(address, args),
+            listen_peer(),
+        )
+    except Exception as e:  # observation must never break the receive path
+        log_error("OSC monitor", str(e))
     try:
         if address == "/viosc/replydata" and args and len(args[0]) <= MAX_STATE_JSON_BYTES:
             state.ui_state_queue.put(args[0])
@@ -138,6 +207,105 @@ class ViseqOSCUDPServer(osc_server.ThreadingOSCUDPServer):
 # /vimix traffic never goes through here.
 
 _mapping_clients: dict[tuple[str, int], Any] = {}
+
+
+_OSC_KIND_BY_PREFIX: tuple[tuple[str, str], ...] = (
+    ("/vimix/", MIDI_MONITOR_KIND_VIMIX),
+    ("/viosc/watch/", MIDI_MONITOR_KIND_WATCH),
+    ("/viosc/sync/", MIDI_MONITOR_KIND_SYNC),
+    ("/viosc/monitor", MIDI_MONITOR_KIND_MONITOR),
+    ("/viosc/", MIDI_MONITOR_KIND_VIOSC),
+)
+
+
+def kind_of(address: str) -> str:
+    """The monitor kind of an outgoing OSC address (e39s05).
+
+    The address says WHAT the message is; the kind says WHY it exists, so the
+    chatty or instrumental senders (fade, sequencer, cue, a third-party
+    Destination) pass their own kind explicitly instead of relying on this table.
+    """
+    for prefix, kind in _OSC_KIND_BY_PREFIX:
+        if address.startswith(prefix):
+            return kind
+    return MIDI_MONITOR_KIND_OSC
+
+
+def viosc_peer() -> str:
+    """The 'host:port' of the configured viOSC client (the Monitor's Peer column)."""
+    client = state.viosc_client or osc_client
+    host = getattr(client, "_address", None) or VIOSC_IP
+    port = getattr(client, "_port", None) or VIOSC_PORT
+    return f"{host}:{port}"
+
+
+# e39s05: the sender context — the chatty loops (fade, sequencer, cue) name
+# themselves for the duration of a send, without changing any call signature:
+# a fake client in the tests keeps working untouched.
+_current_kind: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "osc_send_kind", default=None
+)
+
+
+@contextlib.contextmanager
+def sent_by(kind: str) -> Iterator[None]:
+    """Tag the OSC messages sent inside this block with a kind (e39s05).
+
+    The address says WHAT a message is; the kind says WHY it exists. For the
+    address-derived traffic the table in ``kind_of`` is enough, but a fade, a
+    sequencer step and a cue row all write ``/vimix/...``: only the caller knows
+    which one it is. Context-local, so the sequencer thread and the main-loop
+    fade tick never leak into each other.
+    """
+    token = _current_kind.set(str(kind))
+    try:
+        yield
+    finally:
+        _current_kind.reset(token)
+
+
+class ObservedClient:
+    """A UDP client whose every send is reported to the I/O Monitor (e39s05).
+
+    The wrapper is transparent: attribute access delegates to the wrapped client
+    (so the tests' recording fakes keep exposing ``.messages``), and nothing on
+    the wire changes — ``send_message`` forwards the arguments UNTOUCHED, so every
+    message stays byte-identical. This is the one place an outgoing OSC message
+    leaves viseq, which is what makes the Monitor complete without touching the
+    26 call sites.
+    """
+
+    def __init__(self, client: Any, peer: str) -> None:
+        self._client = client
+        self._peer = str(peer)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._client, name)
+
+    def send_message(self, address: str, args: Any = None) -> None:
+        """Send one OSC message and record it (the payload itself is not kept)."""
+        self._client.send_message(address, args)
+        midimonitor.record_osc(
+            MIDI_MONITOR_DIRECTION_OUT,
+            _current_kind.get() or kind_of(address),
+            address,
+            midimonitor.summarize_osc_args(args),
+            self._peer,
+        )
+
+
+def observe_client(client: Any, peer: str) -> ObservedClient:
+    """Wrap a UDP client so its sends reach the I/O Monitor (e39s05)."""
+    if isinstance(client, ObservedClient):
+        return client
+    return ObservedClient(client, peer)
+
+
+# The module default client, wrapped: a constant endpoint used until the
+# composition root connects the configured one (connect_osc_client).
+osc_client = observe_client(
+    udp_client.SimpleUDPClient(VIOSC_IP, VIOSC_PORT), f"{VIOSC_IP}:{VIOSC_PORT}"
+)
 
 
 def validate_destination(spec: Any) -> str | None:
@@ -183,7 +351,12 @@ def send_mapping_osc(spec: Any, value: float) -> bool:
         return False
     address = str(spec["address"])
     try:
-        _client_for(str(spec["host"]), int(spec["port"])).send_message(address, [float(value)])
+        client = _client_for(str(spec["host"]), int(spec["port"]))
+        if not isinstance(client, ObservedClient):
+            client = observe_client(client, f"{spec['host']}:{spec['port']}")
+            _mapping_clients[(str(spec["host"]), int(spec["port"]))] = client
+        with sent_by(MIDI_MONITOR_KIND_DESTINATION):
+            client.send_message(address, [float(value)])
         append_log("OUT", f"{address} [{float(value):.2f}] (mapping)")
         return True
     except Exception as e:
