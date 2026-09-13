@@ -5912,21 +5912,6 @@ def _mapping_origin_label(mapping: dict[str, Any]) -> str:
     return str(mapping["property"])
 
 
-def _mapping_enable_label(mapping: dict[str, Any]) -> str:
-    """The arm checkbox caption of one Mapping row (e40s08).
-
-    Mirrors the control cards' 'Enable mapper' wording per Origin kind, so a
-    State row reads 'Enable state' instead of a generic 'Enable mapping' (and the
-    source-less rows name their own Origin).
-    """
-    origin = mapper.origin_of(mapping)
-    if origin == ORIGIN_STATE:
-        return "Enable state"
-    if origin == ORIGIN_CLOCK:
-        return "Enable clock"
-    return "Enable constant"
-
-
 def _render_mapping_row(mapping: dict[str, Any], parent: Any) -> None:
     """One State/Global row: Origin -> Destination + arm/edit/delete + learn marker.
 
@@ -5935,6 +5920,10 @@ def _render_mapping_row(mapping: dict[str, Any], parent: Any) -> None:
     height. The checkbox does NOT: DearPyGui 2.3.1 add_checkbox rejects a height
     kwarg (SystemError, verified against the real binding) and its own 17 px is
     what the row settles at anyway.
+
+    e40s14: the arm checkbox carries NO caption — inside a row it can only mean
+    'enable this Mapping', exactly as the Control mini-cards leave theirs
+    unlabelled (the caption was 'Enable state'/'Enable clock'/'Enable constant').
     """
     rid = int(mapping["id"])
     tag = f"mapping_row_{rid}"
@@ -5953,7 +5942,6 @@ def _render_mapping_row(mapping: dict[str, Any], parent: Any) -> None:
             slot="text_dim",
         )
         dpg.add_checkbox(
-            label=_mapping_enable_label(mapping),
             tag=f"mapping_enable_{rid}",
             default_value=bool(mapping.get("enabled", False)),
             callback=on_mapping_enable,
@@ -5977,7 +5965,6 @@ def _render_mapping_row(mapping: dict[str, Any], parent: Any) -> None:
                 {"mapping_id": rid},
                 parent=tag,
                 tag=f"mapping_mk_{rid}",
-                tooltip=f"Map: {_mapping_enable_label(mapping)}",
             )
 
 
