@@ -29,6 +29,7 @@ from viseqapp import (
     leap,
     mapper,
     osc,
+    pairing,
     preview,
     state,
 )
@@ -3435,6 +3436,90 @@ def autostart_osc() -> None:
     endpoints = _osc_endpoints_from_config(load_config())
     connect_osc_client(endpoints["client_ip"], endpoints["client_port"])
     start_osc_server(endpoints["listen_ip"], endpoints["listen_port"])
+
+
+# e42s02: PAIRING PROMPT — viOSC is paired by default (a code shown on machine
+# A), so viseq asks once per run, exchanges the code on a worker (no dpg there),
+# and keeps the token in memory for every data-plane request.
+PAIRING_PROMPT_TAG = "pairing_prompt_modal"
+PAIRING_CODE_INPUT_TAG = "pairing_code_input"
+PAIRING_STATUS_TAG = "pairing_status_text"
+PAIRING_PROMPT_WIDTH = 440
+PAIRING_PROMPT_HEIGHT = 210
+
+
+def _pairing_endpoint() -> tuple[str, int]:
+    """The machine-A data-plane endpoint the code exchange goes to."""
+    return str(state.dataplane_host or ""), int(state.dataplane_port or 0)
+
+
+def show_pairing_prompt(*_args: Any) -> None:
+    """Open the pairing modal (shown once at boot, e42s02)."""
+    if dpg.does_item_exist(PAIRING_PROMPT_TAG):
+        dpg.delete_item(PAIRING_PROMPT_TAG)
+    with dpg.window(
+        label="Pair with viOSC",
+        tag=PAIRING_PROMPT_TAG,
+        modal=True,
+        width=PAIRING_PROMPT_WIDTH,
+        height=PAIRING_PROMPT_HEIGHT,
+        no_resize=True,
+    ):
+        dpg.add_text(
+            "Enter the pairing code shown on the viOSC machine.",
+            wrap=PAIRING_PROMPT_WIDTH - 40,
+        )
+        dpg.add_input_text(
+            tag=PAIRING_CODE_INPUT_TAG,
+            hint="4 digits",
+            width=160,
+            on_enter=True,
+            callback=_pairing_connect,
+        )
+        dpg.add_text("", tag=PAIRING_STATUS_TAG, wrap=PAIRING_PROMPT_WIDTH - 40)
+        dpg.add_separator()
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="Skip", width=120, callback=hide_pairing_prompt)
+            dpg.add_button(label="Connect", width=140, callback=_pairing_connect)
+    dpg.show_item(PAIRING_PROMPT_TAG)
+
+
+def hide_pairing_prompt(*_args: Any) -> None:
+    """Close the pairing prompt (Skip, or a successful exchange)."""
+    if dpg.does_item_exist(PAIRING_PROMPT_TAG):
+        dpg.delete_item(PAIRING_PROMPT_TAG)
+
+
+def _pairing_connect(*_args: Any) -> None:
+    """Connect button / Enter: exchange the code on a worker (HIGH-1)."""
+    host, port = _pairing_endpoint()
+    code = str(dpg.get_value(PAIRING_CODE_INPUT_TAG) or "").strip()
+    if not host or not port:
+        dpg.set_value(PAIRING_STATUS_TAG, "viOSC endpoint not configured.")
+        return
+    if not code:
+        dpg.set_value(PAIRING_STATUS_TAG, "Enter the code first.")
+        return
+    dpg.set_value(PAIRING_STATUS_TAG, "Connecting...")
+    threading.Thread(target=_pairing_worker, args=(host, port, code), daemon=True).start()
+
+
+def _pairing_worker(host: str, port: int, code: str) -> None:
+    """Worker: exchange the code, then report on the main thread (HIGH-1)."""
+    token = pairing.authenticate(host, port, code)
+    state.ui_task_queue.put(lambda: _pairing_result(token))
+
+
+def _pairing_result(token: str | None) -> None:
+    """Main thread: close on success, explain the failure otherwise."""
+    if token:
+        hide_pairing_prompt()
+        return
+    if dpg.does_item_exist(PAIRING_STATUS_TAG):
+        dpg.set_value(
+            PAIRING_STATUS_TAG,
+            "Pairing failed. Check the code shown on viOSC and that machine A is reachable.",
+        )
 
 
 def midi_action_beat_source(mode: str) -> None:
@@ -9553,6 +9638,9 @@ autostart_osc()  # boot: auto-connect OSC client + start listening server (no ma
 
 try:
     while dpg.is_dearpygui_running():
+        if not state.pairing_prompt_shown:
+            state.pairing_prompt_shown = True
+            show_pairing_prompt()
         if dpg.does_item_exist("vimix_media_window"):
             w = dpg.get_item_width("vimix_media_window")
             current_cols = max(1, int((w - 20) / 145))

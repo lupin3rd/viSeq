@@ -96,6 +96,10 @@ thumb_http_failures: int = 0
 dataplane_host: str = ""
 dataplane_port: int = 0
 
+# e42s02: the pairing prompt is shown once per run (main loop), so a boot with
+# no display (tests, headless import) never opens a modal.
+pairing_prompt_shown: bool = False
+
 # e41s04: the state pull lane. state_pull_supported is the runtime lane probe
 # (None = not yet tried, True = proven, False = given up for the session); while
 # it is True the OSC /viosc/replydata push is DROPPED so the state is never

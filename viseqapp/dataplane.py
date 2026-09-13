@@ -13,6 +13,7 @@ port, with no daemon, no config and no network.
 import urllib.error
 import urllib.request
 
+from viseqapp import pairing
 from viseqapp.constants import DATA_PLANE_TIMEOUT, STATE_PATH, THUMB_PATH_PREFIX
 
 
@@ -36,7 +37,10 @@ def _fetch(url: str) -> tuple[bytes | None, bool]:
     the lane decisions depend on telling those two apart.
     """
     try:
-        with urllib.request.urlopen(url, timeout=DATA_PLANE_TIMEOUT) as resp:
+        with urllib.request.urlopen(
+            urllib.request.Request(url, headers=pairing.http_headers()),
+            timeout=DATA_PLANE_TIMEOUT,
+        ) as resp:
             if resp.status != 200:
                 return None, True
             return resp.read(), True
