@@ -243,6 +243,7 @@ from viseqapp.osc import (
     incoming_osc_handler,
     osc_client,
     send_mapping_osc,
+    size_receive_buffer,
     thumbnail_decoder_worker,
 )
 from viseqapp.osc import (
@@ -3312,6 +3313,7 @@ def start_osc_server(ip: str, port: int) -> bool:
         disp = dispatcher.Dispatcher()
         disp.set_default_handler(incoming_osc_handler)
         state.local_osc_server = ViseqOSCUDPServer((ip, port), disp)
+        size_receive_buffer(getattr(state.local_osc_server, "socket", None))
         state.local_server_thread = threading.Thread(
             target=state.local_osc_server.serve_forever, daemon=True
         )

@@ -17,6 +17,14 @@ MAX_THUMBNAIL_BLOB_BYTES = 8 * 1024 * 1024  # per-blob cap
 MAX_STATE_JSON_BYTES = 1 * 1024 * 1024  # per-replydata cap
 
 
+# e41s02: explicit UDP receive buffer for the OSC listener. socketserver inherits
+# the kernel default (208 KiB on Linux), which is small for a burst of datagrams
+# (a state broadcast arriving together with a burst of monitor/watch replies).
+# The kernel caps the request at net.core.rmem_max and doubles the effective
+# value; the helper suppresses a refusing platform.
+RECV_BUFFER_BYTES = 262144
+
+
 THUMB_REQUEST_INTERVAL = 3.0  # min seconds between thumbnail requests per source
 
 

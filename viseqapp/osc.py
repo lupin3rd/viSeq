@@ -11,6 +11,7 @@ composition root until the ui commit.
 import contextlib
 import contextvars
 import io
+import socket
 from collections.abc import Iterator
 from typing import Any
 
@@ -36,6 +37,7 @@ from viseqapp.constants import (
     MAX_STATE_JSON_BYTES,
     MAX_THUMBNAIL_BLOB_BYTES,
     MAX_THUMBNAIL_PIXELS,
+    RECV_BUFFER_BYTES,
     VIOSC_IP,
     VIOSC_PORT,
 )
@@ -186,6 +188,20 @@ def incoming_osc_handler(address: str, *args: Any) -> None:
             state.blob_queue.put((parts[-2], parts[-1], args[0]))
     except Exception as e:
         log_error("OSC input", str(e))
+
+
+def size_receive_buffer(sock: Any) -> None:
+    """Give a UDP receive socket an explicit kernel buffer (e41s02).
+
+    socketserver inherits the kernel default, which is small for a burst of
+    datagrams — a state broadcast arriving together with a burst of monitor and
+    watch replies. Best-effort on purpose: a kernel cap or a platform refusing
+    the option must never stop the receiver (Defensive Code).
+    """
+    if sock is None:
+        return
+    with contextlib.suppress(OSError):
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, RECV_BUFFER_BYTES)
 
 
 class ViseqOSCUDPServer(osc_server.ThreadingOSCUDPServer):
