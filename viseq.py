@@ -322,8 +322,10 @@ Image.MAX_IMAGE_PIXELS = 25_000_000  # PIL's hard ceiling (~25 MP)
 # viseq application version — single source of truth (matches specs/release-plan.yaml, e08s02).
 # e13s01: this is the first real release of viSeq (user decision).
 # e20s03: 0.2.0 — viseqapp refactor + controller profiles + new project + Mapper family.
-# 0.6.0 — value routing (Mapping = Origin -> Rescale -> Destination), I/O Monitor, cue-row
-# dialog fixes, monitor players removed (viOSC 0.4.0).
+# 0.6.0 — the Mapper edits MAPPINGS (origin -> rescale -> destination): State/Clock/Constant
+# origins driving MIDI and OSC destinations with dead-reckoning and the viOSC watch lane,
+# one editor for create and modify, the I/O Monitor (MIDI+OSC, in+out, filters), the cue-row
+# dialog fixes, and the monitor players removed (viOSC 0.4.0).
 # 0.5.0 — source Preview (viOSC 0.3.0), cue lists, persistent MIDI-learn Mapper, Save as.
 # 0.4.0 — Leap Motion mapper source, per-mapping reset, project save + OSC config persist,
 # Mapper tile/row workflows (thumb assign, Add-to-Mapper submenu, line numbers).
@@ -2268,10 +2270,10 @@ def advance_thumb_cycle(
 def _thumb_cycle_active() -> bool:
     """True while any thumbnail consumer window is visible (e10s05 gate).
 
-    The Mediagrid, the sequencer, every monitor player window and the Mapper
-    each show per-source thumbnails; cycling runs while at least one of them
-    is open so the animation follows the media wherever it is applied
-    (e25s01: an open Mapper alone keeps the cycle running).
+    The Mediagrid, the sequencer and the Mapper each show per-source
+    thumbnails; cycling runs while at least one of them is open so the animation
+    follows the media wherever it is applied (e25s01: an open Mapper alone keeps
+    the cycle running). The monitor player windows are gone (e40s04).
     """
     for tag in ("vimix_media_window", "sequencer_window", "mapper_window"):
         if dpg.does_item_exist(tag) and dpg.is_item_shown(tag):
@@ -2282,9 +2284,9 @@ def _thumb_cycle_active() -> bool:
 def _apply_cycle_frame(target_id: str, tex_tag: str) -> None:
     """Switch every visible consumer of a source to the cycled frame (e10s05).
 
-    The Mediagrid tile, every sequencer slot and every monitor player assigned
-    to the source switch together on the same cadence; consumers whose widget
-    is gone (window closed, slot unassigned) are skipped.
+    The Mediagrid tile and every sequencer slot assigned to the source switch
+    together on the same cadence; consumers whose widget is gone (window closed,
+    slot unassigned) are skipped.
     """
     img_tag = f"img_{target_id}"
     if dpg.does_item_exist(img_tag):
@@ -2303,8 +2305,8 @@ def _apply_cycle_frame(target_id: str, tex_tag: str) -> None:
 def tick_thumb_cycle(now: float) -> None:
     """Advance thumb frames once per main-loop frame (e10s04 + e10s05).
 
-    Gated: no cycling while every consumer window (Mediagrid, sequencer,
-    monitor players) is hidden or gone. Tiles with >=2 stored textures switch
+    Gated: no cycling while every consumer window (Mediagrid, sequencer) is
+    hidden or gone. Tiles with >=2 stored textures switch
     texture_tag via configure_item on the cadence; the switch reuses
     pre-loaded static textures (SPIKE-thumb-cycle: ~1.6 us per call).
     """

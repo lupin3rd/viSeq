@@ -41,7 +41,7 @@ from viseqapp.queues import append_log
 
 # Property catalog: single-float vimix source attributes usable with a
 # video/image source. Ranges are the vimix Open-Sound-Control-API wiki
-# contract — the sequencer/monitor players depend on those exact values, so
+# contract — the sequencer and the Mapper depend on those exact values, so
 # this table must never drift from the docs (brightness is -1..+1, not 0..1).
 MAPPER_PROPERTIES: dict[str, dict[str, Any]] = {
     "alpha": {"label": "Alpha", "min": -1.0, "max": 1.0},
@@ -1276,7 +1276,7 @@ def apply_unit_value(mapping_id: int, unit: float) -> float:
 
 # e36s06: anchor seeding from the live vimix state feed.
 # The anchored vectors (color/corner) are seeded from the state viOSC pushes
-# (the same broadcast the monitor players poll) so sibling component mappings
+# (the same state broadcast the engine reads) so sibling component mappings
 # start from real values instead of the neutral white/identity vector.
 
 _ANCHOR_SEED_PROPS: tuple[str, ...] = ("color", "corner")  # partial == anchor
