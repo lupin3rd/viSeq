@@ -267,6 +267,13 @@ thumb_cycle_state: dict[str, tuple[int, float]] = {}
 thumb_fail_count: dict[str, int] = {}
 
 
+# e41s02: len(thumbnails_data[target]) observed when the last thumbnail request
+# went out. The next index is asked only when that number GREW, so a source with
+# fewer frames than the budget (an image) stops being polled instead of being
+# asked for a non-existent index forever.
+thumb_frames_at_last_request: dict[str, int] = {}
+
+
 _last_unmatched_log: dict[str, float] = {}  # port -> last unmatched-message log time
 
 

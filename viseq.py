@@ -241,6 +241,7 @@ from viseqapp.osc import (
     find_source_by_name,
     get_current_target_id,
     incoming_osc_handler,
+    next_thumb_frame_index,
     osc_client,
     send_mapping_osc,
     size_receive_buffer,
@@ -298,6 +299,7 @@ from viseqapp.state import (
     texture_queue,
     thumb_cycle_state,
     thumb_fail_count,
+    thumb_frames_at_last_request,
     thumbnails_data,
     tracks_data,
     ui_state_queue,
@@ -2158,6 +2160,7 @@ def regen_thumb_callback(sender: Any, app_data: Any, user_data: Any) -> None:
     with dpg.mutex():
         tex_tags = thumbnails_data.pop(target_id, None)
         thumb_fail_count[target_id] = 0  # a manual retry clears the failure state (e10s04)
+        thumb_frames_at_last_request[target_id] = 0  # e41s02: the walk restarts from frame 0
         if dpg.does_item_exist(f"img_{target_id}"):
             dpg.delete_item(f"img_{target_id}")
         for tex_tag in tex_tags or []:
@@ -2447,11 +2450,17 @@ def on_tile_alpha_slider(sender: Any = None, app_data: Any = None, user_data: An
 
 
 def request_missing_thumbnails(now: float) -> None:
-    """Request thumbs for sources that still lack them (3 s throttle, e10s04).
+    """Request the frame a source still lacks, ONE index at a time (e10s04, e41s02).
 
     Each sent-but-unanswered request bumps the source's fail counter; crossing
     the threshold fires ONE regen retry and the tile flips to the failed label
     (rendered by update_vimix_sources_ui). A successful reply clears the counter.
+
+    e41s02: viOSC answers a digit index with ONE blob, so the frame indices are
+    walked one per throttle cycle. Asking for `all` made the daemon emit three
+    JPEG blobs back-to-back — a multi-fragment burst on a transport that never
+    retransmits. ``next_thumb_frame_index`` bounds the walk and stops it once the
+    daemon stops answering (an image source has a single frame).
     """
     if not state.viosc_client:
         return
@@ -2459,20 +2468,31 @@ def request_missing_thumbnails(now: float) -> None:
         name = props.get("name")
         uri = props.get("uri")
         target_id = str(name) if name else str(idx)
-
-        if uri and target_id not in thumbnails_data:
-            last_thumb = request_timestamps.get(f"thumb_{target_id}", 0)
-            if now - last_thumb > THUMB_REQUEST_INTERVAL:
-                msg_addr = f"/viosc/thumb/{target_id}"
-                state.viosc_client.send_message(msg_addr, ["all"])
-                append_log("OUT", msg_addr)
-                request_timestamps[f"thumb_{target_id}"] = now
-                thumb_fail_count[target_id] = thumb_fail_count.get(target_id, 0) + 1
-                if thumb_fail_count[target_id] == THUMB_FAIL_THRESHOLD:
-                    regen_addr = f"/viosc/regen_thumb/{target_id}"
-                    state.viosc_client.send_message(regen_addr, [])
-                    append_log("OUT", regen_addr)
-                    _show_failed_tile_label(target_id)
+        if not uri:
+            continue
+        received = len(thumbnails_data.get(target_id, ()))
+        frame_index = next_thumb_frame_index(
+            received, thumb_frames_at_last_request.get(target_id, 0)
+        )
+        if frame_index is None:
+            continue
+        last_thumb = request_timestamps.get(f"thumb_{target_id}", 0)
+        if now - last_thumb <= THUMB_REQUEST_INTERVAL:
+            continue
+        msg_addr = f"/viosc/thumb/{target_id}"
+        state.viosc_client.send_message(msg_addr, [frame_index])
+        append_log("OUT", f"{msg_addr} {frame_index}")
+        request_timestamps[f"thumb_{target_id}"] = now
+        if received == 0:
+            # nothing has arrived yet: keep the e10s04 retry/failure accounting
+            thumb_fail_count[target_id] = thumb_fail_count.get(target_id, 0) + 1
+            if thumb_fail_count[target_id] == THUMB_FAIL_THRESHOLD:
+                regen_addr = f"/viosc/regen_thumb/{target_id}"
+                state.viosc_client.send_message(regen_addr, [])
+                append_log("OUT", regen_addr)
+                _show_failed_tile_label(target_id)
+        else:
+            thumb_frames_at_last_request[target_id] = received
 
 
 def update_vimix_sources_ui(json_string: str) -> None:
@@ -2520,6 +2540,9 @@ def update_vimix_sources_ui(json_string: str) -> None:
         for target_id in list(thumb_fail_count):
             if target_id not in live_ids:
                 thumb_fail_count.pop(target_id)
+        for target_id in list(thumb_frames_at_last_request):
+            if target_id not in live_ids:
+                thumb_frames_at_last_request.pop(target_id)
         mapper.prune_anchors(live_ids)  # e36s06: the anchor cache follows source churn
         removed_mappings = mapper.prune_mappings(live_ids)
         if removed_mappings:

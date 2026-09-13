@@ -28,6 +28,14 @@ RECV_BUFFER_BYTES = 262144
 THUMB_REQUEST_INTERVAL = 3.0  # min seconds between thumbnail requests per source
 
 
+# e41s02: how many frame indices a source is asked for, ONE per throttle cycle.
+# Mirrors viOSC's THUMB_MAX_COUNT (up to 3 thumbs per media, jittered anchors):
+# asking for all of them in one `all` request made the daemon emit three JPEG
+# blobs back-to-back — a multi-fragment burst on a transport that never
+# retransmits.
+THUMB_REQUESTS_PER_SOURCE = 3
+
+
 LOG_HISTORY_LIMIT = 25  # max entries kept in the OSC log window
 
 

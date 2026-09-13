@@ -38,6 +38,7 @@ from viseqapp.constants import (
     MAX_THUMBNAIL_BLOB_BYTES,
     MAX_THUMBNAIL_PIXELS,
     RECV_BUFFER_BYTES,
+    THUMB_REQUESTS_PER_SOURCE,
     VIOSC_IP,
     VIOSC_PORT,
 )
@@ -202,6 +203,29 @@ def size_receive_buffer(sock: Any) -> None:
         return
     with contextlib.suppress(OSError):
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, RECV_BUFFER_BYTES)
+
+
+def next_thumb_frame_index(received: int, frames_at_last_request: int) -> int | None:
+    """The next thumbnail frame index to ask for, or None to stop (e41s02).
+
+    viOSC answers a digit index with ONE blob, so walking the indices keeps at
+    most one thumbnail datagram in flight instead of the back-to-back burst an
+    `all` request produces. The walk is bounded by the per-media frame budget and
+    is progress-based:
+
+    - nothing received yet -> keep asking frame 0, which keeps the e10s04
+      retry/failure accounting exactly as it was;
+    - the frame count grew since the last request -> ask for the next index;
+    - it did NOT grow -> the daemon has no more frames for this source (an
+      image), so stop instead of polling a non-existent index forever.
+    """
+    if received >= THUMB_REQUESTS_PER_SOURCE:
+        return None
+    if received == 0:
+        return 0
+    if received == frames_at_last_request:
+        return None
+    return received
 
 
 class ViseqOSCUDPServer(osc_server.ThreadingOSCUDPServer):
