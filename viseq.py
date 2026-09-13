@@ -3511,10 +3511,30 @@ def _pairing_worker(host: str, port: int, code: str) -> None:
     state.ui_task_queue.put(lambda: _pairing_result(token))
 
 
+def _on_pairing_succeeded() -> None:
+    """Re-establish the transport after a successful pairing (e42s02).
+
+    BUG-2026-09-13T231500: viseq boots and starts talking BEFORE the code is
+    entered, so viOSC drops the boot-time OSC — but the memoization records the
+    watch/monitor plan as sent, and the state pull reads the boot 401 as an old
+    daemon. Forget all of it so the next sync re-issues the whole plan and both
+    lanes retry now that a token and a bound peer exist.
+    """
+    state.mapping_watch_plan = {}
+    state.mapping_subscriptions = {}
+    state.osc_watch_supported = None
+    state.state_pull_supported = None
+    state.state_pull_failures = 0
+    state.thumb_http_supported = None
+    state.thumb_http_failures = 0
+    _sync_mapping_subscriptions()
+
+
 def _pairing_result(token: str | None) -> None:
     """Main thread: close on success, explain the failure otherwise."""
     if token:
         hide_pairing_prompt()
+        _on_pairing_succeeded()
         return
     if dpg.does_item_exist(PAIRING_STATUS_TAG):
         dpg.set_value(
