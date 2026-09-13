@@ -283,7 +283,17 @@ VIOSC_LISTEN_PORT = 6667  # the port viOSC sends replies to; viseq's own server 
 PREVIEW_PORT = 8686  # matches the viOSC HTTP preview server default
 PREVIEW_PATH_PREFIX = "/preview/"  # served as /preview/<source-name>/file|meta
 THUMB_PATH_PREFIX = "/thumb/"  # e41s03: served as /thumb/<source-name>/<index>
-THUMB_HTTP_TIMEOUT = 5.0  # s: bounded thumbnail fetch (the OSC lane is the fallback)
+STATE_PATH = "/state"  # e41s04: the state table as a pull resource
+DATA_PLANE_TIMEOUT = 5.0  # s: bounded data-plane request (the OSC lane is the fallback)
+# e41s04: how often viseq reads the state table. The push fires whenever vimix
+# changes a property — the rate belongs to vimix, not to the consumer — while
+# this cadence belongs to the machine that pays the render cost. Measured cost at
+# 50 sources: 24.8 KB serialized in 0.149 ms (SPIKE-transport-planes M1), i.e.
+# cheaper in wall cost than the 2 s push baseline AND fresher.
+STATE_PULL_INTERVAL = 1.0  # s
+# e41s04: consecutive state pulls with NO ANSWER before the pull is given up for
+# the session and the cadence returns to the OSC push lane.
+STATE_PULL_MAX_FAILURES = 3
 # e41s03: consecutive data-plane fetches with NO ANSWER before the fast lane is
 # given up for the session. A 404 is an ANSWER (the endpoint is alive and has no
 # such frame) and must not count — an out-of-range index on the stall path would

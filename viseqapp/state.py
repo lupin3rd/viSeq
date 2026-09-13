@@ -96,6 +96,13 @@ thumb_http_failures: int = 0
 dataplane_host: str = ""
 dataplane_port: int = 0
 
+# e41s04: the state pull lane. state_pull_supported is the runtime lane probe
+# (None = not yet tried, True = proven, False = given up for the session); while
+# it is True the OSC /viosc/replydata push is DROPPED so the state is never
+# ingested twice. state_pull_failures counts consecutive unanswered pulls.
+state_pull_supported: bool | None = None
+state_pull_failures: int = 0
+
 
 texture_queue: queue.Queue[Any] = queue.Queue()
 

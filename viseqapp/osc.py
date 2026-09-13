@@ -12,6 +12,7 @@ import contextlib
 import contextvars
 import io
 import socket
+import time
 from collections.abc import Iterator
 from typing import Any
 
@@ -38,6 +39,8 @@ from viseqapp.constants import (
     MAX_THUMBNAIL_BLOB_BYTES,
     MAX_THUMBNAIL_PIXELS,
     RECV_BUFFER_BYTES,
+    STATE_PULL_INTERVAL,
+    STATE_PULL_MAX_FAILURES,
     THUMB_HTTP_MAX_FAILURES,
     THUMB_REQUESTS_PER_SOURCE,
     VIOSC_IP,
@@ -153,6 +156,58 @@ def thumbnail_fetch_worker() -> None:
         state.thumb_fetch_queue.task_done()
 
 
+def poll_state_once() -> bool:
+    """Read the state table once over the data plane (e41s04).
+
+    Returns True when the table was ingested into ``ui_state_queue`` — the SAME
+    queue the OSC push fills, so every consumer (Mediagrid, raw table, Mapping
+    engine) is unchanged.
+
+    Lane giving-up is asymmetric on purpose: a server that ANSWERS without a
+    /state route is an older daemon, and a route set does not appear and
+    disappear, so one answered failure is enough; a server that does not answer
+    at all may simply be busy, so it takes STATE_PULL_MAX_FAILURES in a row.
+    """
+    text, answered = dataplane.fetch_state(state.dataplane_host, state.dataplane_port)
+    if text is not None:
+        state.state_pull_supported = True
+        state.state_pull_failures = 0
+        state.ui_state_queue.put(text)
+        return True
+    if answered:
+        state.state_pull_supported = False
+        log_error(
+            "State data plane",
+            "the endpoint answered without /state (older viOSC) — using the OSC push lane",
+        )
+        return False
+    state.state_pull_failures += 1
+    if state.state_pull_failures >= STATE_PULL_MAX_FAILURES:
+        state.state_pull_supported = False
+        log_error(
+            "State data plane",
+            f"{state.dataplane_host}:{state.dataplane_port} not answering — "
+            "using the OSC push lane",
+        )
+    return False
+
+
+def state_poll_worker() -> None:
+    """Read the state table at VISeq's own cadence (e41s04).
+
+    The cadence is the whole point of the pull: the push fires whenever vimix
+    changes a property, so the rate belongs to vimix; here viseq asks only as
+    often as it can afford, which is the backpressure the push cannot express.
+    """
+    while True:
+        try:
+            if state.state_pull_supported is not False:
+                poll_state_once()
+        except Exception as e:  # a worker thread must never die (Defensive Code)
+            log_error("State data plane", str(e))
+        time.sleep(STATE_PULL_INTERVAL)
+
+
 def get_current_target_id() -> str | None:
     """Return the target id of the currently selected media (e10s06).
 
@@ -235,7 +290,12 @@ def incoming_osc_handler(address: str, *args: Any) -> None:
         log_error("OSC monitor", str(e))
     try:
         if address == "/viosc/replydata" and args and len(args[0]) <= MAX_STATE_JSON_BYTES:
-            state.ui_state_queue.put(args[0])
+            # e41s04: while the HTTP pull is the live lane, the push must be
+            # DROPPED — ingesting both would double the state work in the UI (and
+            # the pushed table is no fresher). The I/O Monitor still records it:
+            # observation is not ingestion.
+            if state.state_pull_supported is not True:
+                state.ui_state_queue.put(args[0])
         elif address.startswith("/viosc/reply/") and args:
             # e40s06: a targeted watch delta (prop, value, ...) for one source
             state.watch_state_queue.put((address[len("/viosc/reply/") :], list(args)))

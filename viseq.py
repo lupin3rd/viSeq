@@ -246,6 +246,7 @@ from viseqapp.osc import (
     request_thumbnail_over_osc,
     send_mapping_osc,
     size_receive_buffer,
+    state_poll_worker,
     thumbnail_decoder_worker,
     thumbnail_fetch_worker,
 )
@@ -9508,6 +9509,7 @@ threading.Thread(target=visual_metronome_loop, daemon=True).start()
 threading.Thread(target=essentia_analyzer_loop, daemon=True).start()
 threading.Thread(target=thumbnail_decoder_worker, daemon=True).start()
 threading.Thread(target=thumbnail_fetch_worker, daemon=True).start()  # e41s03 data plane
+threading.Thread(target=state_poll_worker, daemon=True).start()  # e41s04 state pull
 
 dpg.create_viewport(title="viSeq - Audio-Reactive VJ Controller", width=1700, height=1080)
 # e19/e37s04: closing the main window goes through the dirty-gated request — a
