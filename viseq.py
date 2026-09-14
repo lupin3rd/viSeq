@@ -3711,13 +3711,82 @@ def _fs_render_entries() -> None:
     for index, entry in enumerate(state.fs_entries):
         row = dpg.add_group(horizontal=True, parent=FILE_MANAGER_ENTRIES_TAG)
         _fs_entry_thumb(entry, parent=row)
+        item_tag = f"fs_entry_{index}"
         dpg.add_selectable(
             label=_fs_entry_label(entry),
             parent=row,
-            tag=f"fs_entry_{index}",
+            tag=item_tag,
             callback=_on_fs_entry_click,
             user_data=entry,
         )
+        _fs_bind_row_menu(item_tag, entry)
+
+
+FS_ROW_POPUP_TAG = "fs_row_popup"
+
+
+def _fs_bind_row_menu(item_tag: str, entry: dict[str, Any]) -> None:
+    """Bind the row's right-click menu (e43s04)."""
+    registry = f"fs_row_reg_{item_tag}"
+    if dpg.does_item_exist(registry):
+        dpg.delete_item(registry)
+    with dpg.item_handler_registry(tag=registry):
+        dpg.add_item_clicked_handler(button=1, callback=_on_fs_entry_right_click, user_data=entry)
+    dpg.bind_item_handler_registry(item_tag, registry)
+
+
+def _on_fs_entry_right_click(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Right-click a row: offer Preview... for VIDEO files only (e43s04)."""
+    entry = user_data if isinstance(user_data, dict) else {}
+    if entry.get("kind") != "file" or entry.get("media_kind") != "video":
+        return
+    path = os.path.join(state.fs_current_path, str(entry.get("name") or ""))
+    if dpg.does_item_exist(FS_ROW_POPUP_TAG):
+        dpg.delete_item(FS_ROW_POPUP_TAG)
+    position = dpg.get_mouse_pos(local=False)
+    with dpg.window(
+        tag=FS_ROW_POPUP_TAG,
+        popup=True,
+        no_title_bar=True,
+        pos=position,
+        min_size=(200, 10),
+    ):
+        dpg.add_text(os.path.basename(path))
+        dpg.add_button(label="Preview...", user_data=path, callback=_on_fs_preview_click)
+    dpg.show_item(FS_ROW_POPUP_TAG)
+
+
+def _on_fs_preview_click(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """The row popup's Preview... item: open the file preview (e43s04)."""
+    if dpg.does_item_exist(FS_ROW_POPUP_TAG):
+        dpg.delete_item(FS_ROW_POPUP_TAG)
+    start_file_preview(str(user_data))
+
+
+def start_file_preview(path: str, *_args: Any) -> None:
+    """Preview a video FILE from the File Manager over /fs/raw (e43s04).
+
+    Reuses the e38 Preview window and player (one preview at a time); nothing is
+    ever sent to vimix, so watching a clip cannot disturb the live session.
+    """
+    global _preview_player, _preview_error_shown
+    host, port = _fs_endpoint()
+    label = os.path.basename(str(path))
+    if not host or not port:
+        _preview_status("viOSC endpoint not configured.")
+        _open_preview_window(label, message="viOSC endpoint not configured.")
+        return
+    close_source_preview()  # one preview at a time (e38 rule)
+    _preview_error_shown = False
+    state.preview_error = None
+    state.preview_active = f"{FS_THUMB_PREFIX}{path}"
+    state.preview_playing = True
+    _open_preview_window(label)
+    player = preview.PreviewPlayer(state.preview_active, url=fsclient.raw_url(host, port, path))
+    _preview_player = player
+    player.start()
 
 
 def _fs_thumb_texture_tag(path: str) -> str:

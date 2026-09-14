@@ -22,6 +22,7 @@ from viseqapp.queues import log_error
 FS_ROOTS_PATH = "/fs/roots"
 FS_LIST_PATH = "/fs/list"
 FS_THUMB_PATH = "/fs/thumb"
+FS_RAW_PATH = "/fs/raw"
 
 
 def roots_url(host: str, port: int) -> str:
@@ -92,6 +93,12 @@ def fetch_thumbnail(host: str, port: int, path: str) -> tuple[bytes | None, int 
     if not host or not port:
         return None, None
     return _get(thumbnail_url(host, port, path))
+
+
+def raw_url(host: str, port: int, path: str) -> str:
+    """URL of a file's bytes (RFC 7233 Range), for the local video preview."""
+    query = urllib.parse.urlencode({"path": str(path)})
+    return f"http://{host}:{port}{FS_RAW_PATH}?{query}"
 
 
 def fs_thumb_worker() -> None:
