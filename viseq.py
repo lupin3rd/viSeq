@@ -25,6 +25,7 @@ from viseqapp import (
     catalog,
     cue,
     emission,
+    fsclient,
     iomonitor,
     leap,
     mapper,
@@ -136,6 +137,7 @@ from viseqapp.constants import (
     MEDIA_TITLE_WRAP,
     MIDI_ACTION_BEAT_SOURCE,
     MIDI_ACTION_ENABLE_CORRECTION,
+    MIDI_ACTION_FILE_MANAGER_TOGGLE,
     MIDI_ACTION_IO_MONITOR_TOGGLE,
     MIDI_ACTION_MAPPER_BAND,
     MIDI_ACTION_MAPPER_CUE_OPEN,
@@ -3562,6 +3564,203 @@ def _pairing_result(token: str | None) -> None:
         )
 
 
+# e43s02: FILE MANAGER WINDOW — browse machine A's Media Roots through the /fs
+# data plane (e43s01). The window rebuilds a plain entry list per navigation; a
+# dpg-free worker does the HTTP call and hands the result to the main thread
+# (HIGH-1). Layout is persisted (LAYOUT_WINDOW_TAGS) and the toggle is mappable
+# per the e33 rule.
+FILE_MANAGER_TAG = "file_manager_window"
+FILE_MANAGER_ROOTS_TAG = "fs_roots_combo"
+FILE_MANAGER_BREADCRUMB_TAG = "fs_breadcrumb"
+FILE_MANAGER_ENTRIES_TAG = "fs_entries_group"
+FILE_MANAGER_STATUS_TAG = "fs_status_line"
+FILE_MANAGER_LEARN_SLOT = "fs_learn_slot"
+FILE_MANAGER_WIDTH = 660
+FILE_MANAGER_HEIGHT = 470
+FILE_MANAGER_LIST_HEIGHT = 350
+
+
+def show_file_manager_window(*_args: Any) -> None:
+    """Windows menu / e33 action: show the File Manager (load the roots once)."""
+    dpg.show_item(FILE_MANAGER_TAG)
+    dpg.focus_item(FILE_MANAGER_TAG)
+    if not state.fs_roots and not state.fs_busy:
+        fs_refresh()
+
+
+def toggle_file_manager_window(*_args: Any) -> None:
+    """e33 action: show the window, or hide it when it is already open."""
+    if dpg.is_item_shown(FILE_MANAGER_TAG):
+        dpg.hide_item(FILE_MANAGER_TAG)
+        return
+    show_file_manager_window()
+
+
+def _fs_endpoint() -> tuple[str, int]:
+    """The machine-A data-plane endpoint the /fs requests go to."""
+    return str(state.dataplane_host or ""), int(state.dataplane_port or 0)
+
+
+def _fs_error_text(status: int | None) -> str:
+    """A short, honest state line for a failed /fs request."""
+    if status == 401:
+        return "Not paired with viOSC — use Settings > Pair with viOSC..."
+    if status == 403:
+        return "Outside the allowed roots — check fs_roots in viOSC."
+    if status is None:
+        return "viOSC unreachable."
+    return f"Error ({status})."
+
+
+def fs_refresh(*_args: Any) -> None:
+    """Reload the roots (first time) and the current directory."""
+    if not state.fs_roots:
+        _fs_request_roots()
+    if state.fs_current_path:
+        fs_navigate(state.fs_current_path)
+
+
+def _fs_request_roots() -> None:
+    if state.fs_busy:
+        return
+    host, port = _fs_endpoint()
+    state.fs_busy = True
+    state.fs_status = "Loading Media Roots..."
+    dpg.set_value(FILE_MANAGER_STATUS_TAG, state.fs_status)
+    threading.Thread(target=_fs_roots_worker, args=(host, port), daemon=True).start()
+
+
+def _fs_roots_worker(host: str, port: int) -> None:
+    """Worker: fetch the Media Roots, report on the main thread (HIGH-1)."""
+    roots, status = fsclient.fetch_roots(host, port)
+    state.ui_task_queue.put(lambda: _fs_apply_roots(roots, status))
+
+
+def _fs_apply_roots(roots: list | None, status: int | None) -> None:
+    """Main thread: fill the roots combo (and open the first root)."""
+    state.fs_busy = False
+    if not roots:
+        state.fs_status = _fs_error_text(status)
+        dpg.set_value(FILE_MANAGER_STATUS_TAG, state.fs_status)
+        return
+    state.fs_roots = roots
+    paths = [str(r.get("path")) for r in roots]
+    dpg.configure_item(FILE_MANAGER_ROOTS_TAG, items=paths)
+    fs_navigate(paths[0])
+
+
+def fs_navigate(path: str, *_args: Any) -> None:
+    """Load one directory page (single-flight: a busy request wins)."""
+    if state.fs_busy:
+        return
+    host, port = _fs_endpoint()
+    if not host or not port:
+        state.fs_status = "viOSC endpoint not configured."
+        dpg.set_value(FILE_MANAGER_STATUS_TAG, state.fs_status)
+        return
+    state.fs_busy = True
+    state.fs_status = "Loading..."
+    dpg.set_value(FILE_MANAGER_STATUS_TAG, state.fs_status)
+    threading.Thread(target=_fs_list_worker, args=(host, port, str(path)), daemon=True).start()
+
+
+def _fs_list_worker(host: str, port: int, path: str) -> None:
+    """Worker: fetch one directory page, report on the main thread (HIGH-1)."""
+    payload, status = fsclient.fetch_listing(host, port, path)
+    state.ui_task_queue.put(lambda: _fs_apply_listing(path, payload, status))
+
+
+def _fs_apply_listing(path: str, payload: dict | None, status: int | None) -> None:
+    """Main thread: store the page, update the chrome and rebuild the list."""
+    state.fs_busy = False
+    if payload is None:
+        state.fs_status = _fs_error_text(status)
+        dpg.set_value(FILE_MANAGER_STATUS_TAG, state.fs_status)
+        return
+    state.fs_current_path = str(payload.get("path") or path)
+    state.fs_entries = list(payload.get("entries") or [])
+    state.fs_total = int(payload.get("total") or len(state.fs_entries))
+    state.fs_selected = None
+    state.fs_status = f"{state.fs_total} entries"
+    dpg.set_value(FILE_MANAGER_BREADCRUMB_TAG, state.fs_current_path)
+    dpg.set_value(FILE_MANAGER_STATUS_TAG, state.fs_status)
+    _fs_render_entries()
+
+
+def _fs_entry_label(entry: dict[str, Any]) -> str:
+    """A plain, readable row label: folders first, media kinds spelled out."""
+    name = str(entry.get("name") or "")
+    if entry.get("kind") == "dir":
+        return f"[dir] {name}"
+    kind = entry.get("media_kind")
+    return f"{name}  ({kind})" if kind and kind != "other" else name
+
+
+def _fs_render_entries() -> None:
+    """Rebuild the entry list from ``state.fs_entries`` (main thread)."""
+    if not dpg.does_item_exist(FILE_MANAGER_ENTRIES_TAG):
+        return
+    dpg.delete_item(FILE_MANAGER_ENTRIES_TAG, children_only=True)
+    for index, entry in enumerate(state.fs_entries):
+        dpg.add_selectable(
+            label=_fs_entry_label(entry),
+            parent=FILE_MANAGER_ENTRIES_TAG,
+            tag=f"fs_entry_{index}",
+            callback=_on_fs_entry_click,
+            user_data=entry,
+        )
+
+
+def _on_fs_entry_click(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """A directory enters it; a file becomes the selection (e43s02 tracer)."""
+    entry = user_data if isinstance(user_data, dict) else {}
+    if entry.get("kind") == "dir":
+        fs_navigate(os.path.join(state.fs_current_path, str(entry.get("name") or "")))
+        return
+    state.fs_selected = str(entry.get("name") or "")
+
+
+def fs_go_up(*_args: Any) -> None:
+    """Up one level, but never above the configured roots."""
+    current = state.fs_current_path
+    if not current:
+        return
+    roots = [str(r.get("path")) for r in state.fs_roots]
+    parent = os.path.dirname(current.rstrip("/")) or "/"
+    inside = any(parent == r or parent.startswith(r.rstrip("/") + "/") for r in roots)
+    if current in roots or not inside:
+        return
+    fs_navigate(parent)
+
+
+def _on_fs_root_selected(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Roots combo: navigate to the chosen Media Root."""
+    if app_data:
+        fs_navigate(str(app_data))
+
+
+def _exec_file_manager_toggle(params: dict[str, Any], value: int) -> None:
+    """e43s02: a momentary press shows or hides the File Manager window."""
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    toggle_file_manager_window()
+
+
+def _sync_file_manager_learn_marker() -> None:
+    """(Re)render the File Manager toggle's learn marker (e33 rule)."""
+    if not dpg.does_item_exist(FILE_MANAGER_LEARN_SLOT):
+        return
+    dpg.delete_item(FILE_MANAGER_LEARN_SLOT, children_only=True)
+    if state.midi_learn_mode:
+        learn_marker(
+            MIDI_ACTION_FILE_MANAGER_TOGGLE,
+            {},
+            parent=FILE_MANAGER_LEARN_SLOT,
+            tag="fs_mk_toggle",
+            tooltip="Map: File Manager window",
+        )
+
+
 def midi_action_beat_source(mode: str) -> None:
     """Select the sequencer beat source — shared by mouse and MIDI (e09)."""
     state.beat_source = mode
@@ -3904,6 +4103,8 @@ _MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
     MIDI_ACTION_MAPPING_ADD: lambda p, v: _exec_mapping_add(p, v),
     # e42s02: re-open the pairing prompt (viOSC restarted -> new code)
     MIDI_ACTION_PAIRING_PROMPT: lambda p, v: _exec_pairing_prompt(p, v),
+    # e43s02: show/hide the File Manager window
+    MIDI_ACTION_FILE_MANAGER_TOGGLE: lambda p, v: _exec_file_manager_toggle(p, v),
 }
 
 _last_unknown_action_log: dict[str, float] = {}  # action id -> last log time (throttle)
@@ -4073,6 +4274,7 @@ def _refresh_learn_surfaces() -> None:
     _sync_monitor_learn_marker()
     _sync_filter_learn_marker()
     _sync_settings_pairing_learn_marker()
+    _sync_file_manager_learn_marker()
 
 
 def learn_marker(
@@ -9666,6 +9868,34 @@ with dpg.item_handler_registry(tag="mapper_resize_reg"):
     dpg.add_item_resize_handler(callback=lambda s, a: refresh_mapper_ui())
 dpg.bind_item_handler_registry("mapper_window", "mapper_resize_reg")
 
+# WINDOW: FILE MANAGER (e43s02) — browse machine A's Media Roots over the /fs
+# data plane. A workspace window: LAYOUT_WINDOW_TAGS persists its pos/size/open.
+with dpg.window(
+    label="File Manager",
+    width=FILE_MANAGER_WIDTH,
+    height=FILE_MANAGER_HEIGHT,
+    pos=(30, 840),
+    tag=FILE_MANAGER_TAG,
+    show=False,
+):
+    with dpg.group(horizontal=True):
+        dpg.add_combo(
+            items=[],
+            width=360,
+            tag=FILE_MANAGER_ROOTS_TAG,
+            callback=_on_fs_root_selected,
+        )
+        dpg.add_button(label="Up", callback=fs_go_up)
+        dpg.add_button(label="Refresh", callback=fs_refresh)
+        with dpg.group(tag=FILE_MANAGER_LEARN_SLOT, horizontal=True):
+            pass
+    themed_text("", slot="text_dim", tag=FILE_MANAGER_BREADCRUMB_TAG)
+    with dpg.child_window(height=FILE_MANAGER_LIST_HEIGHT, border=False, tag="fs_scroll"):
+        pass
+    with dpg.group(parent="fs_scroll", tag=FILE_MANAGER_ENTRIES_TAG):
+        pass
+    themed_text("", slot="text_dim", tag=FILE_MANAGER_STATUS_TAG)
+
 # NEW THREAD FOR HIGH-FREQUENCY FADES
 threading.Thread(target=fade_tick_loop, daemon=True).start()
 threading.Thread(target=cue_tick_loop, daemon=True).start()  # e35s03: cue engine clock
@@ -9703,6 +9933,7 @@ with dpg.viewport_menu_bar():
         dpg.add_menu_item(label="Show Mapper", callback=show_mapper_window)  # e16
         dpg.add_menu_item(label="Show Logs", callback=show_logs_window)
         dpg.add_menu_item(label="Show I/O Monitor", callback=show_io_monitor)  # e39s01
+        dpg.add_menu_item(label="Show File Manager", callback=show_file_manager_window)  # e43s02
         dpg.add_menu_item(label="Show Info", callback=show_help_window)
         dpg.add_separator(parent="menu_windows")  # e17: open windows below the actions
         # the live window list is rebuilt by refresh_window_menu() (e17)

@@ -400,6 +400,7 @@ LAYOUT_WINDOW_TAGS: list[str] = [
     "vimix_media_window",
     "logs_window",
     "mapper_window",  # e28s02: the Mapper is a workspace window — pos/size/open persist
+    "file_manager_window",  # e43s02: the File Manager is a workspace window
 ]
 
 
@@ -485,6 +486,7 @@ MIDI_ACTION_IO_MONITOR_TOGGLE = "monitor_toggle"  # e39s01: show/hide the I/O Mo
 MIDI_ACTION_MAPPING_TOGGLE = "mapping_toggle"  # e40s01: arm/disarm a Mapping (Enabled gate)
 MIDI_ACTION_MAPPING_ADD = "mapping_add"  # e40s08: add a State Mapping on a source line
 MIDI_ACTION_PAIRING_PROMPT = "pairing_prompt"  # e42s02: re-pair with viOSC (code prompt)
+MIDI_ACTION_FILE_MANAGER_TOGGLE = "file_manager_toggle"  # e43s02: show/hide the File Manager
 
 
 # e39s01: I/O Monitor (diagnostic window). The capture is bounded so a spinning

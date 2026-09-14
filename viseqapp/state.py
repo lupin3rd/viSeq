@@ -100,6 +100,17 @@ dataplane_port: int = 0
 # no display (tests, headless import) never opens a modal.
 pairing_prompt_shown: bool = False
 
+# e43s02: the File Manager window state — machine A's Media Roots, the current
+# directory page, the selection and a single-flight flag (one /fs request at a
+# time; navigation is user-paced, not polled).
+fs_roots: list[Any] = []
+fs_current_path: str = ""
+fs_entries: list[Any] = []
+fs_total: int = 0
+fs_selected: str | None = None
+fs_status: str = ""
+fs_busy: bool = False
+
 # e41s04: the state pull lane. state_pull_supported is the runtime lane probe
 # (None = not yet tried, True = proven, False = given up for the session); while
 # it is True the OSC /viosc/replydata push is DROPPED so the state is never

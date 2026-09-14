@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from viseqapp.constants import (
     MIDI_ACTION_BEAT_SOURCE,
     MIDI_ACTION_ENABLE_CORRECTION,
+    MIDI_ACTION_FILE_MANAGER_TOGGLE,
     MIDI_ACTION_IO_MONITOR_TOGGLE,
     MIDI_ACTION_MAPPER_BAND,
     MIDI_ACTION_MAPPER_CUE_OPEN,
@@ -56,6 +57,9 @@ CATEGORY_MAPPING = "mapping"
 
 # e42s02: link-pairing actions (re-open the pairing prompt).
 CATEGORY_SETTINGS = "settings"
+
+# e43s02: File Manager actions (browse machine A's media over the /fs plane).
+CATEGORY_FILES = "files"
 
 # Kinds describe how the incoming MIDI value maps onto the action.
 KIND_MOMENTARY = "momentary"  # note edges trigger; CC fires at the >=64 threshold
@@ -165,6 +169,9 @@ ACTION_SPECS: dict[str, ActionSpec] = {
     ),
     MIDI_ACTION_PAIRING_PROMPT: ActionSpec(
         MIDI_ACTION_PAIRING_PROMPT, "Pair with viOSC", CATEGORY_SETTINGS, KIND_MOMENTARY
+    ),
+    MIDI_ACTION_FILE_MANAGER_TOGGLE: ActionSpec(
+        MIDI_ACTION_FILE_MANAGER_TOGGLE, "File Manager window", CATEGORY_FILES, KIND_MOMENTARY
     ),
 }
 
