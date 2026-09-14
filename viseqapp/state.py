@@ -127,6 +127,11 @@ drafts_path: str = ""
 drafts_selected: int | None = None
 drafts_dirty: bool = False
 drafts_dirty_at: float = 0.0
+# e43s07: what each draft last produced on machine A (id -> (path, files)), the
+# last status line and the path awaiting the Load confirmation.
+drafts_written: dict[int, tuple[str, tuple[str, ...]]] = {}
+drafts_status: str = ""
+drafts_pending_path: str | None = None
 
 # e41s04: the state pull lane. state_pull_supported is the runtime lane probe
 # (None = not yet tried, True = proven, False = given up for the session); while

@@ -142,6 +142,9 @@ from viseqapp.constants import (
     MEDIA_TITLE_RESERVE_PX,
     MEDIA_TITLE_WRAP,
     MIDI_ACTION_BEAT_SOURCE,
+    MIDI_ACTION_DRAFT_LOAD,
+    MIDI_ACTION_DRAFT_NEXT,
+    MIDI_ACTION_DRAFT_PREV,
     MIDI_ACTION_ENABLE_CORRECTION,
     MIDI_ACTION_FILE_MANAGER_TOGGLE,
     MIDI_ACTION_IO_MONITOR_TOGGLE,
@@ -4028,6 +4031,269 @@ def fs_draft_file_remove(sender: Any = None, app_data: Any = None, user_data: An
         refresh_drafts_ui()
 
 
+# e43s07: WRITE / LOAD — Write generates the .mix on machine A (never touching
+# the live session); Load always asks for confirmation, offers an optional
+# transition and sends /vimix/session/open through the existing OSC client.
+FS_DRAFT_STATUS_TAG = "fs_draft_status"
+FS_DRAFT_TRANSITION_TAG = "fs_draft_transition"
+FS_DRAFT_CONFIRM_TAG = "fs_draft_load_confirm"
+FS_DRAFT_LEARN_SLOT = "fs_drafts_learn_slot"
+DRAFT_CONFIRM_WIDTH = 460
+DRAFT_CONFIRM_HEIGHT = 230
+
+
+def _drafts_status(text: str) -> None:
+    """Show the last Write/Load outcome in the drafts pane."""
+    state.drafts_status = str(text)
+    if dpg.does_item_exist(FS_DRAFT_STATUS_TAG):
+        dpg.set_value(FS_DRAFT_STATUS_TAG, state.drafts_status)
+
+
+def _selected_draft() -> dict[str, Any] | None:
+    """The currently selected draft, or None."""
+    if state.drafts_selected is None:
+        return None
+    return drafts.find_draft(state.drafts_library, state.drafts_selected)
+
+
+def _draft_needs_write(draft: dict[str, Any]) -> bool:
+    """True when the draft was never written or its files changed since."""
+    recorded = state.drafts_written.get(int(draft["id"]))
+    files = tuple(str(path) for path in draft.get("files", []))
+    return recorded is None or recorded[1] != files
+
+
+def _draft_error_text(status: int | None, tag: str | None) -> str:
+    """A short, honest message for a rejected session write."""
+    if status == 401:
+        return "Not paired with viOSC — use Settings > Pair with viOSC..."
+    if status is None:
+        return "viOSC unreachable."
+    if tag == "missing_file":
+        return "A file in the draft no longer exists on machine A."
+    if tag == "no_files":
+        return "The draft is empty."
+    if tag == "bad_name":
+        return "That draft name cannot be used as a file name."
+    if tag == "unwritable":
+        return "viOSC could not write the session file."
+    return f"Write failed ({status})."
+
+
+def fs_write_draft(*_args: Any) -> None:
+    """Write the selected draft as a .mix on machine A (never loads it)."""
+    draft = _selected_draft()
+    if draft is None:
+        _drafts_status("Select a draft first.")
+        return
+    if not draft.get("files"):
+        _drafts_status("The draft is empty.")
+        return
+    host, port = _fs_endpoint()
+    if not host or not port:
+        _drafts_status("viOSC endpoint not configured.")
+        return
+    _drafts_status("Writing...")
+    threading.Thread(
+        target=_fs_write_worker,
+        args=(
+            host,
+            port,
+            int(draft["id"]),
+            str(draft["name"]),
+            [str(p) for p in draft["files"]],
+        ),
+        daemon=True,
+    ).start()
+
+
+def _fs_write_worker(
+    host: str, port: int, draft_id: int, name: str, files: list[str], *, then_load: bool = False
+) -> None:
+    """Worker: write the draft, report on the main thread (HIGH-1)."""
+    result, status = fsclient.write_session(host, port, name, files)
+    state.ui_task_queue.put(
+        lambda: _fs_apply_write(draft_id, files, result, status, then_load=then_load)
+    )
+
+
+def _fs_apply_write(
+    draft_id: int,
+    files: list[str],
+    result: dict | None,
+    status: int | None,
+    *,
+    then_load: bool = False,
+) -> None:
+    """Main thread: record the written path (or word the rejection)."""
+    if not isinstance(result, dict) or status != 200:
+        tag = result.get("error") if isinstance(result, dict) else None
+        _drafts_status(_draft_error_text(status, tag))
+        return
+    path = str(result.get("file") or "")
+    state.drafts_written[int(draft_id)] = (path, tuple(str(p) for p in files))
+    _drafts_status(f"Written: {path}")
+    if then_load and path:
+        _show_draft_load_confirm(path)
+
+
+def fs_load_draft(*_args: Any) -> None:
+    """Load the selected draft, writing it first when it changed.
+
+    The `.mix` is only a preparation: nothing reaches vimix until the user
+    confirms the modal, so a stray click can never replace the live session.
+    """
+    draft = _selected_draft()
+    if draft is None or not draft.get("files"):
+        _drafts_status("Select a non-empty draft first.")
+        return
+    recorded = state.drafts_written.get(int(draft["id"]))
+    if not _draft_needs_write(draft) and recorded is not None:
+        _show_draft_load_confirm(recorded[0])
+        return
+    host, port = _fs_endpoint()
+    if not host or not port:
+        _drafts_status("viOSC endpoint not configured.")
+        return
+    _drafts_status("Writing...")
+    threading.Thread(
+        target=_fs_write_worker,
+        args=(
+            host,
+            port,
+            int(draft["id"]),
+            str(draft["name"]),
+            [str(p) for p in draft["files"]],
+        ),
+        kwargs={"then_load": True},
+        daemon=True,
+    ).start()
+
+
+def _show_draft_load_confirm(path: str) -> None:
+    """Open the Load confirmation (replaces the live session, always asked)."""
+    state.drafts_pending_path = str(path)
+    if dpg.does_item_exist(FS_DRAFT_CONFIRM_TAG):
+        dpg.delete_item(FS_DRAFT_CONFIRM_TAG)
+    with dpg.window(
+        label="Load session in vimix",
+        tag=FS_DRAFT_CONFIRM_TAG,
+        modal=True,
+        width=DRAFT_CONFIRM_WIDTH,
+        height=DRAFT_CONFIRM_HEIGHT,
+        no_resize=True,
+    ):
+        dpg.add_text("This REPLACES the live vimix session.", wrap=DRAFT_CONFIRM_WIDTH - 40)
+        dpg.add_text(os.path.basename(str(path)), wrap=DRAFT_CONFIRM_WIDTH - 40)
+        dpg.add_input_float(
+            label="Transition (s)",
+            tag=FS_DRAFT_TRANSITION_TAG,
+            default_value=0.0,
+            width=120,
+            step=0,
+            format="%.1f",
+        )
+        dpg.add_separator()
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="Cancel", width=130, callback=cancel_draft_load)
+            dpg.add_button(label="Load", width=130, callback=confirm_draft_load)
+    dpg.show_item(FS_DRAFT_CONFIRM_TAG)
+
+
+def cancel_draft_load(*_args: Any) -> None:
+    """Confirmation Cancel: nothing is sent."""
+    state.drafts_pending_path = None
+    if dpg.does_item_exist(FS_DRAFT_CONFIRM_TAG):
+        dpg.delete_item(FS_DRAFT_CONFIRM_TAG)
+
+
+def _draft_transition_seconds() -> float:
+    """The optional crossfade duration, clamped to a sane non-negative value."""
+    try:
+        return max(0.0, float(dpg.get_value(FS_DRAFT_TRANSITION_TAG) or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def confirm_draft_load(*_args: Any) -> None:
+    """Confirmation Load: `/vimix/session/open s <path> [f <seconds>]`."""
+    path = str(state.drafts_pending_path or "")
+    if dpg.does_item_exist(FS_DRAFT_CONFIRM_TAG):
+        dpg.delete_item(FS_DRAFT_CONFIRM_TAG)
+    state.drafts_pending_path = None
+    if not path:
+        return
+    seconds = _draft_transition_seconds()
+    args: list[Any] = [path]
+    if seconds > 0:
+        args.append(seconds)
+    osc_client.send_message("/vimix/session/open", args)
+    append_log("OUT", f"/vimix/session/open {args}")
+    _drafts_status(f"Loaded: {os.path.basename(path)}")
+
+
+def fs_draft_step(delta: int, *_args: Any) -> None:
+    """Select the next/previous draft (wrapping)."""
+    ordered = [int(d.get("id")) for d in state.drafts_library.get("drafts", [])]
+    if not ordered:
+        return
+    if state.drafts_selected in ordered:
+        index = (ordered.index(state.drafts_selected) + int(delta)) % len(ordered)
+    else:
+        index = 0
+    state.drafts_selected = ordered[index]
+    refresh_drafts_ui()
+
+
+def fs_draft_next(*_args: Any) -> None:
+    """Select the next draft."""
+    fs_draft_step(1)
+
+
+def fs_draft_prev(*_args: Any) -> None:
+    """Select the previous draft."""
+    fs_draft_step(-1)
+
+
+def _exec_draft_load(params: dict[str, Any], value: int) -> None:
+    """e43s07: a momentary press asks to load the selected draft (with confirm)."""
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    fs_load_draft()
+
+
+def _exec_draft_step(delta: int) -> Callable[[dict[str, Any], int], None]:
+    """Build the next/previous draft executors."""
+
+    def run(params: dict[str, Any], value: int) -> None:
+        if value < MIDI_CC_TRIGGER_THRESHOLD:
+            return
+        fs_draft_step(delta)
+
+    return run
+
+
+def _sync_drafts_learn_markers() -> None:
+    """(Re)render the drafts pane learn markers (e33 rule)."""
+    if not dpg.does_item_exist(FS_DRAFT_LEARN_SLOT):
+        return
+    dpg.delete_item(FS_DRAFT_LEARN_SLOT, children_only=True)
+    if not state.midi_learn_mode:
+        return
+    for action_id, tag in (
+        (MIDI_ACTION_DRAFT_LOAD, "fs_mk_draft_load"),
+        (MIDI_ACTION_DRAFT_NEXT, "fs_mk_draft_next"),
+        (MIDI_ACTION_DRAFT_PREV, "fs_mk_draft_prev"),
+    ):
+        learn_marker(
+            action_id,
+            {},
+            parent=FS_DRAFT_LEARN_SLOT,
+            tag=tag,
+            tooltip=f"Map: {actions.action_label(action_id)}",
+        )
+
+
 def _sync_file_manager_learn_marker() -> None:
     """(Re)render the File Manager toggle's learn marker (e33 rule)."""
     if not dpg.does_item_exist(FILE_MANAGER_LEARN_SLOT):
@@ -4387,6 +4653,10 @@ _MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
     MIDI_ACTION_PAIRING_PROMPT: lambda p, v: _exec_pairing_prompt(p, v),
     # e43s02: show/hide the File Manager window
     MIDI_ACTION_FILE_MANAGER_TOGGLE: lambda p, v: _exec_file_manager_toggle(p, v),
+    # e43s07: Session Draft actions (Load always asks for the confirmation)
+    MIDI_ACTION_DRAFT_LOAD: lambda p, v: _exec_draft_load(p, v),
+    MIDI_ACTION_DRAFT_NEXT: _exec_draft_step(1),
+    MIDI_ACTION_DRAFT_PREV: _exec_draft_step(-1),
 }
 
 _last_unknown_action_log: dict[str, float] = {}  # action id -> last log time (throttle)
@@ -4557,6 +4827,7 @@ def _refresh_learn_surfaces() -> None:
     _sync_filter_learn_marker()
     _sync_settings_pairing_learn_marker()
     _sync_file_manager_learn_marker()
+    _sync_drafts_learn_markers()
 
 
 def learn_marker(
@@ -10182,6 +10453,11 @@ with dpg.window(
         dpg.add_button(label="New", callback=fs_new_draft)
         dpg.add_button(label="Delete", callback=fs_delete_selected_draft)
         dpg.add_button(label="Add selected file", callback=fs_add_selected_to_draft)
+        dpg.add_button(label="Write", callback=fs_write_draft)
+        dpg.add_button(label="Load...", callback=fs_load_draft)
+        with dpg.group(tag=FS_DRAFT_LEARN_SLOT, horizontal=True):
+            pass
+    themed_text("", slot="text_dim", tag=FS_DRAFT_STATUS_TAG)
     with dpg.group(tag=FS_DRAFTS_GROUP):
         pass
     with dpg.group(tag=FS_DRAFT_FILES_GROUP):

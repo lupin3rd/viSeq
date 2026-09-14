@@ -805,3 +805,10 @@ FS_THUMB_H = 36
 # e43s05: Session Drafts — the application-level library is written on a debounce
 # after a change (a rename storm must not rewrite the file per keystroke).
 DRAFTS_SAVE_DEBOUNCE_S = 1.0
+
+
+# e43s07: Session Draft actions (Write/Load are mouse buttons; these are the
+# stable MIDI-mappable actions, e33 rule).
+MIDI_ACTION_DRAFT_LOAD = "draft_load"
+MIDI_ACTION_DRAFT_NEXT = "draft_next"
+MIDI_ACTION_DRAFT_PREV = "draft_prev"
