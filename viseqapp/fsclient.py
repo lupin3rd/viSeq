@@ -23,6 +23,8 @@ FS_ROOTS_PATH = "/fs/roots"
 FS_LIST_PATH = "/fs/list"
 FS_THUMB_PATH = "/fs/thumb"
 FS_RAW_PATH = "/fs/raw"
+FS_SESSIONS_PATH = "/fs/sessions"
+FS_SESSION_PATH = "/fs/session"
 
 
 def roots_url(host: str, port: int) -> str:
@@ -99,6 +101,71 @@ def raw_url(host: str, port: int, path: str) -> str:
     """URL of a file's bytes (RFC 7233 Range), for the local video preview."""
     query = urllib.parse.urlencode({"path": str(path)})
     return f"http://{host}:{port}{FS_RAW_PATH}?{query}"
+
+
+def sessions_url(host: str, port: int) -> str:
+    """URL of the written Session Drafts (e43s06)."""
+    return f"http://{host}:{port}{FS_SESSIONS_PATH}"
+
+
+def session_url(host: str, port: int) -> str:
+    """URL that writes a Session Draft (POST, e43s06)."""
+    return f"http://{host}:{port}{FS_SESSION_PATH}"
+
+
+def _post_json(url: str, payload: dict) -> tuple[bytes | None, int | None]:
+    """One JSON POST with the pairing headers; never raises.
+
+    Unlike ``_get``, the ERROR body is returned too, because the session errors
+    carry a machine-readable tag (``bad_name`` / ``missing_file`` / …) the UI
+    words for the user.
+    """
+    try:
+        data = json.dumps(payload).encode("utf-8")
+        headers = {"Content-Type": "application/json", **pairing.http_headers()}
+        request = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        with urllib.request.urlopen(request, timeout=DATA_PLANE_TIMEOUT) as resp:
+            if resp.status != 200:
+                return None, resp.status
+            return resp.read(), resp.status
+    except urllib.error.HTTPError as e:
+        try:
+            return e.read(), e.code
+        except Exception:
+            return None, e.code
+    except Exception:
+        return None, None
+
+
+def fetch_sessions(host: str, port: int) -> tuple[list | None, int | None]:
+    """The Session Drafts already written on machine A, or ``(None, status)``."""
+    if not host or not port:
+        return None, None
+    body, status = _get(sessions_url(host, port))
+    if body is None:
+        return None, status
+    data = _decode(body)
+    return (data if isinstance(data, list) else None), status
+
+
+def write_session(
+    host: str, port: int, name: str, files: list[str]
+) -> tuple[dict | None, int | None]:
+    """Write one Session Draft on machine A; ``(payload, status)``.
+
+    On a rejection the payload is the error object (``{"error": "missing_file"}``)
+    when the daemon answered with one, so the caller can word the reason.
+    """
+    if not host or not port:
+        return None, None
+    body, status = _post_json(
+        session_url(host, port),
+        {"name": str(name), "files": [str(item) for item in files]},
+    )
+    if body is None:
+        return None, status
+    data = _decode(body)
+    return (data if isinstance(data, dict) else None), status
 
 
 def fs_thumb_worker() -> None:
