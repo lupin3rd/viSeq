@@ -800,3 +800,8 @@ FS_THUMB_PREFIX = "fs:"
 FS_THUMB_MAX_REQUESTS = 60
 FS_THUMB_W = 64
 FS_THUMB_H = 36
+
+
+# e43s05: Session Drafts — the application-level library is written on a debounce
+# after a change (a rename storm must not rewrite the file per keystroke).
+DRAFTS_SAVE_DEBOUNCE_S = 1.0

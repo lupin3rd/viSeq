@@ -115,6 +115,19 @@ fs_busy: bool = False
 fs_thumb_queue: queue.Queue[Any] = queue.Queue()
 fs_thumb_requested: set[str] = set()
 
+# e43s05: Session Drafts — the application-level library (NOT project content),
+# the selected draft, and the debounced-save bookkeeping.
+drafts_library: dict[str, Any] = {
+    "format": "viseq-drafts",
+    "version": 1,
+    "counter": 0,
+    "drafts": [],
+}
+drafts_path: str = ""
+drafts_selected: int | None = None
+drafts_dirty: bool = False
+drafts_dirty_at: float = 0.0
+
 # e41s04: the state pull lane. state_pull_supported is the runtime lane probe
 # (None = not yet tried, True = proven, False = given up for the session); while
 # it is True the OSC /viosc/replydata push is DROPPED so the state is never

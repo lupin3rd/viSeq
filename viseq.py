@@ -24,6 +24,7 @@ from viseqapp import (
     actions,
     catalog,
     cue,
+    drafts,
     emission,
     fsclient,
     iomonitor,
@@ -59,6 +60,7 @@ from viseqapp.constants import (
     DEST_MIDI,
     DEST_OSC,
     DESTINATIONS,
+    DRAFTS_SAVE_DEBOUNCE_S,
     FRAME_SLEEP_ANIMATED,
     FRAME_SLEEP_IDLE,
     FS_THUMB_H,
@@ -3582,8 +3584,8 @@ FILE_MANAGER_ENTRIES_TAG = "fs_entries_group"
 FILE_MANAGER_STATUS_TAG = "fs_status_line"
 FILE_MANAGER_LEARN_SLOT = "fs_learn_slot"
 FILE_MANAGER_WIDTH = 660
-FILE_MANAGER_HEIGHT = 470
-FILE_MANAGER_LIST_HEIGHT = 350
+FILE_MANAGER_HEIGHT = 640
+FILE_MANAGER_LIST_HEIGHT = 300
 
 
 def show_file_manager_window(*_args: Any) -> None:
@@ -3882,6 +3884,148 @@ def _exec_file_manager_toggle(params: dict[str, Any], value: int) -> None:
     if value < MIDI_CC_TRIGGER_THRESHOLD:
         return
     toggle_file_manager_window()
+
+
+# e43s05: SESSION DRAFTS — named, ordered file sets edited here and written as a
+# vimix .mix only on commit (e43s06/s07). The library is application-level (it
+# survives project changes) and is saved on a debounce after any mutation.
+FS_DRAFTS_GROUP = "fs_drafts_group"
+FS_DRAFT_FILES_GROUP = "fs_draft_files_group"
+
+
+def _drafts_load() -> None:
+    """Load the application-level draft library (boot + an explicit reload)."""
+    if not state.drafts_path:
+        state.drafts_path = drafts.default_path()
+    state.drafts_library = drafts.load_library(state.drafts_path)
+    state.drafts_selected = None
+    state.drafts_dirty = False
+
+
+def _drafts_mark_dirty(now: float | None = None) -> None:
+    """Record that the library changed (the tick persists it after the debounce)."""
+    state.drafts_dirty = True
+    state.drafts_dirty_at = time.monotonic() if now is None else now
+
+
+def tick_drafts(now: float | None = None) -> None:
+    """Main-loop tick: persist the draft library once the debounce elapses."""
+    if not state.drafts_dirty:
+        return
+    stamp = time.monotonic() if now is None else now
+    if stamp - state.drafts_dirty_at < DRAFTS_SAVE_DEBOUNCE_S:
+        return
+    if drafts.save_library(state.drafts_path, state.drafts_library):
+        state.drafts_dirty = False
+
+
+def refresh_drafts_ui(*_args: Any) -> None:
+    """Rebuild the drafts list and the selected draft's file list (main thread)."""
+    if not dpg.does_item_exist(FS_DRAFTS_GROUP):
+        return
+    dpg.delete_item(FS_DRAFTS_GROUP, children_only=True)
+    for draft in state.drafts_library.get("drafts", []):
+        marked = "* " if draft.get("id") == state.drafts_selected else ""
+        dpg.add_selectable(
+            label=f"{marked}{draft.get('name')} ({len(draft.get('files', []))})",
+            parent=FS_DRAFTS_GROUP,
+            tag=f"fs_draft_{draft.get('id')}",
+            callback=fs_select_draft,
+            user_data={"id": draft.get("id")},
+        )
+    if not dpg.does_item_exist(FS_DRAFT_FILES_GROUP):
+        return
+    dpg.delete_item(FS_DRAFT_FILES_GROUP, children_only=True)
+    current = (
+        drafts.find_draft(state.drafts_library, state.drafts_selected)
+        if state.drafts_selected is not None
+        else None
+    )
+    if current is None:
+        return
+    for path in current.get("files", []):
+        row = dpg.add_group(horizontal=True, parent=FS_DRAFT_FILES_GROUP)
+        dpg.add_text(os.path.basename(str(path)), parent=row)
+        dpg.add_button(
+            label="^",
+            width=24,
+            parent=row,
+            callback=fs_draft_file_move,
+            user_data={"path": path, "delta": -1},
+        )
+        dpg.add_button(
+            label="v",
+            width=24,
+            parent=row,
+            callback=fs_draft_file_move,
+            user_data={"path": path, "delta": 1},
+        )
+        dpg.add_button(
+            label="x", width=24, parent=row, callback=fs_draft_file_remove, user_data=path
+        )
+
+
+def fs_new_draft(*_args: Any) -> None:
+    """Create, select and persist a fresh draft."""
+    draft = drafts.create_draft(state.drafts_library)
+    state.drafts_selected = int(draft["id"])
+    _drafts_mark_dirty()
+    refresh_drafts_ui()
+
+
+def fs_select_draft(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Select a draft in the list."""
+    payload = user_data if isinstance(user_data, dict) else {}
+    if payload.get("id") is not None:
+        state.drafts_selected = int(payload["id"])
+        refresh_drafts_ui()
+
+
+def fs_delete_selected_draft(*_args: Any) -> None:
+    """Delete the selected draft (never touches a file on machine A)."""
+    if state.drafts_selected is None:
+        return
+    if drafts.delete_draft(state.drafts_library, state.drafts_selected):
+        state.drafts_selected = None
+        _drafts_mark_dirty()
+        refresh_drafts_ui()
+
+
+def fs_add_selected_to_draft(*_args: Any) -> None:
+    """Add the browser's selected file to the selected draft (creating one)."""
+    if state.drafts_selected is None:
+        fs_new_draft()
+    if state.drafts_selected is None or not state.fs_selected or not state.fs_current_path:
+        return
+    path = os.path.join(state.fs_current_path, str(state.fs_selected))
+    if drafts.add_files(state.drafts_library, state.drafts_selected, [path]):
+        _drafts_mark_dirty()
+        refresh_drafts_ui()
+
+
+def fs_draft_file_move(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Move one file up/down inside the selected draft."""
+    payload = user_data if isinstance(user_data, dict) else {}
+    if state.drafts_selected is None:
+        return
+    moved = drafts.move_file(
+        state.drafts_library,
+        state.drafts_selected,
+        str(payload.get("path") or ""),
+        int(payload.get("delta") or 0),
+    )
+    if moved:
+        _drafts_mark_dirty()
+        refresh_drafts_ui()
+
+
+def fs_draft_file_remove(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Remove one file from the selected draft."""
+    if state.drafts_selected is None:
+        return
+    if drafts.remove_file(state.drafts_library, state.drafts_selected, str(user_data or "")):
+        _drafts_mark_dirty()
+        refresh_drafts_ui()
 
 
 def _sync_file_manager_learn_marker() -> None:
@@ -10033,6 +10177,15 @@ with dpg.window(
     with dpg.group(parent="fs_scroll", tag=FILE_MANAGER_ENTRIES_TAG):
         pass
     themed_text("", slot="text_dim", tag=FILE_MANAGER_STATUS_TAG)
+    themed_text("Session Drafts", slot="text")
+    with dpg.group(horizontal=True):
+        dpg.add_button(label="New", callback=fs_new_draft)
+        dpg.add_button(label="Delete", callback=fs_delete_selected_draft)
+        dpg.add_button(label="Add selected file", callback=fs_add_selected_to_draft)
+    with dpg.group(tag=FS_DRAFTS_GROUP):
+        pass
+    with dpg.group(tag=FS_DRAFT_FILES_GROUP):
+        pass
 
 # NEW THREAD FOR HIGH-FREQUENCY FADES
 threading.Thread(target=fade_tick_loop, daemon=True).start()
@@ -10057,6 +10210,8 @@ dpg.create_viewport(title="viSeq - Audio-Reactive VJ Controller", width=1700, he
 dpg.set_exit_callback(request_exit)
 dpg.configure_viewport("__viewport", disable_close=True)
 apply_boot_config()  # e06: apply the saved theme + (optionally) the saved window layout
+_drafts_load()  # e43s05: the application-level Session Drafts library
+refresh_drafts_ui()
 ensure_user_dirs()  # e21s01: eager XDG user dirs (config + projects) + legacy .viseq migration
 with dpg.viewport_menu_bar():
     with dpg.menu(label="viSeq"):  # e11s03: first menubar menu — project file flows
@@ -10145,6 +10300,8 @@ try:
         tick_window_menu()  # e17: keep the Windows-menu list + active mark fresh
 
         tick_project_dirty(time.time())  # e37s03: unsaved-changes marker cadence
+
+        tick_drafts(time.time())  # e43s05: persist the draft library (debounced)
 
         tick_cue_triggers()  # e35s03: cue-list card running labels (idle-cheap)
 
