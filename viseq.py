@@ -61,6 +61,10 @@ from viseqapp.constants import (
     DESTINATIONS,
     FRAME_SLEEP_ANIMATED,
     FRAME_SLEEP_IDLE,
+    FS_THUMB_H,
+    FS_THUMB_MAX_REQUESTS,
+    FS_THUMB_PREFIX,
+    FS_THUMB_W,
     HELP_ASCII_LOGO,
     HELP_LOGO_INDENT,
     HELP_WINDOW_HEIGHT,
@@ -2513,6 +2517,8 @@ def _prune_state_consumers(live_ids: set[str], known_ids: set[str]) -> None:
     transient table (BUG-2026-09-13T231500).
     """
     for target_id in list(thumbnails_data):
+        if target_id.startswith(FS_THUMB_PREFIX):
+            continue  # e43s03: the File Manager's per-file textures are not sources
         if target_id not in live_ids:
             tex_tags = thumbnails_data.pop(target_id)
             for tex_tag in tex_tags:
@@ -3685,6 +3691,7 @@ def _fs_apply_listing(path: str, payload: dict | None, status: int | None) -> No
     dpg.set_value(FILE_MANAGER_BREADCRUMB_TAG, state.fs_current_path)
     dpg.set_value(FILE_MANAGER_STATUS_TAG, state.fs_status)
     _fs_render_entries()
+    _fs_request_thumbnails(state.fs_entries)
 
 
 def _fs_entry_label(entry: dict[str, Any]) -> str:
@@ -3702,13 +3709,75 @@ def _fs_render_entries() -> None:
         return
     dpg.delete_item(FILE_MANAGER_ENTRIES_TAG, children_only=True)
     for index, entry in enumerate(state.fs_entries):
+        row = dpg.add_group(horizontal=True, parent=FILE_MANAGER_ENTRIES_TAG)
+        _fs_entry_thumb(entry, parent=row)
         dpg.add_selectable(
             label=_fs_entry_label(entry),
-            parent=FILE_MANAGER_ENTRIES_TAG,
+            parent=row,
             tag=f"fs_entry_{index}",
             callback=_on_fs_entry_click,
             user_data=entry,
         )
+
+
+def _fs_thumb_texture_tag(path: str) -> str:
+    """The texture tag the shared decoder creates for one file's thumbnail."""
+    return f"tex_{FS_THUMB_PREFIX}{path}_0"
+
+
+def _fs_media_path(entry: dict[str, Any]) -> str | None:
+    """The absolute path of a media entry on the current page, else None."""
+    if entry.get("kind") != "file" or entry.get("media_kind") not in ("video", "image"):
+        return None
+    return os.path.join(state.fs_current_path, str(entry.get("name") or ""))
+
+
+def _fs_entry_thumb(entry: dict[str, Any], parent: Any) -> None:
+    """The row's 64x36 preview when its texture exists, else a placeholder."""
+    path = _fs_media_path(entry)
+    if path is not None and dpg.does_item_exist(_fs_thumb_texture_tag(path)):
+        dpg.add_image(
+            _fs_thumb_texture_tag(path),
+            parent=parent,
+            width=FS_THUMB_W,
+            height=FS_THUMB_H,
+        )
+        return
+    dpg.add_text("  ", parent=parent)
+
+
+def _fs_request_thumbnails(entries: list[dict[str, Any]]) -> None:
+    """Ask for the current page's media thumbnails, lazily and bounded (e43s03).
+
+    Only video/image files are requested, entries whose texture already exists
+    are skipped, and the page contributes at most FS_THUMB_MAX_REQUESTS paths.
+    Stale work is DROPPED first: a navigation invalidates the previous page's
+    queue, which is the debounce (no timer needed — the user paces navigation).
+    """
+    while not state.fs_thumb_queue.empty():
+        with contextlib.suppress(queue.Empty):
+            state.fs_thumb_queue.get_nowait()
+            state.fs_thumb_queue.task_done()
+    state.fs_thumb_requested.clear()
+    requested = 0
+    for entry in entries:
+        if requested >= FS_THUMB_MAX_REQUESTS:
+            break
+        path = _fs_media_path(entry)
+        if path is None or dpg.does_item_exist(_fs_thumb_texture_tag(path)):
+            continue
+        state.fs_thumb_requested.add(path)
+        state.fs_thumb_queue.put(path)
+        requested += 1
+
+
+def _fs_on_thumb_texture(name: str) -> None:
+    """Repaint the browser when one of ITS thumbnails lands (e43s03)."""
+    if not name.startswith(FS_THUMB_PREFIX):
+        return
+    path = name[len(FS_THUMB_PREFIX) :]
+    if state.fs_current_path and os.path.dirname(path) == state.fs_current_path:
+        _fs_render_entries()
 
 
 def _on_fs_entry_click(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -9898,6 +9967,7 @@ with dpg.window(
 
 # NEW THREAD FOR HIGH-FREQUENCY FADES
 threading.Thread(target=fade_tick_loop, daemon=True).start()
+threading.Thread(target=fsclient.fs_thumb_worker, daemon=True).start()  # e43s03
 threading.Thread(target=cue_tick_loop, daemon=True).start()  # e35s03: cue engine clock
 threading.Thread(target=spectrum_analyzer_loop, daemon=True).start()
 threading.Thread(target=midi_clock_loop, daemon=True).start()
@@ -9999,6 +10069,7 @@ try:
         while not texture_queue.empty():
             name, idx, img_data, w, h = texture_queue.get()
             apply_thumbnail_texture(name, idx, img_data, w, h)
+            _fs_on_thumb_texture(name)
 
         tick_thumb_cycle(time.time())
 

@@ -110,6 +110,10 @@ fs_total: int = 0
 fs_selected: str | None = None
 fs_status: str = ""
 fs_busy: bool = False
+# e43s03: the browser's thumbnail requests — a worker drains this queue and
+# feeds the EXISTING blob/decode pipeline under the `fs:` key prefix.
+fs_thumb_queue: queue.Queue[Any] = queue.Queue()
+fs_thumb_requested: set[str] = set()
 
 # e41s04: the state pull lane. state_pull_supported is the runtime lane probe
 # (None = not yet tried, True = proven, False = given up for the session); while

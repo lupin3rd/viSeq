@@ -790,3 +790,13 @@ GRID_LED_GREEN = "green"
 
 
 GRID_FLASH_SECONDS = 0.12  # beat flash pulse duration (timer restores the head color)
+
+
+# e43s03: File Manager thumbnails. The texture namespace is prefixed so the
+# browser's per-file textures can never collide with a source thumbnail (and the
+# state-table prune must skip them). Only the current page's media files are
+# requested, capped, so a huge folder cannot fan out.
+FS_THUMB_PREFIX = "fs:"
+FS_THUMB_MAX_REQUESTS = 60
+FS_THUMB_W = 64
+FS_THUMB_H = 36

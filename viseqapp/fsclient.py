@@ -15,11 +15,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from viseqapp import pairing
-from viseqapp.constants import DATA_PLANE_TIMEOUT
+from viseqapp import pairing, state
+from viseqapp.constants import DATA_PLANE_TIMEOUT, FS_THUMB_PREFIX
+from viseqapp.queues import log_error
 
 FS_ROOTS_PATH = "/fs/roots"
 FS_LIST_PATH = "/fs/list"
+FS_THUMB_PATH = "/fs/thumb"
 
 
 def roots_url(host: str, port: int) -> str:
@@ -77,3 +79,38 @@ def fetch_listing(
         return None, status
     data = _decode(body)
     return (data if isinstance(data, dict) else None), status
+
+
+def thumbnail_url(host: str, port: int, path: str) -> str:
+    """URL of one file's JPEG thumbnail (the path is URL-encoded)."""
+    query = urllib.parse.urlencode({"path": str(path)})
+    return f"http://{host}:{port}{FS_THUMB_PATH}?{query}"
+
+
+def fetch_thumbnail(host: str, port: int, path: str) -> tuple[bytes | None, int | None]:
+    """One thumbnail JPEG, or ``(None, status|None)`` on any failure."""
+    if not host or not port:
+        return None, None
+    return _get(thumbnail_url(host, port, path))
+
+
+def fs_thumb_worker() -> None:
+    """Drain the browser's thumbnail requests into the decode pipeline (e43s03).
+
+    A JPEG blob is enqueued under the ``fs:<path>`` namespace, so the EXISTING
+    decoder creates a texture without touching any source thumbnail. The worker
+    is daemon-safe: a fetch failure logs and the loop continues, and the caller
+    dropped stale requests by clearing the queue on navigation.
+    """
+    while True:
+        path = state.fs_thumb_queue.get()
+        try:
+            blob, _status = fetch_thumbnail(state.dataplane_host, state.dataplane_port, path)
+            if blob is not None:
+                state.blob_queue.put((f"{FS_THUMB_PREFIX}{path}", "0", blob))
+            else:
+                state.fs_thumb_requested.discard(path)
+        except Exception as e:  # a worker thread must never die (Defensive Code)
+            log_error("File Manager thumbnails", str(e))
+        finally:
+            state.fs_thumb_queue.task_done()
