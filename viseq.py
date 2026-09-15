@@ -7824,23 +7824,24 @@ def _open_mapping_editor(
         )
         with dpg.group(tag="mapping_source_group"):
             themed_text("Source", slot="text_dim")
-            has_source = bool(mapping.get("target_id"))
+            # A line's '+' already knows the Source (e40s10 / e45): only the
+            # GENERAL creator (no target_id) asks for it. The hidden combo keeps
+            # the value, so the confirm can never pick an empty source
+            # (BUG-2026-09-15T202915).
+            source_value = str(target_id or "") if creating else str(mapping.get("target_id") or "")
+            has_source = bool(source_value)
             dpg.add_combo(
                 items=list(mapper.row_targets()),
-                default_value=str(target_id or "")
-                if creating
-                else str(mapping.get("target_id") or ""),
+                default_value=source_value,
                 width=280,
-                show=creating or not has_source,
+                show=not has_source,
                 tag="mapping_source_combo",
             )
-            if not creating and has_source:
-                # e40s10: on modify the Source is INFORMATION, not a picker —
-                # re-pointing a Line is the row thumbnail's job (retarget_source).
-                # The hidden combo above keeps the current value, so a confirm can
-                # never re-point by accident.
+            if has_source:
                 themed_text(
-                    f"{mapping['target_id']} (use the row thumbnail to re-point)",
+                    source_value
+                    if creating
+                    else f"{source_value} (use the row thumbnail to re-point)",
                     slot="text_dim",
                     tag="mapping_source_text",
                 )
