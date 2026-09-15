@@ -11147,10 +11147,16 @@ def _build_main_toolbar() -> None:
     with dpg.theme(tag=TOOLBAR_THEME_PLAIN), dpg.theme_component(dpg.mvThemeCat_Core):
         dpg.add_theme_color(dpg.mvThemeCol_WindowBg, (0, 0, 0, 0))
         dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (0, 0, 0, 0))
+        dpg.add_theme_color(dpg.mvThemeCol_PopupBg, (0, 0, 0, 0))
+        dpg.add_theme_color(dpg.mvThemeCol_MenuBarBg, (0, 0, 0, 0))
+        dpg.add_theme_color(dpg.mvThemeCol_TitleBg, (0, 0, 0, 0))
+        dpg.add_theme_color(dpg.mvThemeCol_TitleBgActive, (0, 0, 0, 0))
+        dpg.add_theme_color(dpg.mvThemeCol_TitleBgCollapsed, (0, 0, 0, 0))
         dpg.add_theme_color(dpg.mvThemeCol_Border, (0, 0, 0, 0))
         dpg.add_theme_color(dpg.mvThemeCol_BorderShadow, (0, 0, 0, 0))
         dpg.add_theme_style(dpg.mvStyleVar_WindowBorderSize, 0)
         dpg.add_theme_style(dpg.mvStyleVar_ChildBorderSize, 0)
+        dpg.add_theme_style(dpg.mvStyleVar_WindowRounding, 0)
         dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, TOOLBAR_BAR_PAD_X, TOOLBAR_BAR_PAD_Y)
         dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, TOOLBAR_ITEM_SPACING, 0)
     # A compact, borderless, auto-sized toolbar WINDOW: the native viewport menu
