@@ -4038,8 +4038,12 @@ FS_DRAFT_STATUS_TAG = "fs_draft_status"
 FS_DRAFT_TRANSITION_TAG = "fs_draft_transition"
 FS_DRAFT_CONFIRM_TAG = "fs_draft_load_confirm"
 FS_DRAFT_LEARN_SLOT = "fs_drafts_learn_slot"
+FS_DRAFT_RENAME_TAG = "fs_draft_rename_confirm"
+FS_DRAFT_RENAME_INPUT_TAG = "fs_draft_rename_input"
 DRAFT_CONFIRM_WIDTH = 460
 DRAFT_CONFIRM_HEIGHT = 230
+DRAFT_RENAME_WIDTH = 380
+DRAFT_RENAME_HEIGHT = 150
 
 
 def _drafts_status(text: str) -> None:
@@ -4054,6 +4058,60 @@ def _selected_draft() -> dict[str, Any] | None:
     if state.drafts_selected is None:
         return None
     return drafts.find_draft(state.drafts_library, state.drafts_selected)
+
+
+def fs_open_rename_draft(*_args: Any) -> None:
+    """Open the Rename modal for the selected draft (e44s01)."""
+    draft = _selected_draft()
+    if draft is None:
+        _drafts_status("Select a draft first.")
+        return
+    if dpg.does_item_exist(FS_DRAFT_RENAME_TAG):
+        dpg.delete_item(FS_DRAFT_RENAME_TAG)
+    with dpg.window(
+        label="Rename session",
+        tag=FS_DRAFT_RENAME_TAG,
+        modal=True,
+        width=DRAFT_RENAME_WIDTH,
+        height=DRAFT_RENAME_HEIGHT,
+        no_resize=True,
+    ):
+        dpg.add_input_text(
+            tag=FS_DRAFT_RENAME_INPUT_TAG,
+            default_value=str(draft.get("name") or ""),
+            width=DRAFT_RENAME_WIDTH - 40,
+        )
+        dpg.add_separator()
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="Cancel", width=130, callback=cancel_draft_rename)
+            dpg.add_button(label="Rename", width=130, callback=confirm_draft_rename)
+    dpg.show_item(FS_DRAFT_RENAME_TAG)
+
+
+def cancel_draft_rename(*_args: Any) -> None:
+    """Rename modal Cancel: nothing changes."""
+    if dpg.does_item_exist(FS_DRAFT_RENAME_TAG):
+        dpg.delete_item(FS_DRAFT_RENAME_TAG)
+
+
+def confirm_draft_rename(*_args: Any) -> None:
+    """Rename modal confirm: validate, apply and persist.
+
+    The input is read BEFORE the modal is deleted: DearPyGui returns None for a
+    deleted item, so a post-close read would silently discard the name
+    (BUG-2026-09-15T162441).
+    """
+    name = str(dpg.get_value(FS_DRAFT_RENAME_INPUT_TAG) or "")
+    if dpg.does_item_exist(FS_DRAFT_RENAME_TAG):
+        dpg.delete_item(FS_DRAFT_RENAME_TAG)
+    if state.drafts_selected is None:
+        return
+    if drafts.rename_draft(state.drafts_library, state.drafts_selected, name):
+        _drafts_mark_dirty()
+        refresh_drafts_ui()
+        _drafts_status(f"Renamed: {name.strip()}")
+    else:
+        _drafts_status("Enter a non-empty name not already used.")
 
 
 def _draft_needs_write(draft: dict[str, Any]) -> bool:
@@ -10455,6 +10513,7 @@ with dpg.window(
     with dpg.group(horizontal=True):
         dpg.add_button(label="New", callback=fs_new_draft)
         dpg.add_button(label="Delete", callback=fs_delete_selected_draft)
+        dpg.add_button(label="Rename", callback=fs_open_rename_draft)
         dpg.add_button(label="Add selected file", callback=fs_add_selected_to_draft)
         dpg.add_button(label="Write", callback=fs_write_draft)
         dpg.add_button(label="Load...", callback=fs_load_draft)
