@@ -11173,7 +11173,6 @@ def _build_main_toolbar() -> None:
             no_move=True,
             no_scrollbar=True,
             no_collapse=True,
-            no_background=True,
             no_bring_to_front_on_focus=True,
             no_saved_settings=True,
             no_scroll_with_mouse=True,
