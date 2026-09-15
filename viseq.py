@@ -10998,6 +10998,10 @@ TOOLBAR_THEME_OPEN = "theme_toolbar_open"
 TOOLBAR_THEME_ACTIVE = "theme_toolbar_active"
 TOOLBAR_THEME_PLAIN = "theme_toolbar_plain"
 TOOLBAR_BAR_MARGIN_RIGHT = 4
+TOOLBAR_ITEM_SPACING = 4
+TOOLBAR_BAR_PAD_X = 4
+TOOLBAR_BAR_PAD_Y = 3
+TOOLBAR_SEPARATOR_W = 1
 toolbar_icon_font: Any = None
 _toolbar_geom_sig: tuple[int, int] | None = None
 
@@ -11080,6 +11084,20 @@ def _toolbar_window_items() -> list[ToolbarItem]:
     ]
 
 
+def toolbar_bar_width() -> int:
+    """The exact width of the icon row (e46s01).
+
+    `autosize` did NOT fit the window to the icons on the rig (it stayed almost
+    viewport-wide, whose bottom border read as a full-width line), so the width
+    is computed from the items and the spacing/padding the plain theme sets.
+    """
+    buttons = sum(len(group) for group in TOOLBAR_ITEM_GROUPS)
+    separators = len(TOOLBAR_ITEM_GROUPS)
+    frames = buttons * TOOLBAR_ICON_BUTTON_W + separators * TOOLBAR_SEPARATOR_W
+    gaps = max(0, buttons + separators - 1) * TOOLBAR_ITEM_SPACING
+    return frames + gaps + 2 * TOOLBAR_BAR_PAD_X
+
+
 def reposition_toolbar() -> None:
     """Anchor the toolbar to the top-RIGHT of the viewport (e46s01)."""
     if not dpg.does_item_exist(TOOLBAR_BAR_TAG):
@@ -11114,7 +11132,8 @@ def _build_main_toolbar() -> None:
         dpg.add_theme_color(dpg.mvThemeCol_BorderShadow, (0, 0, 0, 0))
         dpg.add_theme_style(dpg.mvStyleVar_WindowBorderSize, 0)
         dpg.add_theme_style(dpg.mvStyleVar_ChildBorderSize, 0)
-        dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, 4, 3)
+        dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, TOOLBAR_BAR_PAD_X, TOOLBAR_BAR_PAD_Y)
+        dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, TOOLBAR_ITEM_SPACING, 0)
     # A compact, borderless, auto-sized toolbar WINDOW: the native viewport menu
     # bar always spans the full width and ignores item themes (probed), so it
     # cannot show "only the icons". This window is exactly as wide as the icons,
@@ -11130,7 +11149,9 @@ def _build_main_toolbar() -> None:
             no_background=True,
             no_bring_to_front_on_focus=True,
             no_saved_settings=True,
-            autosize=True,
+            no_scroll_with_mouse=True,
+            width=toolbar_bar_width(),
+            height=TOOLBAR_BAR_H,
             pos=TOOLBAR_BAR_POS,
         ),
         dpg.group(horizontal=True),
