@@ -474,7 +474,9 @@ def apply_window_layout(records: list[dict[str, Any]]) -> None:
         if not tag or not dpg.does_item_exist(tag):
             continue
         try:
-            dpg.set_item_pos(tag, rec["pos"])
+            pos = list(rec["pos"])
+            pos[1] = max(int(pos[1]), TOOLBAR_BAR_H)  # never under the toolbar strip
+            dpg.set_item_pos(tag, pos)
             dpg.set_item_width(tag, rec["size"][0])
             dpg.set_item_height(tag, rec["size"][1])
             shown = bool(rec.get("shown")) and tag not in LAYOUT_ALWAYS_HIDDEN_TAGS
@@ -3573,6 +3575,10 @@ FILE_MANAGER_HEIGHT = 640
 FILE_MANAGER_LIST_HEIGHT = 300
 FS_ENTRIES_COLUMNS = 2
 FS_ENTRY_LABEL_WIDTH = 220
+# e46s01: the compact toolbar strip at the top of the viewport; the workspace
+# windows start below it so the borderless toolbar is never covered.
+TOOLBAR_BAR_H = 34
+TOOLBAR_BAR_POS = (2, 4)
 
 
 def show_file_manager_window(*_args: Any) -> None:
@@ -10316,7 +10322,7 @@ with dpg.window(
     label="Step Sequencer",
     width=1050,
     height=800,
-    pos=(10, 10),
+    pos=(10, TOOLBAR_BAR_H),
     no_close=True,
     tag="sequencer_window",
 ):
@@ -10648,7 +10654,7 @@ with (
         label="Vimix sources",
         width=550,
         height=690,
-        pos=(1100, 10),
+        pos=(1100, TOOLBAR_BAR_H),
         no_close=True,
         tag="vimix_media_window",
     ),
@@ -10984,8 +10990,6 @@ TOOLBAR_RECENTS_TAG = "toolbar_recents_popup"
 TOOLBAR_BAR_TAG = "main_toolbar_bar"
 TOOLBAR_THEME_OPEN = "theme_toolbar_open"
 TOOLBAR_THEME_ACTIVE = "theme_toolbar_active"
-TOOLBAR_THEME_BAR = "theme_toolbar_bar"
-TOOLBAR_BAR_PAD_Y = 9  # frame padding: the menu bar's row grows so the icons fit
 toolbar_icon_font: Any = None
 
 
@@ -11055,37 +11059,43 @@ def _build_main_toolbar() -> None:
         dpg.add_theme_color(
             dpg.mvThemeCol_ButtonHovered, palette_rgba(state.active_palette["accent"])
         )
-    # The native menu bar always spans the viewport width: a transparent
-    # background and no border leave ONLY the icons visible (e46s01).
-    dpg.add_viewport_menu_bar(tag=TOOLBAR_BAR_TAG)
-    with dpg.theme(tag=TOOLBAR_THEME_BAR), dpg.theme_component(dpg.mvThemeCat_Core):
-        # Only the icons: no strip, no border, and enough frame padding that the
-        # 26px buttons are not clipped by the menu bar's own row height.
-        dpg.add_theme_color(dpg.mvThemeCol_MenuBarBg, (0, 0, 0, 0))
-        dpg.add_theme_color(dpg.mvThemeCol_WindowBg, (0, 0, 0, 0))
-        dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (0, 0, 0, 0))
-        dpg.add_theme_style(dpg.mvStyleVar_WindowBorderSize, 0)
-        dpg.add_theme_style(dpg.mvStyleVar_ChildBorderSize, 0)
-        dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 6, TOOLBAR_BAR_PAD_Y)
-    dpg.bind_item_theme(TOOLBAR_BAR_TAG, TOOLBAR_THEME_BAR)
-    for group in TOOLBAR_ITEM_GROUPS:
-        for item in group:
-            kind, target, _glyph, label, shortcut = item
-            tag = _toolbar_button_tag(kind, target)
-            dpg.add_button(
-                label=_toolbar_item_text(item),
-                tag=tag,
-                parent=TOOLBAR_BAR_TAG,
-                width=TOOLBAR_ICON_BUTTON_W,
-                height=TOOLBAR_ICON_BUTTON_H,
-                callback=on_toolbar_item,
-                user_data={"kind": kind, "target": target},
-            )
-            if toolbar_icon_font is not None:
-                dpg.bind_item_font(tag, toolbar_icon_font)
-            with dpg.tooltip(tag):
-                dpg.add_text(f"{label} ({shortcut})" if shortcut else label)
-        dpg.add_separator(parent=TOOLBAR_BAR_TAG)
+    # A compact, borderless, auto-sized toolbar WINDOW: the native viewport menu
+    # bar always spans the full width and ignores item themes (probed), so it
+    # cannot show "only the icons". This window is exactly as wide as the icons,
+    # has no background/border, and the workspace windows start at TOOLBAR_BAR_H.
+    with (
+        dpg.window(
+            tag=TOOLBAR_BAR_TAG,
+            no_title_bar=True,
+            no_resize=True,
+            no_move=True,
+            no_scrollbar=True,
+            no_collapse=True,
+            no_background=True,
+            no_bring_to_front_on_focus=True,
+            no_saved_settings=True,
+            autosize=True,
+            pos=TOOLBAR_BAR_POS,
+        ),
+        dpg.group(horizontal=True),
+    ):
+        for group in TOOLBAR_ITEM_GROUPS:
+            for item in group:
+                kind, target, _glyph, label, shortcut = item
+                tag = _toolbar_button_tag(kind, target)
+                dpg.add_button(
+                    label=_toolbar_item_text(item),
+                    tag=tag,
+                    width=TOOLBAR_ICON_BUTTON_W,
+                    height=TOOLBAR_ICON_BUTTON_H,
+                    callback=on_toolbar_item,
+                    user_data={"kind": kind, "target": target},
+                )
+                if toolbar_icon_font is not None:
+                    dpg.bind_item_font(tag, toolbar_icon_font)
+                with dpg.tooltip(tag):
+                    dpg.add_text(f"{label} ({shortcut})" if shortcut else label)
+            dpg.add_separator()
 
 
 def on_toolbar_item(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
