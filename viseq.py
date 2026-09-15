@@ -10996,6 +10996,7 @@ TOOLBAR_RECENTS_TAG = "toolbar_recents_popup"
 TOOLBAR_BAR_TAG = "main_toolbar_bar"
 TOOLBAR_THEME_OPEN = "theme_toolbar_open"
 TOOLBAR_THEME_ACTIVE = "theme_toolbar_active"
+TOOLBAR_THEME_FLAT = "theme_toolbar_flat"
 TOOLBAR_THEME_PLAIN = "theme_toolbar_plain"
 TOOLBAR_BAR_MARGIN_RIGHT = 4
 TOOLBAR_ITEM_SPACING = 4
@@ -11111,18 +11112,36 @@ def reposition_toolbar() -> None:
     )
 
 
+def _toolbar_color(slot: str, alpha: int) -> tuple[int, int, int, int]:
+    """A palette colour with an explicit alpha, for the accent highlights (e46s01)."""
+    red, green, blue, _ = palette_rgba(state.active_palette[slot])
+    return (red, green, blue, alpha)
+
+
 def _build_main_toolbar() -> None:
-    """Build the flat icon bar (called once, at the menubar position)."""
+    """Build the flat icon bar (called once, at the menubar position).
+
+    The buttons are FLAT: no frame, no background, no border, so only the glyph
+    shows (the aligned frame top edges read as a "line" on the rig). The accent
+    marks an open window (soft) and the active one (full).
+    """
+    with dpg.theme(tag=TOOLBAR_THEME_FLAT), dpg.theme_component(dpg.mvThemeCat_Core):
+        dpg.add_theme_color(dpg.mvThemeCol_Button, (0, 0, 0, 0))
+        dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, _toolbar_color("accent", 80))
+        dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, _toolbar_color("accent", 140))
+        dpg.add_theme_color(dpg.mvThemeCol_Border, (0, 0, 0, 0))
+        dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 0)
+        dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 0)
     with dpg.theme(tag=TOOLBAR_THEME_OPEN), dpg.theme_component(dpg.mvThemeCat_Core):
-        dpg.add_theme_color(dpg.mvThemeCol_Button, palette_rgba(state.active_palette["text_dim"]))
-        dpg.add_theme_color(
-            dpg.mvThemeCol_ButtonHovered, palette_rgba(state.active_palette["accent"])
-        )
+        dpg.add_theme_color(dpg.mvThemeCol_Button, _toolbar_color("accent", 110))
+        dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, _toolbar_color("accent", 150))
+        dpg.add_theme_color(dpg.mvThemeCol_Border, (0, 0, 0, 0))
+        dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 0)
     with dpg.theme(tag=TOOLBAR_THEME_ACTIVE), dpg.theme_component(dpg.mvThemeCat_Core):
-        dpg.add_theme_color(dpg.mvThemeCol_Button, palette_rgba(state.active_palette["accent"]))
-        dpg.add_theme_color(
-            dpg.mvThemeCol_ButtonHovered, palette_rgba(state.active_palette["accent"])
-        )
+        dpg.add_theme_color(dpg.mvThemeCol_Button, _toolbar_color("accent", 255))
+        dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, _toolbar_color("accent", 255))
+        dpg.add_theme_color(dpg.mvThemeCol_Border, (0, 0, 0, 0))
+        dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 0)
     # The toolbar window is fully plain: no background, no 1px window border
     # (the rig line above the icons), a small padding.
     with dpg.theme(tag=TOOLBAR_THEME_PLAIN), dpg.theme_component(dpg.mvThemeCat_Core):
@@ -11170,6 +11189,7 @@ def _build_main_toolbar() -> None:
                 )
                 if toolbar_icon_font is not None:
                     dpg.bind_item_font(tag, toolbar_icon_font)
+                dpg.bind_item_theme(tag, TOOLBAR_THEME_FLAT)
                 with dpg.tooltip(tag):
                     dpg.add_text(f"{label} ({shortcut})" if shortcut else label)
             dpg.add_separator()
@@ -11215,7 +11235,7 @@ def refresh_toolbar_icons() -> None:
         elif dpg.does_item_exist(target) and dpg.is_item_shown(target):
             dpg.bind_item_theme(tag, TOOLBAR_THEME_OPEN)
         else:
-            dpg.bind_item_theme(tag, 0)
+            dpg.bind_item_theme(tag, TOOLBAR_THEME_FLAT)
 
 
 def show_recent_projects_popup() -> None:
