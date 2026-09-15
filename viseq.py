@@ -3726,7 +3726,8 @@ def _fs_render_entries() -> None:
         for index in range(start, min(start + FS_ENTRIES_COLUMNS, total)):
             entry = state.fs_entries[index]
             cell = dpg.add_group(horizontal=True, parent=row)
-            _fs_entry_thumb(entry, parent=cell)
+            thumb_tag = f"fs_thumb_{index}"
+            _fs_entry_thumb(entry, parent=cell, thumb_tag=thumb_tag)
             item_tag = f"fs_entry_{index}"
             dpg.add_selectable(
                 label=_fs_entry_label(entry),
@@ -3736,28 +3737,29 @@ def _fs_render_entries() -> None:
                 callback=_on_fs_entry_click,
                 user_data=entry,
             )
-            _fs_bind_row_menu(item_tag, entry)
+            _fs_bind_row_menu(item_tag, thumb_tag, entry)
 
 
 FS_ROW_POPUP_TAG = "fs_row_popup"
 
 
-def _fs_bind_row_menu(item_tag: str, entry: dict[str, Any]) -> None:
-    """Bind the row's right-click menu (e43s04)."""
+def _fs_bind_row_menu(item_tag: str, thumb_tag: str, entry: dict[str, Any]) -> None:
+    """Bind the row's right-click menu to the name AND the thumbnail (e44s05)."""
     registry = f"fs_row_reg_{item_tag}"
     if dpg.does_item_exist(registry):
         dpg.delete_item(registry)
     with dpg.item_handler_registry(tag=registry):
         dpg.add_item_clicked_handler(button=1, callback=_on_fs_entry_right_click, user_data=entry)
     dpg.bind_item_handler_registry(item_tag, registry)
+    dpg.bind_item_handler_registry(thumb_tag, registry)
 
 
 def _on_fs_entry_right_click(
     sender: Any = None, app_data: Any = None, user_data: Any = None
 ) -> None:
-    """Right-click a row: offer Preview... for VIDEO files only (e43s04)."""
+    """Right-click a file row: Add to session, plus Preview... for videos (e44s05)."""
     entry = user_data if isinstance(user_data, dict) else {}
-    if entry.get("kind") != "file" or entry.get("media_kind") != "video":
+    if entry.get("kind") != "file" or entry.get("media_kind") not in ("video", "image"):
         return
     path = os.path.join(state.fs_current_path, str(entry.get("name") or ""))
     if dpg.does_item_exist(FS_ROW_POPUP_TAG):
@@ -3771,8 +3773,19 @@ def _on_fs_entry_right_click(
         min_size=(200, 10),
     ):
         dpg.add_text(os.path.basename(path))
-        dpg.add_button(label="Preview...", user_data=path, callback=_on_fs_preview_click)
+        dpg.add_button(label="Add to session", user_data=path, callback=_on_fs_add_to_session_click)
+        if entry.get("media_kind") == "video":
+            dpg.add_button(label="Preview...", user_data=path, callback=_on_fs_preview_click)
     dpg.show_item(FS_ROW_POPUP_TAG)
+
+
+def _on_fs_add_to_session_click(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """The row popup's Add to session item: append the clicked file (e44s05)."""
+    if dpg.does_item_exist(FS_ROW_POPUP_TAG):
+        dpg.delete_item(FS_ROW_POPUP_TAG)
+    fs_add_path_to_draft(str(user_data or ""))
 
 
 def _on_fs_preview_click(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -3818,18 +3831,23 @@ def _fs_media_path(entry: dict[str, Any]) -> str | None:
     return os.path.join(state.fs_current_path, str(entry.get("name") or ""))
 
 
-def _fs_entry_thumb(entry: dict[str, Any], parent: Any) -> None:
-    """The row's 64x36 preview when its texture exists, else a placeholder."""
+def _fs_entry_thumb(entry: dict[str, Any], parent: Any, thumb_tag: str) -> None:
+    """The row's 64x36 preview when its texture exists, else a placeholder.
+
+    ``thumb_tag`` is the widget tag the row menu binds to (e44s05), so a
+    right-click on the thumbnail opens the same menu as the name.
+    """
     path = _fs_media_path(entry)
     if path is not None and dpg.does_item_exist(_fs_thumb_texture_tag(path)):
         dpg.add_image(
             _fs_thumb_texture_tag(path),
             parent=parent,
+            tag=thumb_tag,
             width=FS_THUMB_W,
             height=FS_THUMB_H,
         )
         return
-    dpg.add_text("  ", parent=parent)
+    dpg.add_text("  ", parent=parent, tag=thumb_tag)
 
 
 def _fs_request_thumbnails(entries: list[dict[str, Any]]) -> None:
@@ -4010,14 +4028,15 @@ def fs_delete_selected_draft(*_args: Any) -> None:
         refresh_drafts_ui()
 
 
-def fs_add_selected_to_draft(*_args: Any) -> None:
-    """Add the browser's selected file to the selected draft (creating one)."""
+def fs_add_path_to_draft(path: str) -> None:
+    """Add one path to the selected draft, creating a draft when needed (e44s05)."""
+    if not str(path).strip():
+        return
     if state.drafts_selected is None:
         fs_new_draft()
-    if state.drafts_selected is None or not state.fs_selected or not state.fs_current_path:
+    if state.drafts_selected is None:
         return
-    path = os.path.join(state.fs_current_path, str(state.fs_selected))
-    if drafts.add_files(state.drafts_library, state.drafts_selected, [path]):
+    if drafts.add_files(state.drafts_library, state.drafts_selected, [str(path)]):
         _drafts_mark_dirty()
         refresh_drafts_ui()
 
@@ -10696,7 +10715,6 @@ with dpg.window(
         dpg.add_button(label="Open...", callback=fs_open_sessions)
         dpg.add_button(label="Delete", callback=fs_delete_selected_draft)
         dpg.add_button(label="Rename", callback=fs_open_rename_draft)
-        dpg.add_button(label="Add selected file", callback=fs_add_selected_to_draft)
         dpg.add_button(label="Save", callback=fs_write_draft)
         dpg.add_button(label="Send to Vimix", callback=fs_load_draft)
         with dpg.group(tag=FS_DRAFT_LEARN_SLOT, horizontal=True):
