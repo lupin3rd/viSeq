@@ -3590,6 +3590,8 @@ FILE_MANAGER_LEARN_SLOT = "fs_learn_slot"
 FILE_MANAGER_WIDTH = 660
 FILE_MANAGER_HEIGHT = 640
 FILE_MANAGER_LIST_HEIGHT = 300
+FS_ENTRIES_COLUMNS = 2
+FS_ENTRY_LABEL_WIDTH = 220
 
 
 def show_file_manager_window(*_args: Any) -> None:
@@ -3710,22 +3712,31 @@ def _fs_entry_label(entry: dict[str, Any]) -> str:
 
 
 def _fs_render_entries() -> None:
-    """Rebuild the entry list from ``state.fs_entries`` (main thread)."""
+    """Rebuild the entry list from ``state.fs_entries`` (main thread).
+
+    Two entries per row (e44s04) keeps the window short; every cell keeps its
+    own thumbnail, selectable and context-menu binding.
+    """
     if not dpg.does_item_exist(FILE_MANAGER_ENTRIES_TAG):
         return
     dpg.delete_item(FILE_MANAGER_ENTRIES_TAG, children_only=True)
-    for index, entry in enumerate(state.fs_entries):
+    total = len(state.fs_entries)
+    for start in range(0, total, FS_ENTRIES_COLUMNS):
         row = dpg.add_group(horizontal=True, parent=FILE_MANAGER_ENTRIES_TAG)
-        _fs_entry_thumb(entry, parent=row)
-        item_tag = f"fs_entry_{index}"
-        dpg.add_selectable(
-            label=_fs_entry_label(entry),
-            parent=row,
-            tag=item_tag,
-            callback=_on_fs_entry_click,
-            user_data=entry,
-        )
-        _fs_bind_row_menu(item_tag, entry)
+        for index in range(start, min(start + FS_ENTRIES_COLUMNS, total)):
+            entry = state.fs_entries[index]
+            cell = dpg.add_group(horizontal=True, parent=row)
+            _fs_entry_thumb(entry, parent=cell)
+            item_tag = f"fs_entry_{index}"
+            dpg.add_selectable(
+                label=_fs_entry_label(entry),
+                parent=cell,
+                tag=item_tag,
+                width=FS_ENTRY_LABEL_WIDTH,
+                callback=_on_fs_entry_click,
+                user_data=entry,
+            )
+            _fs_bind_row_menu(item_tag, entry)
 
 
 FS_ROW_POPUP_TAG = "fs_row_popup"
@@ -3928,15 +3939,19 @@ def refresh_drafts_ui(*_args: Any) -> None:
     if not dpg.does_item_exist(FS_DRAFTS_GROUP):
         return
     dpg.delete_item(FS_DRAFTS_GROUP, children_only=True)
-    for draft in state.drafts_library.get("drafts", []):
-        marked = "* " if draft.get("id") == state.drafts_selected else ""
-        dpg.add_selectable(
-            label=f"{marked}{draft.get('name')} ({len(draft.get('files', []))})",
-            parent=FS_DRAFTS_GROUP,
-            tag=f"fs_draft_{draft.get('id')}",
-            callback=fs_select_draft,
-            user_data={"id": draft.get("id")},
-        )
+    library_drafts = list(state.drafts_library.get("drafts", []))
+    for start in range(0, len(library_drafts), FS_ENTRIES_COLUMNS):
+        row = dpg.add_group(horizontal=True, parent=FS_DRAFTS_GROUP)
+        for draft in library_drafts[start : start + FS_ENTRIES_COLUMNS]:
+            marked = "* " if draft.get("id") == state.drafts_selected else ""
+            dpg.add_selectable(
+                label=f"{marked}{draft.get('name')} ({len(draft.get('files', []))})",
+                parent=row,
+                tag=f"fs_draft_{draft.get('id')}",
+                width=FS_DRAFT_LABEL_WIDTH,
+                callback=fs_select_draft,
+                user_data={"id": draft.get("id")},
+            )
     if not dpg.does_item_exist(FS_DRAFT_FILES_GROUP):
         return
     dpg.delete_item(FS_DRAFT_FILES_GROUP, children_only=True)
@@ -4041,6 +4056,8 @@ FS_DRAFT_CONFIRM_TAG = "fs_draft_load_confirm"
 FS_DRAFT_LEARN_SLOT = "fs_drafts_learn_slot"
 FS_DRAFT_RENAME_TAG = "fs_draft_rename_confirm"
 FS_DRAFT_RENAME_INPUT_TAG = "fs_draft_rename_input"
+FS_DRAFTS_SEPARATOR_TAG = "fs_drafts_separator"
+FS_DRAFT_LABEL_WIDTH = 220
 FS_SESSION_PICKER_TAG = "fs_session_picker"
 FS_SESSION_LIST_TAG = "fs_session_list"
 FS_SESSION_DETAIL_TAG = "fs_session_detail"
@@ -10672,6 +10689,7 @@ with dpg.window(
     with dpg.group(parent="fs_scroll", tag=FILE_MANAGER_ENTRIES_TAG):
         pass
     themed_text("", slot="text_dim", tag=FILE_MANAGER_STATUS_TAG)
+    dpg.add_separator(tag=FS_DRAFTS_SEPARATOR_TAG)
     themed_text("Session Drafts", slot="text")
     with dpg.group(horizontal=True):
         dpg.add_button(label="New", callback=fs_new_draft)
