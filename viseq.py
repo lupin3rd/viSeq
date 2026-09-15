@@ -11145,15 +11145,17 @@ def _build_main_toolbar() -> None:
     # The toolbar window is fully plain: no background, no 1px window border
     # (the rig line above the icons), a small padding.
     with dpg.theme(tag=TOOLBAR_THEME_PLAIN), dpg.theme_component(dpg.mvThemeCat_Core):
-        dpg.add_theme_color(dpg.mvThemeCol_WindowBg, (0, 0, 0, 0))
-        dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (0, 0, 0, 0))
-        dpg.add_theme_color(dpg.mvThemeCol_PopupBg, (0, 0, 0, 0))
-        dpg.add_theme_color(dpg.mvThemeCol_MenuBarBg, (0, 0, 0, 0))
-        dpg.add_theme_color(dpg.mvThemeCol_TitleBg, (0, 0, 0, 0))
-        dpg.add_theme_color(dpg.mvThemeCol_TitleBgActive, (0, 0, 0, 0))
-        dpg.add_theme_color(dpg.mvThemeCol_TitleBgCollapsed, (0, 0, 0, 0))
-        dpg.add_theme_color(dpg.mvThemeCol_Border, (0, 0, 0, 0))
-        dpg.add_theme_color(dpg.mvThemeCol_BorderShadow, (0, 0, 0, 0))
+        # DIAGNOSTIC (temporary, remove after the rig test): each chrome part gets
+        # a distinct color so the user can name the line's element.
+        dpg.add_theme_color(dpg.mvThemeCol_WindowBg, (255, 0, 0, 255))  # red
+        dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (255, 128, 0, 255))  # orange
+        dpg.add_theme_color(dpg.mvThemeCol_PopupBg, (0, 255, 255, 255))  # cyan
+        dpg.add_theme_color(dpg.mvThemeCol_MenuBarBg, (128, 0, 255, 255))  # violet
+        dpg.add_theme_color(dpg.mvThemeCol_TitleBg, (0, 0, 255, 255))  # blue
+        dpg.add_theme_color(dpg.mvThemeCol_TitleBgActive, (0, 0, 255, 255))
+        dpg.add_theme_color(dpg.mvThemeCol_TitleBgCollapsed, (0, 0, 255, 255))
+        dpg.add_theme_color(dpg.mvThemeCol_Border, (0, 255, 0, 255))  # green
+        dpg.add_theme_color(dpg.mvThemeCol_BorderShadow, (255, 0, 255, 255))  # magenta
         dpg.add_theme_style(dpg.mvStyleVar_WindowBorderSize, 0)
         dpg.add_theme_style(dpg.mvStyleVar_ChildBorderSize, 0)
         dpg.add_theme_style(dpg.mvStyleVar_WindowRounding, 0)
