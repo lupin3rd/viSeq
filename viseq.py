@@ -9767,6 +9767,15 @@ def tick_toolbar() -> None:
     if sig != _window_menu_sig:
         _window_menu_sig = sig
         refresh_toolbar_icons()
+    # e46s01: keep the toolbar anchored to the top-right on resize / width changes.
+    global _toolbar_geom_sig
+    geometry = (
+        int(dpg.get_item_width(TOOLBAR_BAR_TAG) or 0),
+        int(dpg.get_viewport_client_width() or 0),
+    )
+    if geometry != _toolbar_geom_sig:
+        _toolbar_geom_sig = geometry
+        reposition_toolbar()
 
 
 def switch_to_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -10323,7 +10332,6 @@ with dpg.window(
     width=1050,
     height=800,
     pos=(10, TOOLBAR_BAR_H),
-    no_close=True,
     tag="sequencer_window",
 ):
     # Single compact row: transport + all beat sources (abbreviated labels, e10s08).
@@ -10487,7 +10495,6 @@ with dpg.window(
     width=350,
     height=272,
     pos=(10, 806),
-    no_close=True,
     tag="audio_window",
 ):
     dpg.add_combo(
@@ -10655,7 +10662,6 @@ with (
         width=550,
         height=690,
         pos=(1100, TOOLBAR_BAR_H),
-        no_close=True,
         tag="vimix_media_window",
     ),
     dpg.group(tag="vimix_media_group"),
@@ -10970,9 +10976,9 @@ TOOLBAR_ITEM_GROUPS: tuple[tuple[ToolbarItem, ...], ...] = (
         ("action", "last_project", "\uf1da", "Last project", ""),
     ),
     (
-        ("focus", "sequencer_window", "\uf00a", "Step Sequencer", "Ctrl+Tab"),
-        ("focus", "audio_window", "\uf080", "Audio analyzer", "Ctrl+Tab"),
-        ("focus", "vimix_media_window", "\uf108", "Vimix sources", "Ctrl+Tab"),
+        ("toggle", "sequencer_window", "\uf00a", "Step Sequencer", "Ctrl+Tab"),
+        ("toggle", "audio_window", "\uf080", "Audio analyzer", "Ctrl+Tab"),
+        ("toggle", "vimix_media_window", "\uf108", "Vimix sources", "Ctrl+Tab"),
         ("toggle", "mapper_window", "\uf0ce", "Mapper", ""),
         ("toggle", "logs_window", "\uf0ca", "Logs", ""),
         ("toggle", "io_monitor_window", "\uf0ec", "I/O Monitor", ""),
@@ -10990,7 +10996,10 @@ TOOLBAR_RECENTS_TAG = "toolbar_recents_popup"
 TOOLBAR_BAR_TAG = "main_toolbar_bar"
 TOOLBAR_THEME_OPEN = "theme_toolbar_open"
 TOOLBAR_THEME_ACTIVE = "theme_toolbar_active"
+TOOLBAR_THEME_PLAIN = "theme_toolbar_plain"
+TOOLBAR_BAR_MARGIN_RIGHT = 4
 toolbar_icon_font: Any = None
+_toolbar_geom_sig: tuple[int, int] | None = None
 
 
 def _toolbar_button_tag(kind: str, target: str) -> str:
@@ -11026,9 +11035,33 @@ def _toolbar_item_text(item: ToolbarItem) -> str:
     return item[2] if toolbar_icon_font is not None else item[3]
 
 
+def _show_and_focus(tag: str) -> None:
+    """Show + focus a workspace window (a toolbar toggle target, e46s01)."""
+    dpg.show_item(tag)
+    dpg.focus_item(tag)
+
+
+def show_sequencer_window(*_args: Any) -> None:
+    """Open the Step Sequencer (a toggle window since e46s01)."""
+    _show_and_focus("sequencer_window")
+
+
+def show_audio_window(*_args: Any) -> None:
+    """Open the Audio analyzer (a toggle window since e46s01)."""
+    _show_and_focus("audio_window")
+
+
+def show_vimix_window(*_args: Any) -> None:
+    """Open the Vimix sources grid (a toggle window since e46s01)."""
+    _show_and_focus("vimix_media_window")
+
+
 def _toolbar_show_func(target: str) -> Any:
     """The show function of a toolbar window target."""
     return {
+        "sequencer_window": show_sequencer_window,
+        "audio_window": show_audio_window,
+        "vimix_media_window": show_vimix_window,
         "mapper_window": show_mapper_window,
         "logs_window": show_logs_window,
         "io_monitor_window": show_io_monitor,
@@ -11047,6 +11080,19 @@ def _toolbar_window_items() -> list[ToolbarItem]:
     ]
 
 
+def reposition_toolbar() -> None:
+    """Anchor the toolbar to the top-RIGHT of the viewport (e46s01)."""
+    if not dpg.does_item_exist(TOOLBAR_BAR_TAG):
+        return
+    width = int(dpg.get_item_width(TOOLBAR_BAR_TAG) or 0)
+    client = int(dpg.get_viewport_client_width() or 0)
+    if width <= 0 or client <= 0:
+        return
+    dpg.set_item_pos(
+        TOOLBAR_BAR_TAG, (max(0, client - width - TOOLBAR_BAR_MARGIN_RIGHT), TOOLBAR_BAR_POS[1])
+    )
+
+
 def _build_main_toolbar() -> None:
     """Build the flat icon bar (called once, at the menubar position)."""
     with dpg.theme(tag=TOOLBAR_THEME_OPEN), dpg.theme_component(dpg.mvThemeCat_Core):
@@ -11059,6 +11105,16 @@ def _build_main_toolbar() -> None:
         dpg.add_theme_color(
             dpg.mvThemeCol_ButtonHovered, palette_rgba(state.active_palette["accent"])
         )
+    # The toolbar window is fully plain: no background, no 1px window border
+    # (the rig line above the icons), a small padding.
+    with dpg.theme(tag=TOOLBAR_THEME_PLAIN), dpg.theme_component(dpg.mvThemeCat_Core):
+        dpg.add_theme_color(dpg.mvThemeCol_WindowBg, (0, 0, 0, 0))
+        dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (0, 0, 0, 0))
+        dpg.add_theme_color(dpg.mvThemeCol_Border, (0, 0, 0, 0))
+        dpg.add_theme_color(dpg.mvThemeCol_BorderShadow, (0, 0, 0, 0))
+        dpg.add_theme_style(dpg.mvStyleVar_WindowBorderSize, 0)
+        dpg.add_theme_style(dpg.mvStyleVar_ChildBorderSize, 0)
+        dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, 4, 3)
     # A compact, borderless, auto-sized toolbar WINDOW: the native viewport menu
     # bar always spans the full width and ignores item themes (probed), so it
     # cannot show "only the icons". This window is exactly as wide as the icons,
@@ -11096,6 +11152,7 @@ def _build_main_toolbar() -> None:
                 with dpg.tooltip(tag):
                     dpg.add_text(f"{label} ({shortcut})" if shortcut else label)
             dpg.add_separator()
+    dpg.bind_item_theme(TOOLBAR_BAR_TAG, TOOLBAR_THEME_PLAIN)
 
 
 def on_toolbar_item(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
