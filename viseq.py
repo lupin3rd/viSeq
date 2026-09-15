@@ -2552,7 +2552,7 @@ def _prune_state_consumers(live_ids: set[str], known_ids: set[str]) -> None:
     if removed_mappings:
         for removed in removed_mappings:
             _drop_mapping_editor_and_runs(int(removed["id"]))  # e35s05
-        refresh_mapper_ui()  # a removed source takes its mappings with it (e16)
+        refresh_mapper_ui()  # a vanished source disables its Mappings (e45s02)
     if state.viseq_selected_source is not None and state.viseq_selected_source not in live_ids:
         state.viseq_selected_source = None  # a pruned source can't stay selected (e10s06)
     if state.preview_active is not None and state.preview_active not in live_ids:
@@ -2590,6 +2590,7 @@ def update_vimix_sources_ui(json_string: str) -> None:
         # table that never listed a target is not evidence either — only a name
         # seen before and now absent removes a Mapping.
         if live_ids:
+            _apply_pending_remap(live_ids)  # e45s02: before the orphan pass
             _prune_state_consumers(live_ids, state.known_sources)
             state.known_sources |= live_ids
 
@@ -4105,6 +4106,11 @@ FS_DRAFT_LABEL_WIDTH = 220
 FS_DRAFT_ALPHA_TAG = "fs_draft_alpha"
 FS_DRAFT_ALPHA_WIDTH = 70
 FS_DRAFT_ALPHA_STEP = 0.1
+# e45s02: the Send-time reassignment panel.
+REMAP_NONE = "\u2014"
+REMAP_TIMEOUT_S = 60.0
+FS_REMAP_GROUP_TAG = "fs_remap_group"
+FS_REMAP_VIEW_HEIGHT = 160
 FS_SESSION_PICKER_TAG = "fs_session_picker"
 FS_SESSION_LIST_TAG = "fs_session_list"
 FS_SESSION_DETAIL_TAG = "fs_session_detail"
@@ -4466,6 +4472,163 @@ def draft_visibility_warning(draft: dict[str, Any] | None) -> str:
     return "Warning: no source has alpha > 0 - the session will load with nothing visible."
 
 
+def _source_index_by_name() -> dict[str, int]:
+    """The live sources' name -> vimix index (the positional pre-selection)."""
+    by_name: dict[str, int] = {}
+    sources = state.global_vimix_state.get("sources") or {}
+    for key, props in sources.items():
+        if not isinstance(props, dict):
+            continue
+        name = str(props.get("name") or key)
+        raw_index = props.get("index")
+        try:
+            index = int(raw_index) if raw_index is not None else int(key)
+        except (TypeError, ValueError):
+            continue
+        by_name[name] = index
+    return by_name
+
+
+def remap_bindings() -> list[dict[str, Any]]:
+    """The bound Mapper rows and Sequencer tracks for the Send panel (e45s02)."""
+    index_by_name = _source_index_by_name()
+    bindings: list[dict[str, Any]] = []
+    for position, target in enumerate(mapper.row_targets()):
+        bindings.append(
+            {
+                "kind": "mapper",
+                "key": str(target),
+                "label": f"Mapper {position + 1}",
+                "index": index_by_name.get(str(target)),
+            }
+        )
+    for row, track in enumerate(state.tracks_data):
+        track_target = track.get("target_id")
+        if track_target:
+            bindings.append(
+                {
+                    "kind": "seq",
+                    "key": int(row),
+                    "label": f"Seq {row + 1}",
+                    "index": index_by_name.get(str(track_target)),
+                }
+            )
+    return bindings
+
+
+def remap_options(sources: list[dict[str, Any]]) -> list[str]:
+    """The select items: ``-`` plus ``N. name`` per new-session source."""
+    return [REMAP_NONE] + [
+        f"{position + 1}. {source.get('name')}" for position, source in enumerate(sources)
+    ]
+
+
+def remap_preselection(options: list[str], index: int | None) -> str:
+    """The positional default for a binding whose old source sat at ``index``."""
+    if index is None or index < 0 or index + 1 >= len(options):
+        return REMAP_NONE
+    return options[index + 1]
+
+
+def _remap_row_tag(kind: str, key: Any) -> str:
+    return f"fs_remap_{kind}_{key}"
+
+
+def remap_fill_positional(*_args: Any) -> None:
+    """The panel's 'Posizionale' fill: every select back to its positional default."""
+    for binding in state.remap_bindings_cache:
+        tag = str(binding.get("tag") or "")
+        if dpg.does_item_exist(tag):
+            dpg.set_value(tag, str(binding.get("preselected") or REMAP_NONE))
+
+
+def _collect_remap_assignments() -> list[dict[str, Any]]:
+    """Read the panel's selects into assignments (while the modal is open)."""
+    assignments: list[dict[str, Any]] = []
+    for binding in state.remap_bindings_cache:
+        tag = str(binding.get("tag") or "")
+        options = binding.get("options") or []
+        sources = binding.get("sources") or []
+        label = str(dpg.get_value(tag) or "") if dpg.does_item_exist(tag) else REMAP_NONE
+        if label == REMAP_NONE or label not in options:
+            continue
+        position = options.index(label) - 1
+        if not 0 <= position < len(sources):
+            continue
+        target = str(sources[position].get("name") or "")
+        if target:
+            assignments.append({"kind": binding["kind"], "key": binding["key"], "target": target})
+    return assignments
+
+
+def _build_remap_panel(draft: dict[str, Any] | None) -> None:
+    """Render the reassignment selects for the bound rows (e45s02)."""
+    state.remap_bindings_cache = []
+    sources = list(state.drafts_sources.get(int(draft["id"])) or []) if draft else []
+    bindings = remap_bindings()
+    if not sources or not bindings:
+        return
+    options = remap_options(sources)
+    themed_text("Reassign to the new session", slot="text_dim")
+    with dpg.child_window(height=FS_REMAP_VIEW_HEIGHT, border=False, tag="fs_remap_scroll"):
+        pass
+    with dpg.group(parent="fs_remap_scroll", tag=FS_REMAP_GROUP_TAG):
+        for binding in bindings:
+            tag = _remap_row_tag(str(binding["kind"]), binding["key"])
+            preselected = remap_preselection(options, binding.get("index"))
+            dpg.add_combo(
+                label=str(binding["label"]),
+                items=options,
+                default_value=preselected,
+                width=260,
+                tag=tag,
+            )
+            state.remap_bindings_cache.append(
+                {
+                    **binding,
+                    "tag": tag,
+                    "options": options,
+                    "sources": sources,
+                    "preselected": preselected,
+                }
+            )
+    dpg.add_button(label="Posizionale", callback=remap_fill_positional)
+
+
+def tick_send_remap(now: float | None = None) -> None:
+    """Main-loop tick: drop a reassignment whose new session never appeared."""
+    if not state.send_remap_pending:
+        return
+    stamp = time.monotonic() if now is None else now
+    if stamp - state.send_remap_armed_at < REMAP_TIMEOUT_S:
+        return
+    state.send_remap_pending = None
+    _drafts_status("Reassignment skipped: the new session did not appear.")
+
+
+def _apply_pending_remap(live_ids: set[str]) -> None:
+    """Apply the chosen reassignment once the new sources are live (e45s02)."""
+    pending = state.send_remap_pending
+    if not pending:
+        return
+    if not {str(item["target"]) for item in pending} <= live_ids:
+        return  # wait for the whole new session
+    moved = 0
+    for item in pending:
+        target = str(item["target"])
+        if item["kind"] == "mapper":
+            old = str(item["key"])
+            moved += mapper.retarget_source(old, target)
+            if old in state.source_anchors:
+                state.source_anchors[target] = state.source_anchors.pop(old)
+        else:
+            assign_target_to_track(int(item["key"]), target)
+            moved += 1
+    state.send_remap_pending = None
+    refresh_mapper_ui()
+    _drafts_status(f"Reassigned {moved} bindings to the new session.")
+
+
 def _show_draft_load_confirm(path: str) -> None:
     """Open the Load confirmation (replaces the live session, always asked)."""
     state.drafts_pending_path = str(path)
@@ -4484,6 +4647,7 @@ def _show_draft_load_confirm(path: str) -> None:
         warning = draft_visibility_warning(_selected_draft())
         if warning:
             dpg.add_text(warning, wrap=DRAFT_CONFIRM_WIDTH - 40)
+        _build_remap_panel(_selected_draft())
         dpg.add_input_float(
             label="Transition (s)",
             tag=FS_DRAFT_TRANSITION_TAG,
@@ -4521,6 +4685,8 @@ def confirm_draft_load(*_args: Any) -> None:
     # item DearPyGui returns None, so reading after the close silently dropped
     # the crossfade argument (BUG-2026-09-15T162441).
     seconds = _draft_transition_seconds()
+    assignments = _collect_remap_assignments()
+    state.remap_bindings_cache = []
     if dpg.does_item_exist(FS_DRAFT_CONFIRM_TAG):
         dpg.delete_item(FS_DRAFT_CONFIRM_TAG)
     state.drafts_pending_path = None
@@ -4531,6 +4697,8 @@ def confirm_draft_load(*_args: Any) -> None:
         args.append(seconds)
     osc_client.send_message("/vimix/session/open", args)
     append_log("OUT", f"/vimix/session/open {args}")
+    state.send_remap_pending = assignments or None
+    state.send_remap_armed_at = time.monotonic()
     _drafts_status(f"Sent to vimix: {os.path.basename(path)}")
 
 
@@ -10891,6 +11059,7 @@ try:
         tick_project_dirty(time.time())  # e37s03: unsaved-changes marker cadence
 
         tick_drafts(time.time())  # e43s05: persist the draft library (debounced)
+        tick_send_remap(time.monotonic())  # e45s02: expire an unreached reassignment
 
         tick_cue_triggers()  # e35s03: cue-list card running labels (idle-cheap)
 

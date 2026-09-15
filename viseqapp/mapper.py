@@ -824,24 +824,21 @@ def find_mapping(mapping_id: int) -> dict[str, Any] | None:
 
 
 def prune_mappings(live_ids: set[str], known_ids: set[str] | None = None) -> list[dict[str, Any]]:
-    """Drop Control->Vimix mappings whose source is gone; DISABLE other Mappings.
+    """DISABLE every Mapping whose source is gone; NEVER delete (e45s02).
 
-    Returns the removed entries (the L-1 live-sources prune in
-    ``update_vimix_sources_ui`` so a removed source takes its input mappings
-    with it automatically). e40s01 orphan policy (ADR-mapping-model): an orphan
-    State Mapping keeps its setup and is DISABLED instead of deleted; it is
-    re-enabled automatically when the source comes back (the disabled ids are
-    tracked in state.mapping_orphans, so a user-disarmed Mapping is never re-armed).
-    Source-less Mappings (Clock/Constant, target_id None) are never affected.
+    ADR-session-source-recipes retired the e16 destructive prune: a Mapper row is
+    a recipe the operator reuses on the next session, so a vanished source only
+    DISABLES it (tracked in ``state.mapping_orphans``) and the row, its setup and
+    its cue stay. Returns the mappings it disabled, so the caller can refresh the
+    body and stop their runs. A Mapping whose source comes back is re-enabled
+    unless the user disarmed it themselves (the disabled ids are in
+    ``state.mapping_orphans``).
 
-    ``known_ids`` (BUG-2026-09-13T231500): when given, a target that was NEVER
-    seen in the state table is not treated as removed — the first tables after
-    boot or pairing can be empty or still carry another session, and deleting a
-    user's Control Mappings on that transient evidence was the bug. A target seen
-    before and now absent is still removed immediately (the e16 rule); the
-    caller passes ``state.known_sources``.
+    ``known_ids`` (BUG-2026-09-13T231500): a target that was NEVER seen in the
+    state table is not treated as removed — the first tables after boot or
+    pairing can be empty or still carry another session.
     """
-    removed: list[dict[str, Any]] = []
+    disabled: list[dict[str, Any]] = []
     for mapping in state.mapper_mappings:
         if mapping["target_id"] is None:
             continue
@@ -854,19 +851,11 @@ def prune_mappings(live_ids: set[str], known_ids: set[str] | None = None) -> lis
             continue
         if known_ids is not None and mapping["target_id"] not in known_ids:
             continue  # never seen: not proven removed (transient table)
-        if origin_of(mapping) == ORIGIN_CONTROL:
-            removed.append(mapping)
-        else:
-            if mapping.get("enabled"):
-                mapping["enabled"] = False
-                state.mapping_orphans.add(int(mapping["id"]))
-    if removed:
-        removed_ids = {m["id"] for m in removed}
-        state.mapper_mappings[:] = [m for m in state.mapper_mappings if m["id"] not in removed_ids]
-        for mapping_id in list(state.mapping_orphans):
-            if mapping_id not in {m["id"] for m in state.mapper_mappings}:
-                state.mapping_orphans.discard(mapping_id)
-    return removed
+        if mapping.get("enabled"):
+            mapping["enabled"] = False
+            state.mapping_orphans.add(int(mapping["id"]))
+            disabled.append(mapping)
+    return disabled
 
 
 def retarget_source(old_target_id: str, new_target_id: str) -> int:

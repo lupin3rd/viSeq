@@ -139,6 +139,11 @@ fs_sessions: list[dict[str, Any]] = []
 fs_sessions_selected: str = ""
 fs_sessions_status: str = ""
 fs_sessions_busy: bool = False
+# e45s02: the Send-time reassignment — the panel's captured bindings while the
+# modal is open, and the chosen assignments armed at confirm.
+remap_bindings_cache: list[dict[str, Any]] = []
+send_remap_pending: list[dict[str, Any]] | None = None
+send_remap_armed_at: float = 0.0
 # e45s01: the sources list the last write returned for each draft (the Send-time
 # reassignment panel consumes it, e45s02).
 drafts_sources: dict[int, list[dict[str, Any]]] = {}
