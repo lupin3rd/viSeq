@@ -4110,13 +4110,18 @@ FS_DRAFT_ALPHA_STEP = 0.1
 REMAP_NONE = "\u2014"
 REMAP_TIMEOUT_S = 60.0
 FS_REMAP_GROUP_TAG = "fs_remap_group"
-FS_REMAP_VIEW_HEIGHT = 160
+REMAP_ROW_HEIGHT = 28
+FS_REMAP_MIN_HEIGHT = 56
+FS_REMAP_MAX_HEIGHT = 300
+REMAP_PANEL_CHROME = 66  # panel title + the Posizionale button + spacing
 FS_SESSION_PICKER_TAG = "fs_session_picker"
 FS_SESSION_LIST_TAG = "fs_session_list"
 FS_SESSION_DETAIL_TAG = "fs_session_detail"
 FS_SESSION_STATUS_TAG = "fs_session_status"
-DRAFT_CONFIRM_WIDTH = 460
-DRAFT_CONFIRM_HEIGHT = 230
+DRAFT_CONFIRM_WIDTH = 560
+DRAFT_CONFIRM_HEIGHT = 200
+DRAFT_CONFIRM_MIN_WIDTH = 420
+DRAFT_CONFIRM_MIN_HEIGHT = 170
 DRAFT_RENAME_WIDTH = 380
 DRAFT_RENAME_HEIGHT = 150
 DRAFT_PICKER_WIDTH = 620
@@ -4561,16 +4566,19 @@ def _collect_remap_assignments() -> list[dict[str, Any]]:
     return assignments
 
 
-def _build_remap_panel(draft: dict[str, Any] | None) -> None:
+def remap_panel_height(count: int) -> int:
+    """The remap child height for ``count`` rows: fits the content, capped (scroll)."""
+    return max(FS_REMAP_MIN_HEIGHT, min(FS_REMAP_MAX_HEIGHT, max(0, count) * REMAP_ROW_HEIGHT))
+
+
+def _build_remap_panel(
+    bindings: list[dict[str, Any]], sources: list[dict[str, Any]], panel_height: int
+) -> None:
     """Render the reassignment selects for the bound rows (e45s02)."""
     state.remap_bindings_cache = []
-    sources = list(state.drafts_sources.get(int(draft["id"])) or []) if draft else []
-    bindings = remap_bindings()
-    if not sources or not bindings:
-        return
     options = remap_options(sources)
     themed_text("Reassign to the new session", slot="text_dim")
-    with dpg.child_window(height=FS_REMAP_VIEW_HEIGHT, border=False, tag="fs_remap_scroll"):
+    with dpg.child_window(height=panel_height, border=False, tag="fs_remap_scroll"):
         pass
     with dpg.group(parent="fs_remap_scroll", tag=FS_REMAP_GROUP_TAG):
         for binding in bindings:
@@ -4580,7 +4588,7 @@ def _build_remap_panel(draft: dict[str, Any] | None) -> None:
                 label=str(binding["label"]),
                 items=options,
                 default_value=preselected,
-                width=260,
+                width=300,
                 tag=tag,
             )
             state.remap_bindings_cache.append(
@@ -4630,24 +4638,36 @@ def _apply_pending_remap(live_ids: set[str]) -> None:
 
 
 def _show_draft_load_confirm(path: str) -> None:
-    """Open the Load confirmation (replaces the live session, always asked)."""
+    """Open the Load confirmation (replaces the live session, always asked).
+
+    The window is sized from its content (the e45s02 panel follows the number of
+    bound rows) and stays resizable (BUG-2026-09-15T201625).
+    """
     state.drafts_pending_path = str(path)
     if dpg.does_item_exist(FS_DRAFT_CONFIRM_TAG):
         dpg.delete_item(FS_DRAFT_CONFIRM_TAG)
+    draft = _selected_draft()
+    sources = list(state.drafts_sources.get(int(draft["id"])) or []) if draft else []
+    bindings = remap_bindings()
+    show_panel = bool(sources and bindings)
+    panel_height = remap_panel_height(len(bindings)) if show_panel else 0
+    height = DRAFT_CONFIRM_HEIGHT + (panel_height + REMAP_PANEL_CHROME if show_panel else 0)
+    warning = draft_visibility_warning(draft)
     with dpg.window(
         label="Send session to vimix",
         tag=FS_DRAFT_CONFIRM_TAG,
         modal=True,
         width=DRAFT_CONFIRM_WIDTH,
-        height=DRAFT_CONFIRM_HEIGHT,
-        no_resize=True,
+        height=height,
+        no_resize=False,
+        min_size=(DRAFT_CONFIRM_MIN_WIDTH, DRAFT_CONFIRM_MIN_HEIGHT),
     ):
         dpg.add_text("This REPLACES the live vimix session.", wrap=DRAFT_CONFIRM_WIDTH - 40)
         dpg.add_text(os.path.basename(str(path)), wrap=DRAFT_CONFIRM_WIDTH - 40)
-        warning = draft_visibility_warning(_selected_draft())
         if warning:
             dpg.add_text(warning, wrap=DRAFT_CONFIRM_WIDTH - 40)
-        _build_remap_panel(_selected_draft())
+        if show_panel:
+            _build_remap_panel(bindings, sources, panel_height)
         dpg.add_input_float(
             label="Transition (s)",
             tag=FS_DRAFT_TRANSITION_TAG,
