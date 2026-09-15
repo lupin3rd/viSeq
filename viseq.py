@@ -4218,12 +4218,15 @@ def _draft_transition_seconds() -> float:
 def confirm_draft_load(*_args: Any) -> None:
     """Confirmation Load: `/vimix/session/open s <path> [f <seconds>]`."""
     path = str(state.drafts_pending_path or "")
+    # Read the transition while the modal still owns its input: on a deleted
+    # item DearPyGui returns None, so reading after the close silently dropped
+    # the crossfade argument (BUG-2026-09-15T162441).
+    seconds = _draft_transition_seconds()
     if dpg.does_item_exist(FS_DRAFT_CONFIRM_TAG):
         dpg.delete_item(FS_DRAFT_CONFIRM_TAG)
     state.drafts_pending_path = None
     if not path:
         return
-    seconds = _draft_transition_seconds()
     args: list[Any] = [path]
     if seconds > 0:
         args.append(seconds)
