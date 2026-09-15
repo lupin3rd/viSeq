@@ -807,8 +807,9 @@ FS_THUMB_H = 36
 DRAFTS_SAVE_DEBOUNCE_S = 1.0
 
 
-# e43s07: Session Draft actions (Write/Load are mouse buttons; these are the
-# stable MIDI-mappable actions, e33 rule).
+# e43s07: Session Draft actions (Save/Send are mouse buttons; these are the
+# stable MIDI-mappable actions, e33 rule). e44s02 adds draft_save.
 MIDI_ACTION_DRAFT_LOAD = "draft_load"
 MIDI_ACTION_DRAFT_NEXT = "draft_next"
 MIDI_ACTION_DRAFT_PREV = "draft_prev"
+MIDI_ACTION_DRAFT_SAVE = "draft_save"

@@ -14,6 +14,7 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import Any
 
 from viseqapp import pairing, state
 from viseqapp.constants import DATA_PLANE_TIMEOUT, FS_THUMB_PREFIX
@@ -149,19 +150,22 @@ def fetch_sessions(host: str, port: int) -> tuple[list | None, int | None]:
 
 
 def write_session(
-    host: str, port: int, name: str, files: list[str]
+    host: str, port: int, name: str, files: list[str], *, overwrite: bool = False
 ) -> tuple[dict | None, int | None]:
     """Write one Session Draft on machine A; ``(payload, status)``.
+
+    ``overwrite`` (e44s02) asks viOSC to replace the exact named file instead of
+    suffixing a collision, so Save re-writes the session under the chosen name.
 
     On a rejection the payload is the error object (``{"error": "missing_file"}``)
     when the daemon answered with one, so the caller can word the reason.
     """
     if not host or not port:
         return None, None
-    body, status = _post_json(
-        session_url(host, port),
-        {"name": str(name), "files": [str(item) for item in files]},
-    )
+    payload: dict[str, Any] = {"name": str(name), "files": [str(item) for item in files]}
+    if overwrite:
+        payload["overwrite"] = True
+    body, status = _post_json(session_url(host, port), payload)
     if body is None:
         return None, status
     data = _decode(body)

@@ -145,6 +145,7 @@ from viseqapp.constants import (
     MIDI_ACTION_DRAFT_LOAD,
     MIDI_ACTION_DRAFT_NEXT,
     MIDI_ACTION_DRAFT_PREV,
+    MIDI_ACTION_DRAFT_SAVE,
     MIDI_ACTION_ENABLE_CORRECTION,
     MIDI_ACTION_FILE_MANAGER_TOGGLE,
     MIDI_ACTION_IO_MONITOR_TOGGLE,
@@ -4169,7 +4170,7 @@ def _fs_write_worker(
     host: str, port: int, draft_id: int, name: str, files: list[str], *, then_load: bool = False
 ) -> None:
     """Worker: write the draft, report on the main thread (HIGH-1)."""
-    result, status = fsclient.write_session(host, port, name, files)
+    result, status = fsclient.write_session(host, port, name, files, overwrite=True)
     state.ui_task_queue.put(
         lambda: _fs_apply_write(draft_id, files, result, status, then_load=then_load)
     )
@@ -4234,7 +4235,7 @@ def _show_draft_load_confirm(path: str) -> None:
     if dpg.does_item_exist(FS_DRAFT_CONFIRM_TAG):
         dpg.delete_item(FS_DRAFT_CONFIRM_TAG)
     with dpg.window(
-        label="Load session in vimix",
+        label="Send session to vimix",
         tag=FS_DRAFT_CONFIRM_TAG,
         modal=True,
         width=DRAFT_CONFIRM_WIDTH,
@@ -4254,7 +4255,7 @@ def _show_draft_load_confirm(path: str) -> None:
         dpg.add_separator()
         with dpg.group(horizontal=True):
             dpg.add_button(label="Cancel", width=130, callback=cancel_draft_load)
-            dpg.add_button(label="Load", width=130, callback=confirm_draft_load)
+            dpg.add_button(label="Send", width=130, callback=confirm_draft_load)
     dpg.show_item(FS_DRAFT_CONFIRM_TAG)
 
 
@@ -4290,7 +4291,7 @@ def confirm_draft_load(*_args: Any) -> None:
         args.append(seconds)
     osc_client.send_message("/vimix/session/open", args)
     append_log("OUT", f"/vimix/session/open {args}")
-    _drafts_status(f"Loaded: {os.path.basename(path)}")
+    _drafts_status(f"Sent to vimix: {os.path.basename(path)}")
 
 
 def fs_draft_step(delta: int, *_args: Any) -> None:
@@ -4323,6 +4324,13 @@ def _exec_draft_load(params: dict[str, Any], value: int) -> None:
     fs_load_draft()
 
 
+def _exec_draft_save(params: dict[str, Any], value: int) -> None:
+    """e44s02: a momentary press saves the selected draft."""
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    fs_write_draft()
+
+
 def _exec_draft_step(delta: int) -> Callable[[dict[str, Any], int], None]:
     """Build the next/previous draft executors."""
 
@@ -4343,6 +4351,7 @@ def _sync_drafts_learn_markers() -> None:
         return
     for action_id, tag in (
         (MIDI_ACTION_DRAFT_LOAD, "fs_mk_draft_load"),
+        (MIDI_ACTION_DRAFT_SAVE, "fs_mk_draft_save"),
         (MIDI_ACTION_DRAFT_NEXT, "fs_mk_draft_next"),
         (MIDI_ACTION_DRAFT_PREV, "fs_mk_draft_prev"),
     ):
@@ -4716,6 +4725,7 @@ _MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
     MIDI_ACTION_FILE_MANAGER_TOGGLE: lambda p, v: _exec_file_manager_toggle(p, v),
     # e43s07: Session Draft actions (Load always asks for the confirmation)
     MIDI_ACTION_DRAFT_LOAD: lambda p, v: _exec_draft_load(p, v),
+    MIDI_ACTION_DRAFT_SAVE: _exec_draft_save,
     MIDI_ACTION_DRAFT_NEXT: _exec_draft_step(1),
     MIDI_ACTION_DRAFT_PREV: _exec_draft_step(-1),
 }
@@ -10515,8 +10525,8 @@ with dpg.window(
         dpg.add_button(label="Delete", callback=fs_delete_selected_draft)
         dpg.add_button(label="Rename", callback=fs_open_rename_draft)
         dpg.add_button(label="Add selected file", callback=fs_add_selected_to_draft)
-        dpg.add_button(label="Write", callback=fs_write_draft)
-        dpg.add_button(label="Load...", callback=fs_load_draft)
+        dpg.add_button(label="Save", callback=fs_write_draft)
+        dpg.add_button(label="Send to Vimix", callback=fs_load_draft)
         with dpg.group(tag=FS_DRAFT_LEARN_SLOT, horizontal=True):
             pass
     themed_text("", slot="text_dim", tag=FS_DRAFT_STATUS_TAG)
