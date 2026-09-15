@@ -10946,7 +10946,7 @@ ensure_user_dirs()  # e21s01: eager XDG user dirs (config + projects) + legacy .
 # viSeq / Windows / Settings dropdowns (ADR-main-toolbar.md). Icon-only, with a
 # tooltip per icon (name + shortcut) and a text fallback when the font is missing.
 TOOLBAR_ICON_FONT_SIZE = 16
-TOOLBAR_ICON_BUTTON_W = 30
+TOOLBAR_ICON_BUTTON_W = 32
 TOOLBAR_ICON_BUTTON_H = 26
 TOOLBAR_ICON_FONT_PATHS: tuple[str, ...] = (
     str(Path(__file__).resolve().parent / "viseqapp" / "assets" / "fontawesome-webfont.ttf"),
@@ -10985,6 +10985,7 @@ TOOLBAR_BAR_TAG = "main_toolbar_bar"
 TOOLBAR_THEME_OPEN = "theme_toolbar_open"
 TOOLBAR_THEME_ACTIVE = "theme_toolbar_active"
 TOOLBAR_THEME_BAR = "theme_toolbar_bar"
+TOOLBAR_BAR_PAD_Y = 9  # frame padding: the menu bar's row grows so the icons fit
 toolbar_icon_font: Any = None
 
 
@@ -11058,8 +11059,14 @@ def _build_main_toolbar() -> None:
     # background and no border leave ONLY the icons visible (e46s01).
     dpg.add_viewport_menu_bar(tag=TOOLBAR_BAR_TAG)
     with dpg.theme(tag=TOOLBAR_THEME_BAR), dpg.theme_component(dpg.mvThemeCat_Core):
+        # Only the icons: no strip, no border, and enough frame padding that the
+        # 26px buttons are not clipped by the menu bar's own row height.
         dpg.add_theme_color(dpg.mvThemeCol_MenuBarBg, (0, 0, 0, 0))
+        dpg.add_theme_color(dpg.mvThemeCol_WindowBg, (0, 0, 0, 0))
+        dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (0, 0, 0, 0))
         dpg.add_theme_style(dpg.mvStyleVar_WindowBorderSize, 0)
+        dpg.add_theme_style(dpg.mvStyleVar_ChildBorderSize, 0)
+        dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 6, TOOLBAR_BAR_PAD_Y)
     dpg.bind_item_theme(TOOLBAR_BAR_TAG, TOOLBAR_THEME_BAR)
     for group in TOOLBAR_ITEM_GROUPS:
         for item in group:

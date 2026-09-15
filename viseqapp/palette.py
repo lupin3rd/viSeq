@@ -148,6 +148,9 @@ def ensure_global_theme() -> None:
         with dpg.theme() as t, dpg.theme_component(dpg.mvAll):
             for component, slot in GLOBAL_THEME_COMPONENTS:
                 theme_color(component, slot)
+            # e46s01: the native menu bar is transparent in EVERY preset (the
+            # Scuro preset binds no global theme, hence the item theme on the bar).
+            dpg.add_theme_color(dpg.mvThemeCol_MenuBarBg, (0, 0, 0, 0))
         state.theme_global = t
     dpg.bind_theme(state.theme_global)
 
