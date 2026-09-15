@@ -10981,8 +10981,10 @@ TOOLBAR_ITEM_GROUPS: tuple[tuple[ToolbarItem, ...], ...] = (
     (("toggle", "help_window", "\uf05a", "Info", ""),),
 )
 TOOLBAR_RECENTS_TAG = "toolbar_recents_popup"
+TOOLBAR_BAR_TAG = "main_toolbar_bar"
 TOOLBAR_THEME_OPEN = "theme_toolbar_open"
 TOOLBAR_THEME_ACTIVE = "theme_toolbar_active"
+TOOLBAR_THEME_BAR = "theme_toolbar_bar"
 toolbar_icon_font: Any = None
 
 
@@ -10995,8 +10997,10 @@ def load_toolbar_icon_font() -> Any:
 
     DearPyGui renders NOTHING for the icon codepoints unless the 0xF000-0xF3FF
     range is added to the font, and each button needs `bind_item_font`; when no
-    font is found the toolbar falls back to text labels.
+    font is found the toolbar falls back to text labels. The result is stored in
+    the module global `toolbar_icon_font` (the builder reads it).
     """
+    global toolbar_icon_font
     for path in TOOLBAR_ICON_FONT_PATHS:
         if not os.path.exists(path):
             continue
@@ -11004,9 +11008,11 @@ def load_toolbar_icon_font() -> Any:
             with dpg.font_registry():
                 font = dpg.add_font(path, size=TOOLBAR_ICON_FONT_SIZE)
                 dpg.add_font_range(0xF000, 0xF3FF, parent=font)
+            toolbar_icon_font = font
             return font
         except Exception as exc:  # a broken font must never block the boot
             log_error("Toolbar icon font", f"{path}: {exc!r}")
+    toolbar_icon_font = None
     return None
 
 
@@ -11048,24 +11054,31 @@ def _build_main_toolbar() -> None:
         dpg.add_theme_color(
             dpg.mvThemeCol_ButtonHovered, palette_rgba(state.active_palette["accent"])
         )
-    with dpg.viewport_menu_bar():
-        for group in TOOLBAR_ITEM_GROUPS:
-            for item in group:
-                kind, target, _glyph, label, shortcut = item
-                tag = _toolbar_button_tag(kind, target)
-                dpg.add_button(
-                    label=_toolbar_item_text(item),
-                    tag=tag,
-                    width=TOOLBAR_ICON_BUTTON_W,
-                    height=TOOLBAR_ICON_BUTTON_H,
-                    callback=on_toolbar_item,
-                    user_data={"kind": kind, "target": target},
-                )
-                if toolbar_icon_font is not None:
-                    dpg.bind_item_font(tag, toolbar_icon_font)
-                with dpg.tooltip(tag):
-                    dpg.add_text(f"{label} ({shortcut})" if shortcut else label)
-            dpg.add_separator()
+    # The native menu bar always spans the viewport width: a transparent
+    # background and no border leave ONLY the icons visible (e46s01).
+    dpg.add_viewport_menu_bar(tag=TOOLBAR_BAR_TAG)
+    with dpg.theme(tag=TOOLBAR_THEME_BAR), dpg.theme_component(dpg.mvThemeCat_Core):
+        dpg.add_theme_color(dpg.mvThemeCol_MenuBarBg, (0, 0, 0, 0))
+        dpg.add_theme_style(dpg.mvStyleVar_WindowBorderSize, 0)
+    dpg.bind_item_theme(TOOLBAR_BAR_TAG, TOOLBAR_THEME_BAR)
+    for group in TOOLBAR_ITEM_GROUPS:
+        for item in group:
+            kind, target, _glyph, label, shortcut = item
+            tag = _toolbar_button_tag(kind, target)
+            dpg.add_button(
+                label=_toolbar_item_text(item),
+                tag=tag,
+                parent=TOOLBAR_BAR_TAG,
+                width=TOOLBAR_ICON_BUTTON_W,
+                height=TOOLBAR_ICON_BUTTON_H,
+                callback=on_toolbar_item,
+                user_data={"kind": kind, "target": target},
+            )
+            if toolbar_icon_font is not None:
+                dpg.bind_item_font(tag, toolbar_icon_font)
+            with dpg.tooltip(tag):
+                dpg.add_text(f"{label} ({shortcut})" if shortcut else label)
+        dpg.add_separator(parent=TOOLBAR_BAR_TAG)
 
 
 def on_toolbar_item(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
