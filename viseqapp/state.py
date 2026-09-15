@@ -133,6 +133,13 @@ drafts_written: dict[int, tuple[str, tuple[str, ...]]] = {}
 drafts_status: str = ""
 drafts_pending_path: str | None = None
 
+# e44s03: the existing sessions listed from machine A (GET /fs/sessions), the
+# picker's selected file and its status line.
+fs_sessions: list[dict[str, Any]] = []
+fs_sessions_selected: str = ""
+fs_sessions_status: str = ""
+fs_sessions_busy: bool = False
+
 # e41s04: the state pull lane. state_pull_supported is the runtime lane probe
 # (None = not yet tried, True = proven, False = given up for the session); while
 # it is True the OSC /viosc/replydata push is DROPPED so the state is never

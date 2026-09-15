@@ -4041,10 +4041,17 @@ FS_DRAFT_CONFIRM_TAG = "fs_draft_load_confirm"
 FS_DRAFT_LEARN_SLOT = "fs_drafts_learn_slot"
 FS_DRAFT_RENAME_TAG = "fs_draft_rename_confirm"
 FS_DRAFT_RENAME_INPUT_TAG = "fs_draft_rename_input"
+FS_SESSION_PICKER_TAG = "fs_session_picker"
+FS_SESSION_LIST_TAG = "fs_session_list"
+FS_SESSION_DETAIL_TAG = "fs_session_detail"
+FS_SESSION_STATUS_TAG = "fs_session_status"
 DRAFT_CONFIRM_WIDTH = 460
 DRAFT_CONFIRM_HEIGHT = 230
 DRAFT_RENAME_WIDTH = 380
 DRAFT_RENAME_HEIGHT = 150
+DRAFT_PICKER_WIDTH = 620
+DRAFT_PICKER_HEIGHT = 480
+DRAFT_PICKER_LIST_HEIGHT = 200
 
 
 def _drafts_status(text: str) -> None:
@@ -4113,6 +4120,152 @@ def confirm_draft_rename(*_args: Any) -> None:
         _drafts_status(f"Renamed: {name.strip()}")
     else:
         _drafts_status("Enter a non-empty name not already used.")
+
+
+def fs_open_sessions(*_args: Any) -> None:
+    """Open the existing-sessions picker and load the list from A (e44s03)."""
+    if dpg.does_item_exist(FS_SESSION_PICKER_TAG):
+        dpg.delete_item(FS_SESSION_PICKER_TAG)
+    with dpg.window(
+        label="Open session",
+        tag=FS_SESSION_PICKER_TAG,
+        modal=True,
+        width=DRAFT_PICKER_WIDTH,
+        height=DRAFT_PICKER_HEIGHT,
+        no_resize=True,
+    ):
+        themed_text("", slot="text_dim", tag=FS_SESSION_STATUS_TAG)
+        with dpg.child_window(
+            height=DRAFT_PICKER_LIST_HEIGHT, border=False, tag="fs_session_scroll"
+        ):
+            pass
+        with dpg.group(parent="fs_session_scroll", tag=FS_SESSION_LIST_TAG):
+            pass
+        with dpg.group(tag=FS_SESSION_DETAIL_TAG):
+            pass
+        dpg.add_separator()
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="Close", width=130, callback=close_session_picker)
+            dpg.add_button(label="Import as draft", width=170, callback=import_selected_session)
+    dpg.show_item(FS_SESSION_PICKER_TAG)
+    _fs_request_sessions()
+
+
+def close_session_picker(*_args: Any) -> None:
+    """Close the sessions picker without side effects."""
+    if dpg.does_item_exist(FS_SESSION_PICKER_TAG):
+        dpg.delete_item(FS_SESSION_PICKER_TAG)
+
+
+def _fs_request_sessions() -> None:
+    """Fetch the written sessions from A (single-flight, HIGH-1)."""
+    if state.fs_sessions_busy:
+        return
+    host, port = _fs_endpoint()
+    if not host or not port:
+        state.fs_sessions_status = "viOSC endpoint not configured."
+        _set_session_status(state.fs_sessions_status)
+        return
+    state.fs_sessions_busy = True
+    state.fs_sessions_status = "Loading sessions..."
+    _set_session_status(state.fs_sessions_status)
+    threading.Thread(target=_fs_sessions_worker, args=(host, port), daemon=True).start()
+
+
+def _fs_sessions_worker(host: str, port: int) -> None:
+    """Worker: list the sessions on machine A, report on the main thread."""
+    sessions, status = fsclient.fetch_sessions(host, port)
+    state.ui_task_queue.put(lambda: _fs_apply_sessions(sessions, status))
+
+
+def _set_session_status(text: str) -> None:
+    """Push the picker's status line when the picker is open."""
+    if dpg.does_item_exist(FS_SESSION_STATUS_TAG):
+        dpg.set_value(FS_SESSION_STATUS_TAG, text)
+
+
+def _fs_apply_sessions(sessions: list | None, status: int | None) -> None:
+    """Main thread: store the sessions on A and render the picker."""
+    state.fs_sessions_busy = False
+    if sessions is None:
+        state.fs_sessions_status = _fs_error_text(status)
+        _set_session_status(state.fs_sessions_status)
+        return
+    state.fs_sessions = [item for item in sessions if isinstance(item, dict)]
+    state.fs_sessions_status = f"{len(state.fs_sessions)} sessions"
+    _set_session_status(state.fs_sessions_status)
+    _render_sessions()
+
+
+def _selected_session() -> dict[str, Any] | None:
+    """The picker's selected session entry, or None."""
+    for session in state.fs_sessions:
+        if str(session.get("file") or "") == state.fs_sessions_selected:
+            return session
+    return None
+
+
+def _session_sources(session: dict[str, Any]) -> list[dict[str, Any]]:
+    """The valid source entries of one session."""
+    return [item for item in (session.get("sources") or []) if isinstance(item, dict)]
+
+
+def _render_sessions() -> None:
+    """Rebuild the picker's session list and the selected session's videos."""
+    if dpg.does_item_exist(FS_SESSION_LIST_TAG):
+        dpg.delete_item(FS_SESSION_LIST_TAG, children_only=True)
+        for session in state.fs_sessions:
+            path = str(session.get("file") or "")
+            marked = "* " if path == state.fs_sessions_selected else ""
+            count = len(_session_sources(session))
+            dpg.add_selectable(
+                label=f"{marked}{session.get('name')} ({count} videos)",
+                parent=FS_SESSION_LIST_TAG,
+                callback=fs_select_session,
+                user_data=path,
+            )
+    if not dpg.does_item_exist(FS_SESSION_DETAIL_TAG):
+        return
+    dpg.delete_item(FS_SESSION_DETAIL_TAG, children_only=True)
+    current = _selected_session()
+    if current is None:
+        return
+    sources = _session_sources(current)
+    if not sources:
+        themed_text(
+            "No videos found in this session.", slot="text_dim", parent=FS_SESSION_DETAIL_TAG
+        )
+        return
+    for source in sources:
+        dpg.add_text(f"{source.get('name')}  —  {source.get('uri')}", parent=FS_SESSION_DETAIL_TAG)
+
+
+def fs_select_session(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Select one session in the picker."""
+    state.fs_sessions_selected = str(user_data or "")
+    _render_sessions()
+
+
+def import_selected_session(*_args: Any) -> None:
+    """Import the selected session as a NEW editable draft (the .mix is untouched)."""
+    current = _selected_session()
+    if current is None:
+        state.fs_sessions_status = "Select a session first."
+        _set_session_status(state.fs_sessions_status)
+        return
+    name = str(current.get("name") or "Session")
+    draft = drafts.create_draft(state.drafts_library, name)
+    files = [
+        str(source.get("uri"))
+        for source in _session_sources(current)
+        if str(source.get("uri") or "").strip()
+    ]
+    drafts.add_files(state.drafts_library, int(draft["id"]), files)
+    state.drafts_selected = int(draft["id"])
+    _drafts_mark_dirty()
+    refresh_drafts_ui()
+    _drafts_status(f"Imported '{draft.get('name')}' ({len(files)} files)")
+    close_session_picker()
 
 
 def _draft_needs_write(draft: dict[str, Any]) -> bool:
@@ -10522,6 +10675,7 @@ with dpg.window(
     themed_text("Session Drafts", slot="text")
     with dpg.group(horizontal=True):
         dpg.add_button(label="New", callback=fs_new_draft)
+        dpg.add_button(label="Open...", callback=fs_open_sessions)
         dpg.add_button(label="Delete", callback=fs_delete_selected_draft)
         dpg.add_button(label="Rename", callback=fs_open_rename_draft)
         dpg.add_button(label="Add selected file", callback=fs_add_selected_to_draft)
