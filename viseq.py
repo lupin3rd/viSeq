@@ -3980,9 +3980,20 @@ def refresh_drafts_ui(*_args: Any) -> None:
     )
     if current is None:
         return
-    for path in current.get("files", []):
+    for index, path in enumerate(current.get("files", [])):
         row = dpg.add_group(horizontal=True, parent=FS_DRAFT_FILES_GROUP)
+        dpg.add_text(f"{index + 1}.", parent=row)
         dpg.add_text(os.path.basename(str(path)), parent=row)
+        dpg.add_input_float(
+            default_value=drafts.file_alpha(current, str(path)),
+            width=FS_DRAFT_ALPHA_WIDTH,
+            step=FS_DRAFT_ALPHA_STEP,
+            format="%.2f",
+            parent=row,
+            tag=f"{FS_DRAFT_ALPHA_TAG}_{index}",
+            callback=fs_draft_set_alpha,
+            user_data=str(path),
+        )
         dpg.add_button(
             label="^",
             width=24,
@@ -4066,6 +4077,20 @@ def fs_draft_file_remove(sender: Any = None, app_data: Any = None, user_data: An
         refresh_drafts_ui()
 
 
+def fs_draft_set_alpha(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Store the alpha typed on one draft source row (e45s01).
+
+    The value arrives in ``app_data``: it is never read back from the widget, so
+    a widget that has already been rebuilt can never corrupt it.
+    """
+    if state.drafts_selected is None:
+        return
+    if drafts.set_file_alpha(
+        state.drafts_library, state.drafts_selected, str(user_data or ""), app_data
+    ):
+        _drafts_mark_dirty()
+
+
 # e43s07: WRITE / LOAD — Write generates the .mix on machine A (never touching
 # the live session); Load always asks for confirmation, offers an optional
 # transition and sends /vimix/session/open through the existing OSC client.
@@ -4077,6 +4102,9 @@ FS_DRAFT_RENAME_TAG = "fs_draft_rename_confirm"
 FS_DRAFT_RENAME_INPUT_TAG = "fs_draft_rename_input"
 FS_DRAFTS_SEPARATOR_TAG = "fs_drafts_separator"
 FS_DRAFT_LABEL_WIDTH = 220
+FS_DRAFT_ALPHA_TAG = "fs_draft_alpha"
+FS_DRAFT_ALPHA_WIDTH = 70
+FS_DRAFT_ALPHA_STEP = 0.1
 FS_SESSION_PICKER_TAG = "fs_session_picker"
 FS_SESSION_LIST_TAG = "fs_session_list"
 FS_SESSION_DETAIL_TAG = "fs_session_detail"
@@ -4351,15 +4379,23 @@ def fs_write_draft(*_args: Any) -> None:
             str(draft["name"]),
             [str(p) for p in draft["files"]],
         ),
+        kwargs={"alphas": drafts.draft_alphas(draft)},
         daemon=True,
     ).start()
 
 
 def _fs_write_worker(
-    host: str, port: int, draft_id: int, name: str, files: list[str], *, then_load: bool = False
+    host: str,
+    port: int,
+    draft_id: int,
+    name: str,
+    files: list[str],
+    *,
+    then_load: bool = False,
+    alphas: dict[str, float] | None = None,
 ) -> None:
     """Worker: write the draft, report on the main thread (HIGH-1)."""
-    result, status = fsclient.write_session(host, port, name, files, overwrite=True)
+    result, status = fsclient.write_session(host, port, name, files, overwrite=True, alphas=alphas)
     state.ui_task_queue.put(
         lambda: _fs_apply_write(draft_id, files, result, status, then_load=then_load)
     )
@@ -4380,6 +4416,9 @@ def _fs_apply_write(
         return
     path = str(result.get("file") or "")
     state.drafts_written[int(draft_id)] = (path, tuple(str(p) for p in files))
+    state.drafts_sources[int(draft_id)] = [
+        item for item in (result.get("sources") or []) if isinstance(item, dict)
+    ]
     _drafts_status(f"Written: {path}")
     if then_load and path:
         _show_draft_load_confirm(path)
@@ -4413,9 +4452,18 @@ def fs_load_draft(*_args: Any) -> None:
             str(draft["name"]),
             [str(p) for p in draft["files"]],
         ),
-        kwargs={"then_load": True},
+        kwargs={"then_load": True, "alphas": drafts.draft_alphas(draft)},
         daemon=True,
     ).start()
+
+
+def draft_visibility_warning(draft: dict[str, Any] | None) -> str:
+    """The Send warning when no source of the draft would be visible (e45s01)."""
+    if draft is None:
+        return ""
+    if any(alpha > 0 for alpha in drafts.draft_alphas(draft).values()):
+        return ""
+    return "Warning: no source has alpha > 0 - the session will load with nothing visible."
 
 
 def _show_draft_load_confirm(path: str) -> None:
@@ -4433,6 +4481,9 @@ def _show_draft_load_confirm(path: str) -> None:
     ):
         dpg.add_text("This REPLACES the live vimix session.", wrap=DRAFT_CONFIRM_WIDTH - 40)
         dpg.add_text(os.path.basename(str(path)), wrap=DRAFT_CONFIRM_WIDTH - 40)
+        warning = draft_visibility_warning(_selected_draft())
+        if warning:
+            dpg.add_text(warning, wrap=DRAFT_CONFIRM_WIDTH - 40)
         dpg.add_input_float(
             label="Transition (s)",
             tag=FS_DRAFT_TRANSITION_TAG,

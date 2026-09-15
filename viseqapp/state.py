@@ -139,6 +139,9 @@ fs_sessions: list[dict[str, Any]] = []
 fs_sessions_selected: str = ""
 fs_sessions_status: str = ""
 fs_sessions_busy: bool = False
+# e45s01: the sources list the last write returned for each draft (the Send-time
+# reassignment panel consumes it, e45s02).
+drafts_sources: dict[int, list[dict[str, Any]]] = {}
 
 # e41s04: the state pull lane. state_pull_supported is the runtime lane probe
 # (None = not yet tried, True = proven, False = given up for the session); while

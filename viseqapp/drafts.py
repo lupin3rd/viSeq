@@ -21,6 +21,13 @@ DRAFTS_VERSION = 1
 DRAFTS_FILENAME = "drafts.json"
 MAX_DRAFTS = 200
 MAX_FILES_PER_DRAFT = 2000
+# e45s01: the per-source output alpha. Negative = PARKED (the source is placed
+# beyond vimix's activation threshold, so its media player is disabled); 0.0 =
+# transparent but playing; 0..1 = opacity. New files default to PARKED so a
+# freshly prepared draft runs nothing until the operator marks what to show.
+DEFAULT_FILE_ALPHA = -0.3
+MIN_FILE_ALPHA = -1.0
+MAX_FILE_ALPHA = 1.0
 
 
 def default_path() -> str:
@@ -44,6 +51,22 @@ def _clean_files(raw: Any) -> list[str]:
         if len(files) >= MAX_FILES_PER_DRAFT:
             break
     return files
+
+
+def _clean_alphas(raw: Any, files: list[str]) -> dict[str, float]:
+    """Valid ``{path: alpha}`` entries for the draft's own files, clamped."""
+    if not isinstance(raw, dict):
+        return {}
+    cleaned: dict[str, float] = {}
+    for path, value in raw.items():
+        if not isinstance(path, str) or path not in files:
+            continue
+        try:
+            alpha = float(value)
+        except (TypeError, ValueError):
+            continue
+        cleaned[path] = min(MAX_FILE_ALPHA, max(MIN_FILE_ALPHA, alpha))
+    return cleaned
 
 
 def sanitize_library(raw: Any) -> dict[str, Any]:
@@ -85,7 +108,15 @@ def sanitize_library(raw: Any) -> dict[str, Any]:
             unique = f"{name} ({suffix})"
             suffix += 1
         seen_names.add(unique)
-        drafts.append({"id": draft_id, "name": unique, "files": _clean_files(entry.get("files"))})
+        files = _clean_files(entry.get("files"))
+        drafts.append(
+            {
+                "id": draft_id,
+                "name": unique,
+                "files": files,
+                "alphas": _clean_alphas(entry.get("alphas"), files),
+            }
+        )
     library["drafts"] = drafts
     raw_counter: Any = raw.get("counter")
     try:
@@ -117,7 +148,7 @@ def create_draft(library: dict[str, Any], name: str | None = None) -> dict[str, 
     while unique in existing:
         unique = f"{base} ({suffix})"
         suffix += 1
-    draft = {"id": counter, "name": unique, "files": []}
+    draft = {"id": counter, "name": unique, "files": [], "alphas": {}}
     drafts.append(draft)
     return draft
 
@@ -171,7 +202,41 @@ def remove_file(library: dict[str, Any], draft_id: int, path: str) -> bool:
     if path not in files:
         return False
     files.remove(path)
+    alphas = draft.get("alphas")
+    if isinstance(alphas, dict):
+        alphas.pop(path, None)
     return True
+
+
+def file_alpha(draft: dict[str, Any], path: str) -> float:
+    """The path's stored alpha, or the PARKED default when unset (e45s01)."""
+    raw = draft.get("alphas")
+    alphas: dict[Any, Any] = raw if isinstance(raw, dict) else {}
+    try:
+        return float(alphas.get(path, DEFAULT_FILE_ALPHA))
+    except (TypeError, ValueError):
+        return DEFAULT_FILE_ALPHA
+
+
+def set_file_alpha(library: dict[str, Any], draft_id: int, path: str, alpha: Any) -> bool:
+    """Store one file's alpha (clamped); False for an unknown draft/path."""
+    draft = find_draft(library, draft_id)
+    if draft is None or path not in draft.get("files", []):
+        return False
+    try:
+        value = min(MAX_FILE_ALPHA, max(MIN_FILE_ALPHA, float(alpha)))
+    except (TypeError, ValueError):
+        return False
+    alphas = draft.setdefault("alphas", {})
+    if not isinstance(alphas, dict):
+        alphas = draft["alphas"] = {}
+    alphas[path] = value
+    return True
+
+
+def draft_alphas(draft: dict[str, Any]) -> dict[str, float]:
+    """``{path: alpha}`` for every file of the draft, defaults included."""
+    return {str(path): file_alpha(draft, str(path)) for path in draft.get("files", [])}
 
 
 def move_file(library: dict[str, Any], draft_id: int, path: str, delta: int) -> bool:

@@ -150,12 +150,20 @@ def fetch_sessions(host: str, port: int) -> tuple[list | None, int | None]:
 
 
 def write_session(
-    host: str, port: int, name: str, files: list[str], *, overwrite: bool = False
+    host: str,
+    port: int,
+    name: str,
+    files: list[str],
+    *,
+    overwrite: bool = False,
+    alphas: dict[str, float] | None = None,
 ) -> tuple[dict | None, int | None]:
     """Write one Session Draft on machine A; ``(payload, status)``.
 
     ``overwrite`` (e44s02) asks viOSC to replace the exact named file instead of
     suffixing a collision, so Save re-writes the session under the chosen name.
+    ``alphas`` (e45s01) maps a path to its output alpha; it is sent only when
+    given, so an older daemon (and the default path) stays unchanged.
 
     On a rejection the payload is the error object (``{"error": "missing_file"}``)
     when the daemon answered with one, so the caller can word the reason.
@@ -165,6 +173,8 @@ def write_session(
     payload: dict[str, Any] = {"name": str(name), "files": [str(item) for item in files]}
     if overwrite:
         payload["overwrite"] = True
+    if alphas:
+        payload["alphas"] = {str(k): float(v) for k, v in alphas.items()}
     body, status = _post_json(session_url(host, port), payload)
     if body is None:
         return None, status
