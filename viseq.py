@@ -1031,7 +1031,6 @@ def save_project_file(path: str) -> bool:
     cfg = load_config()
     remember_recent_project(cfg, path)
     save_config(cfg)
-    rebuild_last_project_menu()
     return True
 
 
@@ -1048,26 +1047,7 @@ def open_project_file(path: str) -> bool:
     cfg["theme"] = doc["theme"]
     remember_recent_project(cfg, path)
     save_config(cfg)
-    rebuild_last_project_menu()
     return True
-
-
-def rebuild_last_project_menu() -> None:
-    """Rebuild the Last-project submenu from the recent list (e11s03)."""
-    if not dpg.does_item_exist("menu_last_project"):
-        return
-    dpg.delete_item("menu_last_project", children_only=True)
-    recent = recent_project_paths(load_config())
-    if not recent:
-        dpg.add_menu_item(label="No recent projects", enabled=False, parent="menu_last_project")
-        return
-    for path in recent:
-        dpg.add_menu_item(
-            label=os.path.basename(path),
-            callback=open_recent_project,
-            user_data=path,
-            parent="menu_last_project",
-        )
 
 
 def open_recent_project(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -9705,9 +9685,6 @@ def _window_menu_entries() -> list[tuple[str, str]]:
     return entries
 
 
-_window_menu_dynamic_tags: list[str] = []  # live list items, deleted on refresh
-
-
 # The app's windows (BUG-2026-09-01T194500). Opening a menu makes DPG report the
 # menu itself as the active window (mvContainers.cpp: menu draw sets
 # GContext->activeWindow), so the focus track must accept ONLY real windows.
@@ -9759,39 +9736,11 @@ def _active_window_tag(tag: Any) -> str | None:
 _window_menu_sig: tuple[Any, ...] | None = None  # last (active, monitor tags) seen
 
 
-def refresh_window_menu() -> None:
-    """Rebuild the Windows-menu window list and mark the ACTIVE window (e17).
-
-    The list lives under the ``Windows`` menu (after its separator); each entry
-    is a checkable item wired to ``switch_to_window``. Missing windows are
-    skipped so a closed window never leaves a dead entry.
-    """
-    for tag in _window_menu_dynamic_tags:
-        if dpg.does_item_exist(tag):
-            dpg.delete_item(tag)
-    _window_menu_dynamic_tags.clear()
-    active = state.current_window
-    for tag, label in _window_menu_entries():
-        if not (dpg.does_item_exist(tag) and dpg.is_item_shown(tag)):
-            continue  # only list windows that are actually open
-        if not dpg.does_item_exist(tag):
-            continue
-        item_tag = dpg.add_menu_item(
-            label=label,
-            check=True,
-            default_value=(str(active) == str(tag)),
-            callback=switch_to_window,
-            user_data=tag,
-            parent="menu_windows",
-        )
-        _window_menu_dynamic_tags.append(item_tag)
-
-
-def tick_window_menu() -> None:
-    """Per-frame gate: refresh the Windows-menu list only when it can have changed.
+def tick_toolbar() -> None:
+    """Per-frame gate: repaint the toolbar highlight only when the state changed.
 
     The signature is (tracked current window, shown window tags); anything else
-    the list shows is static. We remember the last focused window: get_active_window()
+    the bar shows is static. We remember the last focused window: get_active_window()
     reports arbitrary widgets (step pads, combos) and the open menu itself, so
     the track resolves the active item up to its app window and never clears on
     a menu/popup/None result (BUG-2026-09-01T194500).
@@ -9811,7 +9760,7 @@ def tick_window_menu() -> None:
     )
     if sig != _window_menu_sig:
         _window_menu_sig = sig
-        refresh_window_menu()
+        refresh_toolbar_icons()
 
 
 def switch_to_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -10991,35 +10940,200 @@ apply_boot_config()  # e06: apply the saved theme + (optionally) the saved windo
 _drafts_load()  # e43s05: the application-level Session Drafts library
 refresh_drafts_ui()
 ensure_user_dirs()  # e21s01: eager XDG user dirs (config + projects) + legacy .viseq migration
-with dpg.viewport_menu_bar():
-    with dpg.menu(label="viSeq"):  # e11s03: first menubar menu — project file flows
-        dpg.add_menu_item(label="New project", callback=request_new_project)  # e15s01/e37s04
-        dpg.add_menu_item(label="Open project", callback=show_open_project_dialog)
-        with dpg.menu(label="Last project", tag="menu_last_project"):
-            pass  # children rebuilt by rebuild_last_project_menu() (boot + after every save/open)
-        dpg.add_menu_item(label="Save", callback=save_current_project)  # e37s02: silent save
-        dpg.add_menu_item(label="Save as...", callback=show_save_project_dialog)  # e37s02
-        dpg.add_separator()
-        dpg.add_menu_item(label="Exit", callback=exit_app)
-    with dpg.menu(label="Windows", tag="menu_windows"):  # e12s01 + e17 (window list)
-        dpg.add_menu_item(label="Show Mapper", callback=show_mapper_window)  # e16
-        dpg.add_menu_item(label="Show Logs", callback=show_logs_window)
-        dpg.add_menu_item(label="Show I/O Monitor", callback=show_io_monitor)  # e39s01
-        dpg.add_menu_item(label="Show File Manager", callback=show_file_manager_window)  # e43s02
-        dpg.add_menu_item(label="Show Info", callback=show_help_window)
-        dpg.add_separator(parent="menu_windows")  # e17: open windows below the actions
-        # the live window list is rebuilt by refresh_window_menu() (e17)
-    with dpg.menu(label="Settings"):  # e12s01: config panels under one menu
-        dpg.add_menu_item(label="General", callback=show_settings_window)
-        dpg.add_menu_item(label="MIDI", callback=show_midi_window)
-        dpg.add_menu_item(label="Leap Motion", callback=show_leap_window)  # e26
-        dpg.add_menu_item(label="Pair with viOSC...", callback=show_pairing_prompt)  # e42s02
 
-# e11s03/e13s02: project file dialogs are created ON DEMAND by
-# show_open_project_dialog / show_save_project_dialog (_recreate_project_dialog)
-# with .viseq/.* filters — DPG shows only directories without extension filters,
-# and a fresh dialog guarantees the default path exists.
-rebuild_last_project_menu()  # e11s03: populate the Last-project submenu for boot
+# ---------------------------------------------------------------------------
+# e46s01: THE MAIN TOOLBAR — a flat row of FontAwesome icon buttons replacing the
+# viSeq / Windows / Settings dropdowns (ADR-main-toolbar.md). Icon-only, with a
+# tooltip per icon (name + shortcut) and a text fallback when the font is missing.
+TOOLBAR_ICON_FONT_SIZE = 16
+TOOLBAR_ICON_BUTTON_W = 30
+TOOLBAR_ICON_BUTTON_H = 26
+TOOLBAR_ICON_FONT_PATHS: tuple[str, ...] = (
+    str(Path(__file__).resolve().parent / "viseqapp" / "assets" / "fontawesome-webfont.ttf"),
+    "/usr/share/fonts/truetype/font-awesome/fontawesome-webfont.ttf",
+    "/usr/share/fonts/opentype/font-awesome/FontAwesome.otf",
+)
+# (kind, target, glyph, label, shortcut); kind: action | focus | toggle
+type ToolbarItem = tuple[str, str, str, str, str]
+TOOLBAR_ITEM_GROUPS: tuple[tuple[ToolbarItem, ...], ...] = (
+    (
+        ("action", "new_project", "\uf016", "New project", ""),
+        ("action", "open_project", "\uf115", "Open project", ""),
+        ("action", "save_project", "\uf0c7", "Save", ""),
+        ("action", "save_project_as", "\uf044", "Save as...", ""),
+        ("action", "last_project", "\uf1da", "Last project", ""),
+    ),
+    (
+        ("focus", "sequencer_window", "\uf00a", "Step Sequencer", "Ctrl+Tab"),
+        ("focus", "audio_window", "\uf080", "Audio analyzer", "Ctrl+Tab"),
+        ("focus", "vimix_media_window", "\uf108", "Vimix sources", "Ctrl+Tab"),
+        ("toggle", "mapper_window", "\uf0ce", "Mapper", ""),
+        ("toggle", "logs_window", "\uf0ca", "Logs", ""),
+        ("toggle", "io_monitor_window", "\uf0ec", "I/O Monitor", ""),
+        ("toggle", "file_manager_window", "\uf07b", "File Manager", ""),
+    ),
+    (
+        ("toggle", "settings_window", "\uf013", "Settings", ""),
+        ("toggle", "midi_window", "\uf11c", "MIDI", ""),
+        ("toggle", "leap_window", "\uf256", "Leap Motion", ""),
+        ("action", "pair", "\uf0c1", "Pair with viOSC...", ""),
+    ),
+    (("toggle", "help_window", "\uf05a", "Info", ""),),
+)
+TOOLBAR_RECENTS_TAG = "toolbar_recents_popup"
+TOOLBAR_THEME_OPEN = "theme_toolbar_open"
+TOOLBAR_THEME_ACTIVE = "theme_toolbar_active"
+toolbar_icon_font: Any = None
+
+
+def _toolbar_button_tag(kind: str, target: str) -> str:
+    return f"toolbar_{kind}_{target}"
+
+
+def load_toolbar_icon_font() -> Any:
+    """Register the FontAwesome font (with its private-use range) or None (e46s01).
+
+    DearPyGui renders NOTHING for the icon codepoints unless the 0xF000-0xF3FF
+    range is added to the font, and each button needs `bind_item_font`; when no
+    font is found the toolbar falls back to text labels.
+    """
+    for path in TOOLBAR_ICON_FONT_PATHS:
+        if not os.path.exists(path):
+            continue
+        try:
+            with dpg.font_registry():
+                font = dpg.add_font(path, size=TOOLBAR_ICON_FONT_SIZE)
+                dpg.add_font_range(0xF000, 0xF3FF, parent=font)
+            return font
+        except Exception as exc:  # a broken font must never block the boot
+            log_error("Toolbar icon font", f"{path}: {exc!r}")
+    return None
+
+
+def _toolbar_item_text(item: ToolbarItem) -> str:
+    """The icon glyph, or the text label when the icon font is unavailable."""
+    return item[2] if toolbar_icon_font is not None else item[3]
+
+
+def _toolbar_show_func(target: str) -> Any:
+    """The show function of a toolbar window target."""
+    return {
+        "mapper_window": show_mapper_window,
+        "logs_window": show_logs_window,
+        "io_monitor_window": show_io_monitor,
+        "file_manager_window": show_file_manager_window,
+        "settings_window": show_settings_window,
+        "midi_window": show_midi_window,
+        "leap_window": show_leap_window,
+        "help_window": show_help_window,
+    }.get(target)
+
+
+def _toolbar_window_items() -> list[ToolbarItem]:
+    """The toolbar items that address a window (focus or toggle)."""
+    return [
+        item for group in TOOLBAR_ITEM_GROUPS for item in group if item[0] in ("focus", "toggle")
+    ]
+
+
+def _build_main_toolbar() -> None:
+    """Build the flat icon bar (called once, at the menubar position)."""
+    with dpg.theme(tag=TOOLBAR_THEME_OPEN), dpg.theme_component(dpg.mvThemeCat_Core):
+        dpg.add_theme_color(dpg.mvThemeCol_Button, palette_rgba(state.active_palette["text_dim"]))
+        dpg.add_theme_color(
+            dpg.mvThemeCol_ButtonHovered, palette_rgba(state.active_palette["accent"])
+        )
+    with dpg.theme(tag=TOOLBAR_THEME_ACTIVE), dpg.theme_component(dpg.mvThemeCat_Core):
+        dpg.add_theme_color(dpg.mvThemeCol_Button, palette_rgba(state.active_palette["accent"]))
+        dpg.add_theme_color(
+            dpg.mvThemeCol_ButtonHovered, palette_rgba(state.active_palette["accent"])
+        )
+    with dpg.viewport_menu_bar():
+        for group in TOOLBAR_ITEM_GROUPS:
+            for item in group:
+                kind, target, _glyph, label, shortcut = item
+                tag = _toolbar_button_tag(kind, target)
+                dpg.add_button(
+                    label=_toolbar_item_text(item),
+                    tag=tag,
+                    width=TOOLBAR_ICON_BUTTON_W,
+                    height=TOOLBAR_ICON_BUTTON_H,
+                    callback=on_toolbar_item,
+                    user_data={"kind": kind, "target": target},
+                )
+                if toolbar_icon_font is not None:
+                    dpg.bind_item_font(tag, toolbar_icon_font)
+                with dpg.tooltip(tag):
+                    dpg.add_text(f"{label} ({shortcut})" if shortcut else label)
+            dpg.add_separator()
+
+
+def on_toolbar_item(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """One toolbar icon: focus a window, toggle a window, or run a project action."""
+    payload = user_data if isinstance(user_data, dict) else {}
+    kind = str(payload.get("kind") or "")
+    target = str(payload.get("target") or "")
+    if kind == "focus":
+        switch_to_window(None, None, target)
+        return
+    if kind == "toggle":
+        show = _toolbar_show_func(target)
+        if show is None:
+            return
+        if dpg.is_item_shown(target):
+            dpg.hide_item(target)
+            return
+        show()
+        return
+    {
+        "new_project": request_new_project,
+        "open_project": show_open_project_dialog,
+        "save_project": save_current_project,
+        "save_project_as": show_save_project_dialog,
+        "last_project": show_recent_projects_popup,
+        "pair": show_pairing_prompt,
+    }.get(target, lambda *_: None)()
+
+
+def refresh_toolbar_icons() -> None:
+    """Paint the open (soft) / active (full) accent on the window icons (e46s01)."""
+    active = str(state.current_window or "")
+    for kind, target, _glyph, _label, _shortcut in _toolbar_window_items():
+        tag = _toolbar_button_tag(kind, target)
+        if not dpg.does_item_exist(tag):
+            continue
+        if target == active:
+            dpg.bind_item_theme(tag, TOOLBAR_THEME_ACTIVE)
+        elif dpg.does_item_exist(target) and dpg.is_item_shown(target):
+            dpg.bind_item_theme(tag, TOOLBAR_THEME_OPEN)
+        else:
+            dpg.bind_item_theme(tag, 0)
+
+
+def show_recent_projects_popup() -> None:
+    """The Last project icon: a compact popup with the recent project files."""
+    if dpg.does_item_exist(TOOLBAR_RECENTS_TAG):
+        dpg.delete_item(TOOLBAR_RECENTS_TAG)
+    recent = recent_project_paths(load_config())
+    position = dpg.get_mouse_pos(local=False)
+    with dpg.window(
+        tag=TOOLBAR_RECENTS_TAG, popup=True, no_title_bar=True, pos=position, min_size=(240, 10)
+    ):
+        themed_text("Last projects", slot="text_dim")
+        if not recent:
+            dpg.add_text("No recent projects")
+        for path in recent:
+            dpg.add_button(
+                label=os.path.basename(path),
+                width=-1,
+                callback=open_recent_project,
+                user_data=path,
+            )
+    dpg.show_item(TOOLBAR_RECENTS_TAG)
+
+
+load_toolbar_icon_font()
+_build_main_toolbar()
 dpg.setup_dearpygui()
 dpg.show_viewport()
 refresh_window_title()  # e37s03: the title announces the boot project identity
@@ -11075,7 +11189,7 @@ try:
 
         tick_thumb_cycle(time.time())
 
-        tick_window_menu()  # e17: keep the Windows-menu list + active mark fresh
+        tick_toolbar()  # e46s01: keep the toolbar highlight + active mark fresh
 
         tick_project_dirty(time.time())  # e37s03: unsaved-changes marker cadence
 
