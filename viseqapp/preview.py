@@ -20,7 +20,7 @@ from typing import Any
 import av
 import numpy as np
 
-from viseqapp import state
+from viseqapp import pairing, state
 from viseqapp.constants import (
     PREVIEW_CAP_HEIGHT,
     PREVIEW_CAP_WIDTH,
@@ -36,6 +36,20 @@ from viseqapp.constants import (
 # The av package ships no type stubs; mypy runs with ignore_missing_imports.
 
 _DEFAULT_CAP = (PREVIEW_CAP_WIDTH, PREVIEW_CAP_HEIGHT)
+
+
+def stream_open_options() -> dict[str, str]:
+    """PyAV/FFmpeg options for the HTTP range stream, incl. the pairing token.
+
+    FFmpeg's http protocol takes extra headers as one CRLF-terminated string in
+    the ``headers`` option, which is how a paired stream authenticates without a
+    query-string secret.
+    """
+    options = {"seekable": "1"}
+    headers = pairing.ffmpeg_headers()
+    if headers:
+        options["headers"] = headers
+    return options
 
 
 def clamp_preview_speed(rate: Any) -> float:
@@ -75,7 +89,10 @@ def fetch_media_meta(host: str, port: int, source_name: str) -> dict[str, Any] |
     """One GET of the source's meta JSON; None on error/404/non-media."""
     try:
         with urllib.request.urlopen(
-            preview_meta_url(host, port, source_name), timeout=PREVIEW_HTTP_TIMEOUT
+            urllib.request.Request(
+                preview_meta_url(host, port, source_name), headers=pairing.http_headers()
+            ),
+            timeout=PREVIEW_HTTP_TIMEOUT,
         ) as resp:
             if resp.status != 200:
                 return None
@@ -247,7 +264,9 @@ class PreviewPlayer:
 
     def _run(self) -> None:
         try:
-            container = av.open(self.url, options={"seekable": "1"}, timeout=PREVIEW_HTTP_TIMEOUT)
+            container = av.open(
+                self.url, options=stream_open_options(), timeout=PREVIEW_HTTP_TIMEOUT
+            )
             stream = next((s for s in container.streams if s.type == "video"), None)
             if stream is None:
                 raise ValueError(f"no video stream in '{self.source_name}'")
