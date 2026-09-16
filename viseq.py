@@ -342,6 +342,10 @@ Image.MAX_IMAGE_PIXELS = 25_000_000  # PIL's hard ceiling (~25 MP)
 # viseq application version — single source of truth (matches specs/release-plan.yaml, e08s02).
 # e13s01: this is the first real release of viSeq (user decision).
 # e20s03: 0.2.0 — viseqapp refactor + controller profiles + new project + Mapper family.
+# 0.7.0 — link pairing gates the OSC and HTTP surfaces; File Manager + Session Drafts over the
+# viOSC /fs data plane (thumbnails, video preview, .mix write/load with crossfade); session
+# rename/overwrite/open+import; per-source alpha and the Send-time reassignment panel; the flat
+# FontAwesome main toolbar replaces the dropdown menus (viOSC 0.5.0).
 # 0.6.0 — the Mapper edits MAPPINGS (origin -> rescale -> destination): State/Clock/Constant
 # origins driving MIDI and OSC destinations with dead-reckoning and the viOSC watch lane,
 # one editor for create and modify, the I/O Monitor (MIDI+OSC, in+out, filters), the cue-row
@@ -350,7 +354,7 @@ Image.MAX_IMAGE_PIXELS = 25_000_000  # PIL's hard ceiling (~25 MP)
 # 0.4.0 — Leap Motion mapper source, per-mapping reset, project save + OSC config persist,
 # Mapper tile/row workflows (thumb assign, Add-to-Mapper submenu, line numbers).
 # 0.3.0 — Mapper family (rows/rescale/enable/cycle), compact Vimix-sources grid, windows, XDG.
-APP_VERSION: str = "0.6.0"
+APP_VERSION: str = "0.7.0"
 
 # Author's GitHub profile, shown as a link in the About window (e08s01, user request).
 GITHUB_URL: str = "https://github.com/lupin3rd"
