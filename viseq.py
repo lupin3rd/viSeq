@@ -10976,9 +10976,9 @@ TOOLBAR_ITEM_GROUPS: tuple[tuple[ToolbarItem, ...], ...] = (
         ("action", "last_project", "\uf1da", "Last project", ""),
     ),
     (
-        ("toggle", "sequencer_window", "\uf00a", "Step Sequencer", "Ctrl+Tab"),
-        ("toggle", "audio_window", "\uf080", "Audio analyzer", "Ctrl+Tab"),
-        ("toggle", "vimix_media_window", "\uf108", "Vimix sources", "Ctrl+Tab"),
+        ("toggle", "sequencer_window", "\uf00a", "Step Sequencer", ""),
+        ("toggle", "audio_window", "\uf080", "Audio analyzer", ""),
+        ("toggle", "vimix_media_window", "\uf108", "Vimix sources", ""),
         ("toggle", "mapper_window", "\uf0ce", "Mapper", ""),
         ("toggle", "logs_window", "\uf0ca", "Logs", ""),
         ("toggle", "io_monitor_window", "\uf0ec", "I/O Monitor", ""),
@@ -10998,6 +10998,7 @@ TOOLBAR_THEME_OPEN = "theme_toolbar_open"
 TOOLBAR_THEME_ACTIVE = "theme_toolbar_active"
 TOOLBAR_THEME_FLAT = "theme_toolbar_flat"
 TOOLBAR_THEME_PLAIN = "theme_toolbar_plain"
+TOOLBAR_THEME_TOOLTIP = "theme_toolbar_tooltip"
 TOOLBAR_BAR_MARGIN_RIGHT = 4
 TOOLBAR_ITEM_SPACING = 4
 TOOLBAR_BAR_PAD_X = 4
@@ -11165,6 +11166,14 @@ def _build_main_toolbar() -> None:
         dpg.add_theme_style(dpg.mvStyleVar_WindowRounding, 0)
         dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, TOOLBAR_BAR_PAD_X, TOOLBAR_BAR_PAD_Y)
         dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, TOOLBAR_ITEM_SPACING, 0)
+    # BUG-2026-09-16T155639: a tooltip is a child window and inherits the bar's
+    # opaque black border (DPG renders an alpha-0 colour as unset), so every
+    # tooltip carries its own borderless theme — alpha-0 border AND a 0 border
+    # size (verified with a minimal DPG repro: size 0 is what removes the frame).
+    with dpg.theme(tag=TOOLBAR_THEME_TOOLTIP), dpg.theme_component(dpg.mvThemeCat_Core):
+        dpg.add_theme_color(dpg.mvThemeCol_Border, (0, 0, 0, 0))
+        dpg.add_theme_color(dpg.mvThemeCol_BorderShadow, (0, 0, 0, 0))
+        dpg.add_theme_style(dpg.mvStyleVar_WindowBorderSize, 0)
     # A compact, borderless, auto-sized toolbar WINDOW: the native viewport menu
     # bar always spans the full width and ignores item themes (probed), so it
     # cannot show "only the icons". This window is exactly as wide as the icons,
@@ -11202,8 +11211,10 @@ def _build_main_toolbar() -> None:
                 if toolbar_icon_font is not None:
                     dpg.bind_item_font(tag, toolbar_icon_font)
                 dpg.bind_item_theme(tag, TOOLBAR_THEME_FLAT)
-                with dpg.tooltip(tag):
+                tooltip_tag = f"{tag}_tooltip"
+                with dpg.tooltip(tag, tag=tooltip_tag):
                     dpg.add_text(f"{label} ({shortcut})" if shortcut else label)
+                dpg.bind_item_theme(tooltip_tag, TOOLBAR_THEME_TOOLTIP)
             dpg.add_spacer(width=TOOLBAR_GROUP_GAP)
     dpg.bind_item_theme(TOOLBAR_BAR_TAG, TOOLBAR_THEME_PLAIN)
 
