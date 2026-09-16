@@ -96,6 +96,58 @@ thumb_http_failures: int = 0
 dataplane_host: str = ""
 dataplane_port: int = 0
 
+# e42s02: the pairing prompt is shown once per run (main loop), so a boot with
+# no display (tests, headless import) never opens a modal.
+pairing_prompt_shown: bool = False
+
+# e43s02: the File Manager window state — machine A's Media Roots, the current
+# directory page, the selection and a single-flight flag (one /fs request at a
+# time; navigation is user-paced, not polled).
+fs_roots: list[Any] = []
+fs_current_path: str = ""
+fs_entries: list[Any] = []
+fs_total: int = 0
+fs_selected: str | None = None
+fs_status: str = ""
+fs_busy: bool = False
+# e43s03: the browser's thumbnail requests — a worker drains this queue and
+# feeds the EXISTING blob/decode pipeline under the `fs:` key prefix.
+fs_thumb_queue: queue.Queue[Any] = queue.Queue()
+fs_thumb_requested: set[str] = set()
+
+# e43s05: Session Drafts — the application-level library (NOT project content),
+# the selected draft, and the debounced-save bookkeeping.
+drafts_library: dict[str, Any] = {
+    "format": "viseq-drafts",
+    "version": 1,
+    "counter": 0,
+    "drafts": [],
+}
+drafts_path: str = ""
+drafts_selected: int | None = None
+drafts_dirty: bool = False
+drafts_dirty_at: float = 0.0
+# e43s07: what each draft last produced on machine A (id -> (path, files)), the
+# last status line and the path awaiting the Load confirmation.
+drafts_written: dict[int, tuple[str, tuple[str, ...]]] = {}
+drafts_status: str = ""
+drafts_pending_path: str | None = None
+
+# e44s03: the existing sessions listed from machine A (GET /fs/sessions), the
+# picker's selected file and its status line.
+fs_sessions: list[dict[str, Any]] = []
+fs_sessions_selected: str = ""
+fs_sessions_status: str = ""
+fs_sessions_busy: bool = False
+# e45s02: the Send-time reassignment — the panel's captured bindings while the
+# modal is open, and the chosen assignments armed at confirm.
+remap_bindings_cache: list[dict[str, Any]] = []
+send_remap_pending: list[dict[str, Any]] | None = None
+send_remap_armed_at: float = 0.0
+# e45s01: the sources list the last write returned for each draft (the Send-time
+# reassignment panel consumes it, e45s02).
+drafts_sources: dict[int, list[dict[str, Any]]] = {}
+
 # e41s04: the state pull lane. state_pull_supported is the runtime lane probe
 # (None = not yet tried, True = proven, False = given up for the session); while
 # it is True the OSC /viosc/replydata push is DROPPED so the state is never
@@ -423,6 +475,11 @@ mapping_subscriptions: dict[str, list[str]] = {}
 # e40s02: Mappings the orphan policy disabled (their source is gone); they are
 # re-enabled automatically when the source comes back.
 mapping_orphans: set[int] = set()
+# BUG-2026-09-13T231500: every source NAME the state table has ever reported.
+# A Mapping's target absent from a state update is only evidence of removal if
+# the name was seen before — the first tables after boot/pairing can be empty or
+# still carry another session, and pruning against them deleted user Mappings.
+known_sources: set[str] = set()
 # e40s06: the targeted watch lane — the /viosc/reply deltas land on this queue
 # from the OSC server thread and are applied on the main thread; the plan last
 # sent to viOSC and whether the lane is proven alive (None = unknown, still

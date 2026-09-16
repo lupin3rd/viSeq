@@ -168,12 +168,19 @@ def poll_state_once() -> bool:
     disappear, so one answered failure is enough; a server that does not answer
     at all may simply be busy, so it takes STATE_PULL_MAX_FAILURES in a row.
     """
-    text, answered = dataplane.fetch_state(state.dataplane_host, state.dataplane_port)
+    text, answered, status = dataplane.fetch_state_ex(state.dataplane_host, state.dataplane_port)
     if text is not None:
         state.state_pull_supported = True
         state.state_pull_failures = 0
         state.ui_state_queue.put(text)
         return True
+    if answered and status == 401:
+        # BUG-2026-09-13T231500: before the pairing prompt is answered the data
+        # plane answers 401. That is "pair first", NOT "older daemon without
+        # /state": keep the lane available so the poll succeeds as soon as the
+        # token exists (the worker retries every interval).
+        state.state_pull_supported = None
+        return False
     if answered:
         state.state_pull_supported = False
         log_error(

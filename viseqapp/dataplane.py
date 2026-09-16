@@ -13,6 +13,7 @@ port, with no daemon, no config and no network.
 import urllib.error
 import urllib.request
 
+from viseqapp import pairing
 from viseqapp.constants import DATA_PLANE_TIMEOUT, STATE_PATH, THUMB_PATH_PREFIX
 
 
@@ -26,24 +27,32 @@ def state_url(host: str, port: int) -> str:
     return f"http://{host}:{port}{STATE_PATH}"
 
 
-def _fetch(url: str) -> tuple[bytes | None, bool]:
-    """One GET of a data-plane resource; never raises.
+def _fetch_ex(url: str) -> tuple[bytes | None, bool, int | None]:
+    """One GET; never raises. Returns ``(body, answered, status)``.
 
-    Returns ``(body, answered)``: ``body`` is the bytes on 200 and None
-    otherwise; ``answered`` is False ONLY when the server did not answer at all
-    (connection refused, timeout). That flag is what separates a dead or missing
-    endpoint from a server that is alive and merely has nothing at this address —
-    the lane decisions depend on telling those two apart.
+    ``answered`` is False ONLY when the server did not answer at all
+    (connection refused, timeout). ``status`` is the HTTP status when there was
+    an answer — the callers must be able to tell a 404 (old daemon, no route)
+    from a 401 (pairing required, the route exists).
     """
     try:
-        with urllib.request.urlopen(url, timeout=DATA_PLANE_TIMEOUT) as resp:
+        with urllib.request.urlopen(
+            urllib.request.Request(url, headers=pairing.http_headers()),
+            timeout=DATA_PLANE_TIMEOUT,
+        ) as resp:
             if resp.status != 200:
-                return None, True
-            return resp.read(), True
-    except urllib.error.HTTPError:
-        return None, True
+                return None, True, resp.status
+            return resp.read(), True, resp.status
+    except urllib.error.HTTPError as e:
+        return None, True, e.code
     except Exception:
-        return None, False
+        return None, False, None
+
+
+def _fetch(url: str) -> tuple[bytes | None, bool]:
+    """One GET of a data-plane resource; never raises — ``(body, answered)``."""
+    body, answered, _status = _fetch_ex(url)
+    return body, answered
 
 
 def fetch_thumbnail(
@@ -55,6 +64,22 @@ def fetch_thumbnail(
     return _fetch(thumbnail_url(host, port, source_name, index))
 
 
+def fetch_state_ex(host: str, port: int) -> tuple[str | None, bool, int | None]:
+    """One GET of the state table plus its HTTP status (BUG-2026-09-13T231500).
+
+    The text is handed on verbatim: the daemon produced it with the same
+    serializer that feeds the OSC broadcast, so parsing it belongs to the
+    existing state ingestion, not to the transport. The status lets the caller
+    tell a 404 (old daemon without /state) from a 401 (pairing required).
+    """
+    if not host or not port:
+        return None, False, None
+    body, answered, status = _fetch_ex(state_url(host, port))
+    if body is None:
+        return None, answered, status
+    return body.decode("utf-8", errors="replace"), True, status
+
+
 def fetch_state(host: str, port: int) -> tuple[str | None, bool]:
     """One GET of the state table as its exact JSON text (e41s04).
 
@@ -62,9 +87,5 @@ def fetch_state(host: str, port: int) -> tuple[str | None, bool]:
     serializer that feeds the OSC broadcast, so parsing it belongs to the
     existing state ingestion, not to the transport.
     """
-    if not host or not port:
-        return None, False
-    body, answered = _fetch(state_url(host, port))
-    if body is None:
-        return None, answered
-    return body.decode("utf-8", errors="replace"), True
+    text, answered, _status = fetch_state_ex(host, port)
+    return text, answered

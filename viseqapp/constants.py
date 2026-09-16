@@ -400,6 +400,7 @@ LAYOUT_WINDOW_TAGS: list[str] = [
     "vimix_media_window",
     "logs_window",
     "mapper_window",  # e28s02: the Mapper is a workspace window — pos/size/open persist
+    "file_manager_window",  # e43s02: the File Manager is a workspace window
 ]
 
 
@@ -484,6 +485,8 @@ MIDI_ACTION_ENABLE_CORRECTION = "enable_correction"  # arm the SELECTED source's
 MIDI_ACTION_IO_MONITOR_TOGGLE = "monitor_toggle"  # e39s01: show/hide the I/O Monitor window
 MIDI_ACTION_MAPPING_TOGGLE = "mapping_toggle"  # e40s01: arm/disarm a Mapping (Enabled gate)
 MIDI_ACTION_MAPPING_ADD = "mapping_add"  # e40s08: add a State Mapping on a source line
+MIDI_ACTION_PAIRING_PROMPT = "pairing_prompt"  # e42s02: re-pair with viOSC (code prompt)
+MIDI_ACTION_FILE_MANAGER_TOGGLE = "file_manager_toggle"  # e43s02: show/hide the File Manager
 
 
 # e39s01: I/O Monitor (diagnostic window). The capture is bounded so a spinning
@@ -787,3 +790,26 @@ GRID_LED_GREEN = "green"
 
 
 GRID_FLASH_SECONDS = 0.12  # beat flash pulse duration (timer restores the head color)
+
+
+# e43s03: File Manager thumbnails. The texture namespace is prefixed so the
+# browser's per-file textures can never collide with a source thumbnail (and the
+# state-table prune must skip them). Only the current page's media files are
+# requested, capped, so a huge folder cannot fan out.
+FS_THUMB_PREFIX = "fs:"
+FS_THUMB_MAX_REQUESTS = 60
+FS_THUMB_W = 64
+FS_THUMB_H = 36
+
+
+# e43s05: Session Drafts — the application-level library is written on a debounce
+# after a change (a rename storm must not rewrite the file per keystroke).
+DRAFTS_SAVE_DEBOUNCE_S = 1.0
+
+
+# e43s07: Session Draft actions (Save/Send are mouse buttons; these are the
+# stable MIDI-mappable actions, e33 rule). e44s02 adds draft_save.
+MIDI_ACTION_DRAFT_LOAD = "draft_load"
+MIDI_ACTION_DRAFT_NEXT = "draft_next"
+MIDI_ACTION_DRAFT_PREV = "draft_prev"
+MIDI_ACTION_DRAFT_SAVE = "draft_save"

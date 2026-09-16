@@ -24,11 +24,14 @@ from viseqapp import (
     actions,
     catalog,
     cue,
+    drafts,
     emission,
+    fsclient,
     iomonitor,
     leap,
     mapper,
     osc,
+    pairing,
     preview,
     state,
 )
@@ -57,8 +60,13 @@ from viseqapp.constants import (
     DEST_MIDI,
     DEST_OSC,
     DESTINATIONS,
+    DRAFTS_SAVE_DEBOUNCE_S,
     FRAME_SLEEP_ANIMATED,
     FRAME_SLEEP_IDLE,
+    FS_THUMB_H,
+    FS_THUMB_MAX_REQUESTS,
+    FS_THUMB_PREFIX,
+    FS_THUMB_W,
     HELP_ASCII_LOGO,
     HELP_LOGO_INDENT,
     HELP_WINDOW_HEIGHT,
@@ -134,7 +142,12 @@ from viseqapp.constants import (
     MEDIA_TITLE_RESERVE_PX,
     MEDIA_TITLE_WRAP,
     MIDI_ACTION_BEAT_SOURCE,
+    MIDI_ACTION_DRAFT_LOAD,
+    MIDI_ACTION_DRAFT_NEXT,
+    MIDI_ACTION_DRAFT_PREV,
+    MIDI_ACTION_DRAFT_SAVE,
     MIDI_ACTION_ENABLE_CORRECTION,
+    MIDI_ACTION_FILE_MANAGER_TOGGLE,
     MIDI_ACTION_IO_MONITOR_TOGGLE,
     MIDI_ACTION_MAPPER_BAND,
     MIDI_ACTION_MAPPER_CUE_OPEN,
@@ -146,6 +159,7 @@ from viseqapp.constants import (
     MIDI_ACTION_MAPPING_TOGGLE,
     MIDI_ACTION_NUDGE_BACK,
     MIDI_ACTION_NUDGE_FORWARD,
+    MIDI_ACTION_PAIRING_PROMPT,
     MIDI_ACTION_REGEN_SELECTED,
     MIDI_ACTION_SEQ_ROW_ASSIGN,
     MIDI_ACTION_SEQ_ROW_DISABLE,
@@ -328,6 +342,10 @@ Image.MAX_IMAGE_PIXELS = 25_000_000  # PIL's hard ceiling (~25 MP)
 # viseq application version — single source of truth (matches specs/release-plan.yaml, e08s02).
 # e13s01: this is the first real release of viSeq (user decision).
 # e20s03: 0.2.0 — viseqapp refactor + controller profiles + new project + Mapper family.
+# 0.7.0 — link pairing gates the OSC and HTTP surfaces; File Manager + Session Drafts over the
+# viOSC /fs data plane (thumbnails, video preview, .mix write/load with crossfade); session
+# rename/overwrite/open+import; per-source alpha and the Send-time reassignment panel; the flat
+# FontAwesome main toolbar replaces the dropdown menus (viOSC 0.5.0).
 # 0.6.0 — the Mapper edits MAPPINGS (origin -> rescale -> destination): State/Clock/Constant
 # origins driving MIDI and OSC destinations with dead-reckoning and the viOSC watch lane,
 # one editor for create and modify, the I/O Monitor (MIDI+OSC, in+out, filters), the cue-row
@@ -336,7 +354,7 @@ Image.MAX_IMAGE_PIXELS = 25_000_000  # PIL's hard ceiling (~25 MP)
 # 0.4.0 — Leap Motion mapper source, per-mapping reset, project save + OSC config persist,
 # Mapper tile/row workflows (thumb assign, Add-to-Mapper submenu, line numbers).
 # 0.3.0 — Mapper family (rows/rescale/enable/cycle), compact Vimix-sources grid, windows, XDG.
-APP_VERSION: str = "0.6.0"
+APP_VERSION: str = "0.7.0"
 
 # Author's GitHub profile, shown as a link in the About window (e08s01, user request).
 GITHUB_URL: str = "https://github.com/lupin3rd"
@@ -460,7 +478,9 @@ def apply_window_layout(records: list[dict[str, Any]]) -> None:
         if not tag or not dpg.does_item_exist(tag):
             continue
         try:
-            dpg.set_item_pos(tag, rec["pos"])
+            pos = list(rec["pos"])
+            pos[1] = max(int(pos[1]), TOOLBAR_BAR_H)  # never under the toolbar strip
+            dpg.set_item_pos(tag, pos)
             dpg.set_item_width(tag, rec["size"][0])
             dpg.set_item_height(tag, rec["size"][1])
             shown = bool(rec.get("shown")) and tag not in LAYOUT_ALWAYS_HIDDEN_TAGS
@@ -1017,7 +1037,6 @@ def save_project_file(path: str) -> bool:
     cfg = load_config()
     remember_recent_project(cfg, path)
     save_config(cfg)
-    rebuild_last_project_menu()
     return True
 
 
@@ -1034,26 +1053,7 @@ def open_project_file(path: str) -> bool:
     cfg["theme"] = doc["theme"]
     remember_recent_project(cfg, path)
     save_config(cfg)
-    rebuild_last_project_menu()
     return True
-
-
-def rebuild_last_project_menu() -> None:
-    """Rebuild the Last-project submenu from the recent list (e11s03)."""
-    if not dpg.does_item_exist("menu_last_project"):
-        return
-    dpg.delete_item("menu_last_project", children_only=True)
-    recent = recent_project_paths(load_config())
-    if not recent:
-        dpg.add_menu_item(label="No recent projects", enabled=False, parent="menu_last_project")
-        return
-    for path in recent:
-        dpg.add_menu_item(
-            label=os.path.basename(path),
-            callback=open_recent_project,
-            user_data=path,
-            parent="menu_last_project",
-        )
 
 
 def open_recent_project(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -2499,6 +2499,52 @@ def request_missing_thumbnails(now: float) -> None:
             thumb_frames_at_last_request[target_id] = received
 
 
+def _prune_state_consumers(live_ids: set[str], known_ids: set[str]) -> None:
+    """Drop cached UI that belongs to sources which no longer exist (L-1).
+
+    The caller MUST pass a NON-EMPTY ``live_ids``: an empty state table means
+    "viOSC has not synced yet" (or, under pairing, "not authenticated yet"),
+    never "every source was removed". ``known_ids`` is every name the table has
+    ever reported, so a Mapping whose target was never seen is not pruned on a
+    transient table (BUG-2026-09-13T231500).
+    """
+    for target_id in list(thumbnails_data):
+        if target_id.startswith(FS_THUMB_PREFIX):
+            continue  # e43s03: the File Manager's per-file textures are not sources
+        if target_id not in live_ids:
+            tex_tags = thumbnails_data.pop(target_id)
+            for tex_tag in tex_tags:
+                if dpg.does_item_exist(tex_tag):
+                    dpg.delete_item(tex_tag)
+            click_reg_tag = media_tile_click_registry_tag(target_id)
+            if dpg.does_item_exist(click_reg_tag):
+                dpg.delete_item(click_reg_tag)  # stale click registry must not linger
+            popup_tag = _tile_popup_tag(target_id)
+            if dpg.does_item_exist(popup_tag):
+                dpg.delete_item(popup_tag)  # stale action popup must not linger (e16)
+    for key in list(request_timestamps):
+        if key.startswith("thumb_"):
+            target_id = key[len("thumb_") :]
+            if target_id not in live_ids:
+                request_timestamps.pop(key)
+    for target_id in list(thumb_fail_count):
+        if target_id not in live_ids:
+            thumb_fail_count.pop(target_id)
+    for target_id in list(thumb_frames_at_last_request):
+        if target_id not in live_ids:
+            thumb_frames_at_last_request.pop(target_id)
+    mapper.prune_anchors(live_ids)  # e36s06: the anchor cache follows source churn
+    removed_mappings = mapper.prune_mappings(live_ids, known_ids)
+    if removed_mappings:
+        for removed in removed_mappings:
+            _drop_mapping_editor_and_runs(int(removed["id"]))  # e35s05
+        refresh_mapper_ui()  # a vanished source disables its Mappings (e45s02)
+    if state.viseq_selected_source is not None and state.viseq_selected_source not in live_ids:
+        state.viseq_selected_source = None  # a pruned source can't stay selected (e10s06)
+    if state.preview_active is not None and state.preview_active not in live_ids:
+        close_source_preview()  # a pruned source can't keep a preview stream (e38s03)
+
+
 def update_vimix_sources_ui(json_string: str) -> None:
     try:
         payload = json.loads(json_string)
@@ -2524,39 +2570,15 @@ def update_vimix_sources_ui(json_string: str) -> None:
         for k, props in sources.items():
             name = props.get("name")
             live_ids.add(str(name) if name else str(k))
-        for target_id in list(thumbnails_data):
-            if target_id not in live_ids:
-                tex_tags = thumbnails_data.pop(target_id)
-                for tex_tag in tex_tags:
-                    if dpg.does_item_exist(tex_tag):
-                        dpg.delete_item(tex_tag)
-                click_reg_tag = media_tile_click_registry_tag(target_id)
-                if dpg.does_item_exist(click_reg_tag):
-                    dpg.delete_item(click_reg_tag)  # stale click registry must not linger
-                popup_tag = _tile_popup_tag(target_id)
-                if dpg.does_item_exist(popup_tag):
-                    dpg.delete_item(popup_tag)  # stale action popup must not linger (e16)
-        for key in list(request_timestamps):
-            if key.startswith("thumb_"):
-                target_id = key[len("thumb_") :]
-                if target_id not in live_ids:
-                    request_timestamps.pop(key)
-        for target_id in list(thumb_fail_count):
-            if target_id not in live_ids:
-                thumb_fail_count.pop(target_id)
-        for target_id in list(thumb_frames_at_last_request):
-            if target_id not in live_ids:
-                thumb_frames_at_last_request.pop(target_id)
-        mapper.prune_anchors(live_ids)  # e36s06: the anchor cache follows source churn
-        removed_mappings = mapper.prune_mappings(live_ids)
-        if removed_mappings:
-            for removed in removed_mappings:
-                _drop_mapping_editor_and_runs(int(removed["id"]))  # e35s05
-            refresh_mapper_ui()  # a removed source takes its mappings with it (e16)
-        if state.viseq_selected_source is not None and state.viseq_selected_source not in live_ids:
-            state.viseq_selected_source = None  # a pruned source can't stay selected (e10s06)
-        if state.preview_active is not None and state.preview_active not in live_ids:
-            close_source_preview()  # a pruned source can't keep a preview stream (e38s03)
+        # BUG-2026-09-13T231500: an EMPTY state table is not evidence that every
+        # source is gone (viOSC holds no sources until its first sync; under
+        # pairing the table stays empty until the peer authenticates), and a
+        # table that never listed a target is not evidence either — only a name
+        # seen before and now absent removes a Mapping.
+        if live_ids:
+            _apply_pending_remap(live_ids)  # e45s02: before the orphan pass
+            _prune_state_consumers(live_ids, state.known_sources)
+            state.known_sources |= live_ids
 
         current_source = state.global_vimix_state["current_source"]
         data_dict = state.global_vimix_state["sources"]
@@ -3437,6 +3459,1344 @@ def autostart_osc() -> None:
     start_osc_server(endpoints["listen_ip"], endpoints["listen_port"])
 
 
+# e42s02: PAIRING PROMPT — viOSC is paired by default (a code shown on machine
+# A), so viseq asks once per run, exchanges the code on a worker (no dpg there),
+# and keeps the token in memory for every data-plane request.
+PAIRING_PROMPT_TAG = "pairing_prompt_modal"
+PAIRING_CODE_INPUT_TAG = "pairing_code_input"
+PAIRING_STATUS_TAG = "pairing_status_text"
+PAIRING_PROMPT_WIDTH = 440
+PAIRING_PROMPT_HEIGHT = 210
+
+
+def _pairing_endpoint() -> tuple[str, int]:
+    """The machine-A data-plane endpoint the code exchange goes to."""
+    return str(state.dataplane_host or ""), int(state.dataplane_port or 0)
+
+
+def show_pairing_prompt(*_args: Any) -> None:
+    """Open the pairing modal (shown once at boot, e42s02)."""
+    if dpg.does_item_exist(PAIRING_PROMPT_TAG):
+        dpg.delete_item(PAIRING_PROMPT_TAG)
+    with dpg.window(
+        label="Pair with viOSC",
+        tag=PAIRING_PROMPT_TAG,
+        modal=True,
+        width=PAIRING_PROMPT_WIDTH,
+        height=PAIRING_PROMPT_HEIGHT,
+        no_resize=True,
+    ):
+        dpg.add_text(
+            "Enter the pairing code shown on the viOSC machine.",
+            wrap=PAIRING_PROMPT_WIDTH - 40,
+        )
+        dpg.add_input_text(
+            tag=PAIRING_CODE_INPUT_TAG,
+            hint="4 digits",
+            width=160,
+            on_enter=True,
+            callback=_pairing_connect,
+        )
+        dpg.add_text("", tag=PAIRING_STATUS_TAG, wrap=PAIRING_PROMPT_WIDTH - 40)
+        dpg.add_separator()
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="Skip", width=120, callback=hide_pairing_prompt)
+            dpg.add_button(label="Connect", width=140, callback=_pairing_connect)
+    dpg.show_item(PAIRING_PROMPT_TAG)
+
+
+def hide_pairing_prompt(*_args: Any) -> None:
+    """Close the pairing prompt (Skip, or a successful exchange)."""
+    if dpg.does_item_exist(PAIRING_PROMPT_TAG):
+        dpg.delete_item(PAIRING_PROMPT_TAG)
+
+
+def _pairing_connect(*_args: Any) -> None:
+    """Connect button / Enter: exchange the code on a worker (HIGH-1)."""
+    host, port = _pairing_endpoint()
+    code = str(dpg.get_value(PAIRING_CODE_INPUT_TAG) or "").strip()
+    if not host or not port:
+        dpg.set_value(PAIRING_STATUS_TAG, "viOSC endpoint not configured.")
+        return
+    if not code:
+        dpg.set_value(PAIRING_STATUS_TAG, "Enter the code first.")
+        return
+    dpg.set_value(PAIRING_STATUS_TAG, "Connecting...")
+    threading.Thread(target=_pairing_worker, args=(host, port, code), daemon=True).start()
+
+
+def _pairing_worker(host: str, port: int, code: str) -> None:
+    """Worker: exchange the code, then report on the main thread (HIGH-1)."""
+    token = pairing.authenticate(host, port, code)
+    state.ui_task_queue.put(lambda: _pairing_result(token))
+
+
+def _on_pairing_succeeded() -> None:
+    """Re-establish the transport after a successful pairing (e42s02).
+
+    BUG-2026-09-13T231500: viseq boots and starts talking BEFORE the code is
+    entered, so viOSC drops the boot-time OSC — but the memoization records the
+    watch/monitor plan as sent, and the state pull reads the boot 401 as an old
+    daemon. Forget all of it so the next sync re-issues the whole plan and both
+    lanes retry now that a token and a bound peer exist.
+    """
+    state.mapping_watch_plan = {}
+    state.mapping_subscriptions = {}
+    state.osc_watch_supported = None
+    state.state_pull_supported = None
+    state.state_pull_failures = 0
+    state.thumb_http_supported = None
+    state.thumb_http_failures = 0
+    _sync_mapping_subscriptions()
+
+
+def _pairing_result(token: str | None) -> None:
+    """Main thread: close on success, explain the failure otherwise."""
+    if token:
+        hide_pairing_prompt()
+        _on_pairing_succeeded()
+        return
+    if dpg.does_item_exist(PAIRING_STATUS_TAG):
+        dpg.set_value(
+            PAIRING_STATUS_TAG,
+            "Pairing failed. Check the code shown on viOSC and that machine A is reachable.",
+        )
+
+
+# e43s02: FILE MANAGER WINDOW — browse machine A's Media Roots through the /fs
+# data plane (e43s01). The window rebuilds a plain entry list per navigation; a
+# dpg-free worker does the HTTP call and hands the result to the main thread
+# (HIGH-1). Layout is persisted (LAYOUT_WINDOW_TAGS) and the toggle is mappable
+# per the e33 rule.
+FILE_MANAGER_TAG = "file_manager_window"
+FILE_MANAGER_ROOTS_TAG = "fs_roots_combo"
+FILE_MANAGER_BREADCRUMB_TAG = "fs_breadcrumb"
+FILE_MANAGER_ENTRIES_TAG = "fs_entries_group"
+FILE_MANAGER_STATUS_TAG = "fs_status_line"
+FILE_MANAGER_LEARN_SLOT = "fs_learn_slot"
+FILE_MANAGER_WIDTH = 660
+FILE_MANAGER_HEIGHT = 640
+FILE_MANAGER_LIST_HEIGHT = 300
+FS_ENTRIES_COLUMNS = 2
+FS_ENTRY_LABEL_WIDTH = 220
+# e46s01: the compact toolbar strip at the top of the viewport; the workspace
+# windows start below it so the borderless toolbar is never covered.
+TOOLBAR_BAR_H = 34
+TOOLBAR_BAR_POS = (2, 4)
+
+
+def show_file_manager_window(*_args: Any) -> None:
+    """Windows menu / e33 action: show the File Manager (load the roots once)."""
+    dpg.show_item(FILE_MANAGER_TAG)
+    dpg.focus_item(FILE_MANAGER_TAG)
+    if not state.fs_roots and not state.fs_busy:
+        fs_refresh()
+
+
+def toggle_file_manager_window(*_args: Any) -> None:
+    """e33 action: show the window, or hide it when it is already open."""
+    if dpg.is_item_shown(FILE_MANAGER_TAG):
+        dpg.hide_item(FILE_MANAGER_TAG)
+        return
+    show_file_manager_window()
+
+
+def _fs_endpoint() -> tuple[str, int]:
+    """The machine-A data-plane endpoint the /fs requests go to."""
+    return str(state.dataplane_host or ""), int(state.dataplane_port or 0)
+
+
+def _fs_error_text(status: int | None) -> str:
+    """A short, honest state line for a failed /fs request."""
+    if status == 401:
+        return "Not paired with viOSC — use Settings > Pair with viOSC..."
+    if status == 403:
+        return "Outside the allowed roots — check fs_roots in viOSC."
+    if status is None:
+        return "viOSC unreachable."
+    return f"Error ({status})."
+
+
+def fs_refresh(*_args: Any) -> None:
+    """Reload the roots (first time) and the current directory."""
+    if not state.fs_roots:
+        _fs_request_roots()
+    if state.fs_current_path:
+        fs_navigate(state.fs_current_path)
+
+
+def _fs_request_roots() -> None:
+    if state.fs_busy:
+        return
+    host, port = _fs_endpoint()
+    state.fs_busy = True
+    state.fs_status = "Loading Media Roots..."
+    dpg.set_value(FILE_MANAGER_STATUS_TAG, state.fs_status)
+    threading.Thread(target=_fs_roots_worker, args=(host, port), daemon=True).start()
+
+
+def _fs_roots_worker(host: str, port: int) -> None:
+    """Worker: fetch the Media Roots, report on the main thread (HIGH-1)."""
+    roots, status = fsclient.fetch_roots(host, port)
+    state.ui_task_queue.put(lambda: _fs_apply_roots(roots, status))
+
+
+def _fs_apply_roots(roots: list | None, status: int | None) -> None:
+    """Main thread: fill the roots combo (and open the first root)."""
+    state.fs_busy = False
+    if not roots:
+        state.fs_status = _fs_error_text(status)
+        dpg.set_value(FILE_MANAGER_STATUS_TAG, state.fs_status)
+        return
+    state.fs_roots = roots
+    paths = [str(r.get("path")) for r in roots]
+    dpg.configure_item(FILE_MANAGER_ROOTS_TAG, items=paths)
+    fs_navigate(paths[0])
+
+
+def fs_navigate(path: str, *_args: Any) -> None:
+    """Load one directory page (single-flight: a busy request wins)."""
+    if state.fs_busy:
+        return
+    host, port = _fs_endpoint()
+    if not host or not port:
+        state.fs_status = "viOSC endpoint not configured."
+        dpg.set_value(FILE_MANAGER_STATUS_TAG, state.fs_status)
+        return
+    state.fs_busy = True
+    state.fs_status = "Loading..."
+    dpg.set_value(FILE_MANAGER_STATUS_TAG, state.fs_status)
+    threading.Thread(target=_fs_list_worker, args=(host, port, str(path)), daemon=True).start()
+
+
+def _fs_list_worker(host: str, port: int, path: str) -> None:
+    """Worker: fetch one directory page, report on the main thread (HIGH-1)."""
+    payload, status = fsclient.fetch_listing(host, port, path)
+    state.ui_task_queue.put(lambda: _fs_apply_listing(path, payload, status))
+
+
+def _fs_apply_listing(path: str, payload: dict | None, status: int | None) -> None:
+    """Main thread: store the page, update the chrome and rebuild the list."""
+    state.fs_busy = False
+    if payload is None:
+        state.fs_status = _fs_error_text(status)
+        dpg.set_value(FILE_MANAGER_STATUS_TAG, state.fs_status)
+        return
+    state.fs_current_path = str(payload.get("path") or path)
+    state.fs_entries = list(payload.get("entries") or [])
+    state.fs_total = int(payload.get("total") or len(state.fs_entries))
+    state.fs_selected = None
+    state.fs_status = f"{state.fs_total} entries"
+    dpg.set_value(FILE_MANAGER_BREADCRUMB_TAG, state.fs_current_path)
+    dpg.set_value(FILE_MANAGER_STATUS_TAG, state.fs_status)
+    _fs_render_entries()
+    _fs_request_thumbnails(state.fs_entries)
+
+
+def _fs_entry_label(entry: dict[str, Any]) -> str:
+    """A plain, readable row label: folders first, media kinds spelled out."""
+    name = str(entry.get("name") or "")
+    if entry.get("kind") == "dir":
+        return f"[dir] {name}"
+    kind = entry.get("media_kind")
+    return f"{name}  ({kind})" if kind and kind != "other" else name
+
+
+def _fs_render_entries() -> None:
+    """Rebuild the entry list from ``state.fs_entries`` (main thread).
+
+    Two entries per row (e44s04) keeps the window short; every cell keeps its
+    own thumbnail, selectable and context-menu binding.
+    """
+    if not dpg.does_item_exist(FILE_MANAGER_ENTRIES_TAG):
+        return
+    dpg.delete_item(FILE_MANAGER_ENTRIES_TAG, children_only=True)
+    total = len(state.fs_entries)
+    for start in range(0, total, FS_ENTRIES_COLUMNS):
+        row = dpg.add_group(horizontal=True, parent=FILE_MANAGER_ENTRIES_TAG)
+        for index in range(start, min(start + FS_ENTRIES_COLUMNS, total)):
+            entry = state.fs_entries[index]
+            cell = dpg.add_group(horizontal=True, parent=row)
+            thumb_tag = f"fs_thumb_{index}"
+            _fs_entry_thumb(entry, parent=cell, thumb_tag=thumb_tag)
+            item_tag = f"fs_entry_{index}"
+            dpg.add_selectable(
+                label=_fs_entry_label(entry),
+                parent=cell,
+                tag=item_tag,
+                width=FS_ENTRY_LABEL_WIDTH,
+                callback=_on_fs_entry_click,
+                user_data=entry,
+            )
+            _fs_bind_row_menu(item_tag, thumb_tag, entry)
+
+
+FS_ROW_POPUP_TAG = "fs_row_popup"
+
+
+def _fs_bind_row_menu(item_tag: str, thumb_tag: str, entry: dict[str, Any]) -> None:
+    """Bind the row's right-click menu to the name AND the thumbnail (e44s05)."""
+    registry = f"fs_row_reg_{item_tag}"
+    if dpg.does_item_exist(registry):
+        dpg.delete_item(registry)
+    with dpg.item_handler_registry(tag=registry):
+        dpg.add_item_clicked_handler(button=1, callback=_on_fs_entry_right_click, user_data=entry)
+    dpg.bind_item_handler_registry(item_tag, registry)
+    dpg.bind_item_handler_registry(thumb_tag, registry)
+
+
+def _on_fs_entry_right_click(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Right-click a file row: Add to session, plus Preview... for videos (e44s05)."""
+    entry = user_data if isinstance(user_data, dict) else {}
+    if entry.get("kind") != "file" or entry.get("media_kind") not in ("video", "image"):
+        return
+    path = os.path.join(state.fs_current_path, str(entry.get("name") or ""))
+    if dpg.does_item_exist(FS_ROW_POPUP_TAG):
+        dpg.delete_item(FS_ROW_POPUP_TAG)
+    position = dpg.get_mouse_pos(local=False)
+    with dpg.window(
+        tag=FS_ROW_POPUP_TAG,
+        popup=True,
+        no_title_bar=True,
+        pos=position,
+        min_size=(200, 10),
+    ):
+        dpg.add_text(os.path.basename(path))
+        dpg.add_button(label="Add to session", user_data=path, callback=_on_fs_add_to_session_click)
+        if entry.get("media_kind") == "video":
+            dpg.add_button(label="Preview...", user_data=path, callback=_on_fs_preview_click)
+    dpg.show_item(FS_ROW_POPUP_TAG)
+
+
+def _on_fs_add_to_session_click(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """The row popup's Add to session item: append the clicked file (e44s05)."""
+    if dpg.does_item_exist(FS_ROW_POPUP_TAG):
+        dpg.delete_item(FS_ROW_POPUP_TAG)
+    fs_add_path_to_draft(str(user_data or ""))
+
+
+def _on_fs_preview_click(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """The row popup's Preview... item: open the file preview (e43s04)."""
+    if dpg.does_item_exist(FS_ROW_POPUP_TAG):
+        dpg.delete_item(FS_ROW_POPUP_TAG)
+    start_file_preview(str(user_data))
+
+
+def start_file_preview(path: str, *_args: Any) -> None:
+    """Preview a video FILE from the File Manager over /fs/raw (e43s04).
+
+    Reuses the e38 Preview window and player (one preview at a time); nothing is
+    ever sent to vimix, so watching a clip cannot disturb the live session.
+    """
+    global _preview_player, _preview_error_shown
+    host, port = _fs_endpoint()
+    label = os.path.basename(str(path))
+    if not host or not port:
+        _preview_status("viOSC endpoint not configured.")
+        _open_preview_window(label, message="viOSC endpoint not configured.")
+        return
+    close_source_preview()  # one preview at a time (e38 rule)
+    _preview_error_shown = False
+    state.preview_error = None
+    state.preview_active = f"{FS_THUMB_PREFIX}{path}"
+    state.preview_playing = True
+    _open_preview_window(label)
+    player = preview.PreviewPlayer(state.preview_active, url=fsclient.raw_url(host, port, path))
+    _preview_player = player
+    player.start()
+
+
+def _fs_thumb_texture_tag(path: str) -> str:
+    """The texture tag the shared decoder creates for one file's thumbnail."""
+    return f"tex_{FS_THUMB_PREFIX}{path}_0"
+
+
+def _fs_media_path(entry: dict[str, Any]) -> str | None:
+    """The absolute path of a media entry on the current page, else None."""
+    if entry.get("kind") != "file" or entry.get("media_kind") not in ("video", "image"):
+        return None
+    return os.path.join(state.fs_current_path, str(entry.get("name") or ""))
+
+
+def _fs_entry_thumb(entry: dict[str, Any], parent: Any, thumb_tag: str) -> None:
+    """The row's 64x36 preview when its texture exists, else a placeholder.
+
+    ``thumb_tag`` is the widget tag the row menu binds to (e44s05), so a
+    right-click on the thumbnail opens the same menu as the name.
+    """
+    path = _fs_media_path(entry)
+    if path is not None and dpg.does_item_exist(_fs_thumb_texture_tag(path)):
+        dpg.add_image(
+            _fs_thumb_texture_tag(path),
+            parent=parent,
+            tag=thumb_tag,
+            width=FS_THUMB_W,
+            height=FS_THUMB_H,
+        )
+        return
+    dpg.add_text("  ", parent=parent, tag=thumb_tag)
+
+
+def _fs_request_thumbnails(entries: list[dict[str, Any]]) -> None:
+    """Ask for the current page's media thumbnails, lazily and bounded (e43s03).
+
+    Only video/image files are requested, entries whose texture already exists
+    are skipped, and the page contributes at most FS_THUMB_MAX_REQUESTS paths.
+    Stale work is DROPPED first: a navigation invalidates the previous page's
+    queue, which is the debounce (no timer needed — the user paces navigation).
+    """
+    while not state.fs_thumb_queue.empty():
+        with contextlib.suppress(queue.Empty):
+            state.fs_thumb_queue.get_nowait()
+            state.fs_thumb_queue.task_done()
+    state.fs_thumb_requested.clear()
+    requested = 0
+    for entry in entries:
+        if requested >= FS_THUMB_MAX_REQUESTS:
+            break
+        path = _fs_media_path(entry)
+        if path is None or dpg.does_item_exist(_fs_thumb_texture_tag(path)):
+            continue
+        state.fs_thumb_requested.add(path)
+        state.fs_thumb_queue.put(path)
+        requested += 1
+
+
+def _fs_on_thumb_texture(name: str) -> None:
+    """Repaint the browser when one of ITS thumbnails lands (e43s03)."""
+    if not name.startswith(FS_THUMB_PREFIX):
+        return
+    path = name[len(FS_THUMB_PREFIX) :]
+    if state.fs_current_path and os.path.dirname(path) == state.fs_current_path:
+        _fs_render_entries()
+
+
+def _on_fs_entry_click(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """A directory enters it; a file becomes the selection (e43s02 tracer)."""
+    entry = user_data if isinstance(user_data, dict) else {}
+    if entry.get("kind") == "dir":
+        fs_navigate(os.path.join(state.fs_current_path, str(entry.get("name") or "")))
+        return
+    state.fs_selected = str(entry.get("name") or "")
+
+
+def fs_go_up(*_args: Any) -> None:
+    """Up one level, but never above the configured roots."""
+    current = state.fs_current_path
+    if not current:
+        return
+    roots = [str(r.get("path")) for r in state.fs_roots]
+    parent = os.path.dirname(current.rstrip("/")) or "/"
+    inside = any(parent == r or parent.startswith(r.rstrip("/") + "/") for r in roots)
+    if current in roots or not inside:
+        return
+    fs_navigate(parent)
+
+
+def _on_fs_root_selected(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Roots combo: navigate to the chosen Media Root."""
+    if app_data:
+        fs_navigate(str(app_data))
+
+
+def _exec_file_manager_toggle(params: dict[str, Any], value: int) -> None:
+    """e43s02: a momentary press shows or hides the File Manager window."""
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    toggle_file_manager_window()
+
+
+# e43s05: SESSION DRAFTS — named, ordered file sets edited here and written as a
+# vimix .mix only on commit (e43s06/s07). The library is application-level (it
+# survives project changes) and is saved on a debounce after any mutation.
+FS_DRAFTS_GROUP = "fs_drafts_group"
+FS_DRAFT_FILES_GROUP = "fs_draft_files_group"
+
+
+def _drafts_load() -> None:
+    """Load the application-level draft library (boot + an explicit reload)."""
+    if not state.drafts_path:
+        state.drafts_path = drafts.default_path()
+    state.drafts_library = drafts.load_library(state.drafts_path)
+    state.drafts_selected = None
+    state.drafts_dirty = False
+
+
+def _drafts_mark_dirty(now: float | None = None) -> None:
+    """Record that the library changed (the tick persists it after the debounce)."""
+    state.drafts_dirty = True
+    state.drafts_dirty_at = time.monotonic() if now is None else now
+
+
+def tick_drafts(now: float | None = None) -> None:
+    """Main-loop tick: persist the draft library once the debounce elapses."""
+    if not state.drafts_dirty:
+        return
+    stamp = time.monotonic() if now is None else now
+    if stamp - state.drafts_dirty_at < DRAFTS_SAVE_DEBOUNCE_S:
+        return
+    if drafts.save_library(state.drafts_path, state.drafts_library):
+        state.drafts_dirty = False
+
+
+def refresh_drafts_ui(*_args: Any) -> None:
+    """Rebuild the drafts list and the selected draft's file list (main thread)."""
+    if not dpg.does_item_exist(FS_DRAFTS_GROUP):
+        return
+    dpg.delete_item(FS_DRAFTS_GROUP, children_only=True)
+    library_drafts = list(state.drafts_library.get("drafts", []))
+    for start in range(0, len(library_drafts), FS_ENTRIES_COLUMNS):
+        row = dpg.add_group(horizontal=True, parent=FS_DRAFTS_GROUP)
+        for draft in library_drafts[start : start + FS_ENTRIES_COLUMNS]:
+            marked = "* " if draft.get("id") == state.drafts_selected else ""
+            dpg.add_selectable(
+                label=f"{marked}{draft.get('name')} ({len(draft.get('files', []))})",
+                parent=row,
+                tag=f"fs_draft_{draft.get('id')}",
+                width=FS_DRAFT_LABEL_WIDTH,
+                callback=fs_select_draft,
+                user_data={"id": draft.get("id")},
+            )
+    if not dpg.does_item_exist(FS_DRAFT_FILES_GROUP):
+        return
+    dpg.delete_item(FS_DRAFT_FILES_GROUP, children_only=True)
+    current = (
+        drafts.find_draft(state.drafts_library, state.drafts_selected)
+        if state.drafts_selected is not None
+        else None
+    )
+    if current is None:
+        return
+    for index, path in enumerate(current.get("files", [])):
+        row = dpg.add_group(horizontal=True, parent=FS_DRAFT_FILES_GROUP)
+        dpg.add_text(f"{index + 1}.", parent=row)
+        dpg.add_text(os.path.basename(str(path)), parent=row)
+        dpg.add_input_float(
+            default_value=drafts.file_alpha(current, str(path)),
+            width=FS_DRAFT_ALPHA_WIDTH,
+            step=FS_DRAFT_ALPHA_STEP,
+            format="%.2f",
+            parent=row,
+            tag=f"{FS_DRAFT_ALPHA_TAG}_{index}",
+            callback=fs_draft_set_alpha,
+            user_data=str(path),
+        )
+        dpg.add_button(
+            label="^",
+            width=24,
+            parent=row,
+            callback=fs_draft_file_move,
+            user_data={"path": path, "delta": -1},
+        )
+        dpg.add_button(
+            label="v",
+            width=24,
+            parent=row,
+            callback=fs_draft_file_move,
+            user_data={"path": path, "delta": 1},
+        )
+        dpg.add_button(
+            label="x", width=24, parent=row, callback=fs_draft_file_remove, user_data=path
+        )
+
+
+def fs_new_draft(*_args: Any) -> None:
+    """Create, select and persist a fresh draft."""
+    draft = drafts.create_draft(state.drafts_library)
+    state.drafts_selected = int(draft["id"])
+    _drafts_mark_dirty()
+    refresh_drafts_ui()
+
+
+def fs_select_draft(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Select a draft in the list."""
+    payload = user_data if isinstance(user_data, dict) else {}
+    if payload.get("id") is not None:
+        state.drafts_selected = int(payload["id"])
+        refresh_drafts_ui()
+
+
+def fs_delete_selected_draft(*_args: Any) -> None:
+    """Delete the selected draft (never touches a file on machine A)."""
+    if state.drafts_selected is None:
+        return
+    if drafts.delete_draft(state.drafts_library, state.drafts_selected):
+        state.drafts_selected = None
+        _drafts_mark_dirty()
+        refresh_drafts_ui()
+
+
+def fs_add_path_to_draft(path: str) -> None:
+    """Add one path to the selected draft, creating a draft when needed (e44s05)."""
+    if not str(path).strip():
+        return
+    if state.drafts_selected is None:
+        fs_new_draft()
+    if state.drafts_selected is None:
+        return
+    if drafts.add_files(state.drafts_library, state.drafts_selected, [str(path)]):
+        _drafts_mark_dirty()
+        refresh_drafts_ui()
+
+
+def fs_draft_file_move(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Move one file up/down inside the selected draft."""
+    payload = user_data if isinstance(user_data, dict) else {}
+    if state.drafts_selected is None:
+        return
+    moved = drafts.move_file(
+        state.drafts_library,
+        state.drafts_selected,
+        str(payload.get("path") or ""),
+        int(payload.get("delta") or 0),
+    )
+    if moved:
+        _drafts_mark_dirty()
+        refresh_drafts_ui()
+
+
+def fs_draft_file_remove(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Remove one file from the selected draft."""
+    if state.drafts_selected is None:
+        return
+    if drafts.remove_file(state.drafts_library, state.drafts_selected, str(user_data or "")):
+        _drafts_mark_dirty()
+        refresh_drafts_ui()
+
+
+def fs_draft_set_alpha(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Store the alpha typed on one draft source row (e45s01).
+
+    The value arrives in ``app_data``: it is never read back from the widget, so
+    a widget that has already been rebuilt can never corrupt it.
+    """
+    if state.drafts_selected is None:
+        return
+    if drafts.set_file_alpha(
+        state.drafts_library, state.drafts_selected, str(user_data or ""), app_data
+    ):
+        _drafts_mark_dirty()
+
+
+# e43s07: WRITE / LOAD — Write generates the .mix on machine A (never touching
+# the live session); Load always asks for confirmation, offers an optional
+# transition and sends /vimix/session/open through the existing OSC client.
+FS_DRAFT_STATUS_TAG = "fs_draft_status"
+FS_DRAFT_TRANSITION_TAG = "fs_draft_transition"
+FS_DRAFT_CONFIRM_TAG = "fs_draft_load_confirm"
+FS_DRAFT_LEARN_SLOT = "fs_drafts_learn_slot"
+FS_DRAFT_RENAME_TAG = "fs_draft_rename_confirm"
+FS_DRAFT_RENAME_INPUT_TAG = "fs_draft_rename_input"
+FS_DRAFTS_SEPARATOR_TAG = "fs_drafts_separator"
+FS_DRAFT_LABEL_WIDTH = 220
+FS_DRAFT_ALPHA_TAG = "fs_draft_alpha"
+FS_DRAFT_ALPHA_WIDTH = 70
+FS_DRAFT_ALPHA_STEP = 0.1
+# e45s02: the Send-time reassignment panel.
+REMAP_NONE = "\u2014"
+REMAP_TIMEOUT_S = 60.0
+FS_REMAP_GROUP_TAG = "fs_remap_group"
+REMAP_ROW_HEIGHT = 28
+FS_REMAP_MIN_HEIGHT = 56
+FS_REMAP_MAX_HEIGHT = 300
+REMAP_PANEL_CHROME = 66  # panel title + the Posizionale button + spacing
+FS_SESSION_PICKER_TAG = "fs_session_picker"
+FS_SESSION_LIST_TAG = "fs_session_list"
+FS_SESSION_DETAIL_TAG = "fs_session_detail"
+FS_SESSION_STATUS_TAG = "fs_session_status"
+DRAFT_CONFIRM_WIDTH = 560
+DRAFT_CONFIRM_HEIGHT = 200
+DRAFT_CONFIRM_MIN_WIDTH = 420
+DRAFT_CONFIRM_MIN_HEIGHT = 170
+DRAFT_RENAME_WIDTH = 380
+DRAFT_RENAME_HEIGHT = 150
+DRAFT_PICKER_WIDTH = 620
+DRAFT_PICKER_HEIGHT = 480
+DRAFT_PICKER_LIST_HEIGHT = 200
+
+
+def _drafts_status(text: str) -> None:
+    """Show the last Write/Load outcome in the drafts pane."""
+    state.drafts_status = str(text)
+    if dpg.does_item_exist(FS_DRAFT_STATUS_TAG):
+        dpg.set_value(FS_DRAFT_STATUS_TAG, state.drafts_status)
+
+
+def _selected_draft() -> dict[str, Any] | None:
+    """The currently selected draft, or None."""
+    if state.drafts_selected is None:
+        return None
+    return drafts.find_draft(state.drafts_library, state.drafts_selected)
+
+
+def fs_open_rename_draft(*_args: Any) -> None:
+    """Open the Rename modal for the selected draft (e44s01)."""
+    draft = _selected_draft()
+    if draft is None:
+        _drafts_status("Select a draft first.")
+        return
+    if dpg.does_item_exist(FS_DRAFT_RENAME_TAG):
+        dpg.delete_item(FS_DRAFT_RENAME_TAG)
+    with dpg.window(
+        label="Rename session",
+        tag=FS_DRAFT_RENAME_TAG,
+        modal=True,
+        width=DRAFT_RENAME_WIDTH,
+        height=DRAFT_RENAME_HEIGHT,
+        no_resize=True,
+    ):
+        dpg.add_input_text(
+            tag=FS_DRAFT_RENAME_INPUT_TAG,
+            default_value=str(draft.get("name") or ""),
+            width=DRAFT_RENAME_WIDTH - 40,
+        )
+        dpg.add_separator()
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="Cancel", width=130, callback=cancel_draft_rename)
+            dpg.add_button(label="Rename", width=130, callback=confirm_draft_rename)
+    dpg.show_item(FS_DRAFT_RENAME_TAG)
+
+
+def cancel_draft_rename(*_args: Any) -> None:
+    """Rename modal Cancel: nothing changes."""
+    if dpg.does_item_exist(FS_DRAFT_RENAME_TAG):
+        dpg.delete_item(FS_DRAFT_RENAME_TAG)
+
+
+def confirm_draft_rename(*_args: Any) -> None:
+    """Rename modal confirm: validate, apply and persist.
+
+    The input is read BEFORE the modal is deleted: DearPyGui returns None for a
+    deleted item, so a post-close read would silently discard the name
+    (BUG-2026-09-15T162441).
+    """
+    name = str(dpg.get_value(FS_DRAFT_RENAME_INPUT_TAG) or "")
+    if dpg.does_item_exist(FS_DRAFT_RENAME_TAG):
+        dpg.delete_item(FS_DRAFT_RENAME_TAG)
+    if state.drafts_selected is None:
+        return
+    if drafts.rename_draft(state.drafts_library, state.drafts_selected, name):
+        _drafts_mark_dirty()
+        refresh_drafts_ui()
+        _drafts_status(f"Renamed: {name.strip()}")
+    else:
+        _drafts_status("Enter a non-empty name not already used.")
+
+
+def fs_open_sessions(*_args: Any) -> None:
+    """Open the existing-sessions picker and load the list from A (e44s03)."""
+    if dpg.does_item_exist(FS_SESSION_PICKER_TAG):
+        dpg.delete_item(FS_SESSION_PICKER_TAG)
+    with dpg.window(
+        label="Open session",
+        tag=FS_SESSION_PICKER_TAG,
+        modal=True,
+        width=DRAFT_PICKER_WIDTH,
+        height=DRAFT_PICKER_HEIGHT,
+        no_resize=True,
+    ):
+        themed_text("", slot="text_dim", tag=FS_SESSION_STATUS_TAG)
+        with dpg.child_window(
+            height=DRAFT_PICKER_LIST_HEIGHT, border=False, tag="fs_session_scroll"
+        ):
+            pass
+        with dpg.group(parent="fs_session_scroll", tag=FS_SESSION_LIST_TAG):
+            pass
+        with dpg.group(tag=FS_SESSION_DETAIL_TAG):
+            pass
+        dpg.add_separator()
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="Close", width=130, callback=close_session_picker)
+            dpg.add_button(label="Import as draft", width=170, callback=import_selected_session)
+    dpg.show_item(FS_SESSION_PICKER_TAG)
+    _fs_request_sessions()
+
+
+def close_session_picker(*_args: Any) -> None:
+    """Close the sessions picker without side effects."""
+    if dpg.does_item_exist(FS_SESSION_PICKER_TAG):
+        dpg.delete_item(FS_SESSION_PICKER_TAG)
+
+
+def _fs_request_sessions() -> None:
+    """Fetch the written sessions from A (single-flight, HIGH-1)."""
+    if state.fs_sessions_busy:
+        return
+    host, port = _fs_endpoint()
+    if not host or not port:
+        state.fs_sessions_status = "viOSC endpoint not configured."
+        _set_session_status(state.fs_sessions_status)
+        return
+    state.fs_sessions_busy = True
+    state.fs_sessions_status = "Loading sessions..."
+    _set_session_status(state.fs_sessions_status)
+    threading.Thread(target=_fs_sessions_worker, args=(host, port), daemon=True).start()
+
+
+def _fs_sessions_worker(host: str, port: int) -> None:
+    """Worker: list the sessions on machine A, report on the main thread."""
+    sessions, status = fsclient.fetch_sessions(host, port)
+    state.ui_task_queue.put(lambda: _fs_apply_sessions(sessions, status))
+
+
+def _set_session_status(text: str) -> None:
+    """Push the picker's status line when the picker is open."""
+    if dpg.does_item_exist(FS_SESSION_STATUS_TAG):
+        dpg.set_value(FS_SESSION_STATUS_TAG, text)
+
+
+def _fs_apply_sessions(sessions: list | None, status: int | None) -> None:
+    """Main thread: store the sessions on A and render the picker."""
+    state.fs_sessions_busy = False
+    if sessions is None:
+        state.fs_sessions_status = _fs_error_text(status)
+        _set_session_status(state.fs_sessions_status)
+        return
+    state.fs_sessions = [item for item in sessions if isinstance(item, dict)]
+    state.fs_sessions_status = f"{len(state.fs_sessions)} sessions"
+    _set_session_status(state.fs_sessions_status)
+    _render_sessions()
+
+
+def _selected_session() -> dict[str, Any] | None:
+    """The picker's selected session entry, or None."""
+    for session in state.fs_sessions:
+        if str(session.get("file") or "") == state.fs_sessions_selected:
+            return session
+    return None
+
+
+def _session_sources(session: dict[str, Any]) -> list[dict[str, Any]]:
+    """The valid source entries of one session."""
+    return [item for item in (session.get("sources") or []) if isinstance(item, dict)]
+
+
+def _render_sessions() -> None:
+    """Rebuild the picker's session list and the selected session's videos."""
+    if dpg.does_item_exist(FS_SESSION_LIST_TAG):
+        dpg.delete_item(FS_SESSION_LIST_TAG, children_only=True)
+        for session in state.fs_sessions:
+            path = str(session.get("file") or "")
+            marked = "* " if path == state.fs_sessions_selected else ""
+            count = len(_session_sources(session))
+            dpg.add_selectable(
+                label=f"{marked}{session.get('name')} ({count} videos)",
+                parent=FS_SESSION_LIST_TAG,
+                callback=fs_select_session,
+                user_data=path,
+            )
+    if not dpg.does_item_exist(FS_SESSION_DETAIL_TAG):
+        return
+    dpg.delete_item(FS_SESSION_DETAIL_TAG, children_only=True)
+    current = _selected_session()
+    if current is None:
+        return
+    sources = _session_sources(current)
+    if not sources:
+        themed_text(
+            "No videos found in this session.", slot="text_dim", parent=FS_SESSION_DETAIL_TAG
+        )
+        return
+    for source in sources:
+        dpg.add_text(f"{source.get('name')}  —  {source.get('uri')}", parent=FS_SESSION_DETAIL_TAG)
+
+
+def fs_select_session(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Select one session in the picker."""
+    state.fs_sessions_selected = str(user_data or "")
+    _render_sessions()
+
+
+def import_selected_session(*_args: Any) -> None:
+    """Import the selected session as a NEW editable draft (the .mix is untouched)."""
+    current = _selected_session()
+    if current is None:
+        state.fs_sessions_status = "Select a session first."
+        _set_session_status(state.fs_sessions_status)
+        return
+    name = str(current.get("name") or "Session")
+    draft = drafts.create_draft(state.drafts_library, name)
+    files = [
+        str(source.get("uri"))
+        for source in _session_sources(current)
+        if str(source.get("uri") or "").strip()
+    ]
+    drafts.add_files(state.drafts_library, int(draft["id"]), files)
+    state.drafts_selected = int(draft["id"])
+    _drafts_mark_dirty()
+    refresh_drafts_ui()
+    _drafts_status(f"Imported '{draft.get('name')}' ({len(files)} files)")
+    close_session_picker()
+
+
+def _draft_needs_write(draft: dict[str, Any]) -> bool:
+    """True when the draft was never written or its files changed since."""
+    recorded = state.drafts_written.get(int(draft["id"]))
+    files = tuple(str(path) for path in draft.get("files", []))
+    return recorded is None or recorded[1] != files
+
+
+def _draft_error_text(status: int | None, tag: str | None) -> str:
+    """A short, honest message for a rejected session write."""
+    if status == 401:
+        return "Not paired with viOSC — use Settings > Pair with viOSC..."
+    if status is None:
+        return "viOSC unreachable."
+    if tag == "missing_file":
+        return "A file in the draft no longer exists on machine A."
+    if tag == "no_files":
+        return "The draft is empty."
+    if tag == "bad_name":
+        return "That draft name cannot be used as a file name."
+    if tag == "unwritable":
+        return "viOSC could not write the session file."
+    return f"Write failed ({status})."
+
+
+def fs_write_draft(*_args: Any) -> None:
+    """Write the selected draft as a .mix on machine A (never loads it)."""
+    draft = _selected_draft()
+    if draft is None:
+        _drafts_status("Select a draft first.")
+        return
+    if not draft.get("files"):
+        _drafts_status("The draft is empty.")
+        return
+    host, port = _fs_endpoint()
+    if not host or not port:
+        _drafts_status("viOSC endpoint not configured.")
+        return
+    _drafts_status("Writing...")
+    threading.Thread(
+        target=_fs_write_worker,
+        args=(
+            host,
+            port,
+            int(draft["id"]),
+            str(draft["name"]),
+            [str(p) for p in draft["files"]],
+        ),
+        kwargs={"alphas": drafts.draft_alphas(draft)},
+        daemon=True,
+    ).start()
+
+
+def _fs_write_worker(
+    host: str,
+    port: int,
+    draft_id: int,
+    name: str,
+    files: list[str],
+    *,
+    then_load: bool = False,
+    alphas: dict[str, float] | None = None,
+) -> None:
+    """Worker: write the draft, report on the main thread (HIGH-1)."""
+    result, status = fsclient.write_session(host, port, name, files, overwrite=True, alphas=alphas)
+    state.ui_task_queue.put(
+        lambda: _fs_apply_write(draft_id, files, result, status, then_load=then_load)
+    )
+
+
+def _fs_apply_write(
+    draft_id: int,
+    files: list[str],
+    result: dict | None,
+    status: int | None,
+    *,
+    then_load: bool = False,
+) -> None:
+    """Main thread: record the written path (or word the rejection)."""
+    if not isinstance(result, dict) or status != 200:
+        tag = result.get("error") if isinstance(result, dict) else None
+        _drafts_status(_draft_error_text(status, tag))
+        return
+    path = str(result.get("file") or "")
+    state.drafts_written[int(draft_id)] = (path, tuple(str(p) for p in files))
+    state.drafts_sources[int(draft_id)] = [
+        item for item in (result.get("sources") or []) if isinstance(item, dict)
+    ]
+    _drafts_status(f"Written: {path}")
+    if then_load and path:
+        _show_draft_load_confirm(path)
+
+
+def fs_load_draft(*_args: Any) -> None:
+    """Load the selected draft, writing it first when it changed.
+
+    The `.mix` is only a preparation: nothing reaches vimix until the user
+    confirms the modal, so a stray click can never replace the live session.
+    """
+    draft = _selected_draft()
+    if draft is None or not draft.get("files"):
+        _drafts_status("Select a non-empty draft first.")
+        return
+    recorded = state.drafts_written.get(int(draft["id"]))
+    if not _draft_needs_write(draft) and recorded is not None:
+        _show_draft_load_confirm(recorded[0])
+        return
+    host, port = _fs_endpoint()
+    if not host or not port:
+        _drafts_status("viOSC endpoint not configured.")
+        return
+    _drafts_status("Writing...")
+    threading.Thread(
+        target=_fs_write_worker,
+        args=(
+            host,
+            port,
+            int(draft["id"]),
+            str(draft["name"]),
+            [str(p) for p in draft["files"]],
+        ),
+        kwargs={"then_load": True, "alphas": drafts.draft_alphas(draft)},
+        daemon=True,
+    ).start()
+
+
+def draft_visibility_warning(draft: dict[str, Any] | None) -> str:
+    """The Send warning when no source of the draft would be visible (e45s01)."""
+    if draft is None:
+        return ""
+    if any(alpha > 0 for alpha in drafts.draft_alphas(draft).values()):
+        return ""
+    return "Warning: no source has alpha > 0 - the session will load with nothing visible."
+
+
+def _source_index_by_name() -> dict[str, int]:
+    """The live sources' name -> vimix index (the positional pre-selection)."""
+    by_name: dict[str, int] = {}
+    sources = state.global_vimix_state.get("sources") or {}
+    for key, props in sources.items():
+        if not isinstance(props, dict):
+            continue
+        name = str(props.get("name") or key)
+        raw_index = props.get("index")
+        try:
+            index = int(raw_index) if raw_index is not None else int(key)
+        except (TypeError, ValueError):
+            continue
+        by_name[name] = index
+    return by_name
+
+
+def remap_bindings() -> list[dict[str, Any]]:
+    """The bound Mapper rows and Sequencer tracks for the Send panel (e45s02)."""
+    index_by_name = _source_index_by_name()
+    bindings: list[dict[str, Any]] = []
+    for position, target in enumerate(mapper.row_targets()):
+        bindings.append(
+            {
+                "kind": "mapper",
+                "key": str(target),
+                "label": f"Mapper {position + 1}",
+                "index": index_by_name.get(str(target)),
+            }
+        )
+    for row, track in enumerate(state.tracks_data):
+        track_target = track.get("target_id")
+        if track_target:
+            bindings.append(
+                {
+                    "kind": "seq",
+                    "key": int(row),
+                    "label": f"Seq {row + 1}",
+                    "index": index_by_name.get(str(track_target)),
+                }
+            )
+    return bindings
+
+
+def remap_options(sources: list[dict[str, Any]]) -> list[str]:
+    """The select items: ``-`` plus ``N. name`` per new-session source."""
+    return [REMAP_NONE] + [
+        f"{position + 1}. {source.get('name')}" for position, source in enumerate(sources)
+    ]
+
+
+def remap_preselection(options: list[str], index: int | None) -> str:
+    """The positional default for a binding whose old source sat at ``index``."""
+    if index is None or index < 0 or index + 1 >= len(options):
+        return REMAP_NONE
+    return options[index + 1]
+
+
+def _remap_row_tag(kind: str, key: Any) -> str:
+    return f"fs_remap_{kind}_{key}"
+
+
+def remap_fill_positional(*_args: Any) -> None:
+    """The panel's 'Posizionale' fill: every select back to its positional default."""
+    for binding in state.remap_bindings_cache:
+        tag = str(binding.get("tag") or "")
+        if dpg.does_item_exist(tag):
+            dpg.set_value(tag, str(binding.get("preselected") or REMAP_NONE))
+
+
+def _collect_remap_assignments() -> list[dict[str, Any]]:
+    """Read the panel's selects into assignments (while the modal is open)."""
+    assignments: list[dict[str, Any]] = []
+    for binding in state.remap_bindings_cache:
+        tag = str(binding.get("tag") or "")
+        options = binding.get("options") or []
+        sources = binding.get("sources") or []
+        label = str(dpg.get_value(tag) or "") if dpg.does_item_exist(tag) else REMAP_NONE
+        if label == REMAP_NONE or label not in options:
+            continue
+        position = options.index(label) - 1
+        if not 0 <= position < len(sources):
+            continue
+        target = str(sources[position].get("name") or "")
+        if target:
+            assignments.append({"kind": binding["kind"], "key": binding["key"], "target": target})
+    return assignments
+
+
+def remap_panel_height(count: int) -> int:
+    """The remap child height for ``count`` rows: fits the content, capped (scroll)."""
+    return max(FS_REMAP_MIN_HEIGHT, min(FS_REMAP_MAX_HEIGHT, max(0, count) * REMAP_ROW_HEIGHT))
+
+
+def _build_remap_panel(
+    bindings: list[dict[str, Any]], sources: list[dict[str, Any]], panel_height: int
+) -> None:
+    """Render the reassignment selects for the bound rows (e45s02)."""
+    state.remap_bindings_cache = []
+    options = remap_options(sources)
+    themed_text("Reassign to the new session", slot="text_dim")
+    with dpg.child_window(height=panel_height, border=False, tag="fs_remap_scroll"):
+        pass
+    with dpg.group(parent="fs_remap_scroll", tag=FS_REMAP_GROUP_TAG):
+        for binding in bindings:
+            tag = _remap_row_tag(str(binding["kind"]), binding["key"])
+            preselected = remap_preselection(options, binding.get("index"))
+            dpg.add_combo(
+                label=str(binding["label"]),
+                items=options,
+                default_value=preselected,
+                width=300,
+                tag=tag,
+            )
+            state.remap_bindings_cache.append(
+                {
+                    **binding,
+                    "tag": tag,
+                    "options": options,
+                    "sources": sources,
+                    "preselected": preselected,
+                }
+            )
+    dpg.add_button(label="Posizionale", callback=remap_fill_positional)
+
+
+def tick_send_remap(now: float | None = None) -> None:
+    """Main-loop tick: drop a reassignment whose new session never appeared."""
+    if not state.send_remap_pending:
+        return
+    stamp = time.monotonic() if now is None else now
+    if stamp - state.send_remap_armed_at < REMAP_TIMEOUT_S:
+        return
+    state.send_remap_pending = None
+    _drafts_status("Reassignment skipped: the new session did not appear.")
+
+
+def _apply_pending_remap(live_ids: set[str]) -> None:
+    """Apply the chosen reassignment once the new sources are live (e45s02)."""
+    pending = state.send_remap_pending
+    if not pending:
+        return
+    if not {str(item["target"]) for item in pending} <= live_ids:
+        return  # wait for the whole new session
+    moved = 0
+    for item in pending:
+        target = str(item["target"])
+        if item["kind"] == "mapper":
+            old = str(item["key"])
+            moved += mapper.retarget_source(old, target)
+            if old in state.source_anchors:
+                state.source_anchors[target] = state.source_anchors.pop(old)
+        else:
+            assign_target_to_track(int(item["key"]), target)
+            moved += 1
+    state.send_remap_pending = None
+    refresh_mapper_ui()
+    _drafts_status(f"Reassigned {moved} bindings to the new session.")
+
+
+def _show_draft_load_confirm(path: str) -> None:
+    """Open the Load confirmation (replaces the live session, always asked).
+
+    The window is sized from its content (the e45s02 panel follows the number of
+    bound rows) and stays resizable (BUG-2026-09-15T201625).
+    """
+    state.drafts_pending_path = str(path)
+    if dpg.does_item_exist(FS_DRAFT_CONFIRM_TAG):
+        dpg.delete_item(FS_DRAFT_CONFIRM_TAG)
+    draft = _selected_draft()
+    sources = list(state.drafts_sources.get(int(draft["id"])) or []) if draft else []
+    bindings = remap_bindings()
+    show_panel = bool(sources and bindings)
+    panel_height = remap_panel_height(len(bindings)) if show_panel else 0
+    height = DRAFT_CONFIRM_HEIGHT + (panel_height + REMAP_PANEL_CHROME if show_panel else 0)
+    warning = draft_visibility_warning(draft)
+    with dpg.window(
+        label="Send session to vimix",
+        tag=FS_DRAFT_CONFIRM_TAG,
+        modal=True,
+        width=DRAFT_CONFIRM_WIDTH,
+        height=height,
+        no_resize=False,
+        min_size=(DRAFT_CONFIRM_MIN_WIDTH, DRAFT_CONFIRM_MIN_HEIGHT),
+    ):
+        dpg.add_text("This REPLACES the live vimix session.", wrap=DRAFT_CONFIRM_WIDTH - 40)
+        dpg.add_text(os.path.basename(str(path)), wrap=DRAFT_CONFIRM_WIDTH - 40)
+        if warning:
+            dpg.add_text(warning, wrap=DRAFT_CONFIRM_WIDTH - 40)
+        if show_panel:
+            _build_remap_panel(bindings, sources, panel_height)
+        dpg.add_input_float(
+            label="Transition (s)",
+            tag=FS_DRAFT_TRANSITION_TAG,
+            default_value=0.0,
+            width=120,
+            step=0,
+            format="%.1f",
+        )
+        dpg.add_separator()
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="Cancel", width=130, callback=cancel_draft_load)
+            dpg.add_button(label="Send", width=130, callback=confirm_draft_load)
+    dpg.show_item(FS_DRAFT_CONFIRM_TAG)
+
+
+def cancel_draft_load(*_args: Any) -> None:
+    """Confirmation Cancel: nothing is sent."""
+    state.drafts_pending_path = None
+    if dpg.does_item_exist(FS_DRAFT_CONFIRM_TAG):
+        dpg.delete_item(FS_DRAFT_CONFIRM_TAG)
+
+
+def _draft_transition_seconds() -> float:
+    """The optional crossfade duration, clamped to a sane non-negative value."""
+    try:
+        return max(0.0, float(dpg.get_value(FS_DRAFT_TRANSITION_TAG) or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def confirm_draft_load(*_args: Any) -> None:
+    """Confirmation Load: `/vimix/session/open s <path> [f <seconds>]`."""
+    path = str(state.drafts_pending_path or "")
+    # Read the transition while the modal still owns its input: on a deleted
+    # item DearPyGui returns None, so reading after the close silently dropped
+    # the crossfade argument (BUG-2026-09-15T162441).
+    seconds = _draft_transition_seconds()
+    assignments = _collect_remap_assignments()
+    state.remap_bindings_cache = []
+    if dpg.does_item_exist(FS_DRAFT_CONFIRM_TAG):
+        dpg.delete_item(FS_DRAFT_CONFIRM_TAG)
+    state.drafts_pending_path = None
+    if not path:
+        return
+    args: list[Any] = [path]
+    if seconds > 0:
+        args.append(seconds)
+    osc_client.send_message("/vimix/session/open", args)
+    append_log("OUT", f"/vimix/session/open {args}")
+    state.send_remap_pending = assignments or None
+    state.send_remap_armed_at = time.monotonic()
+    _drafts_status(f"Sent to vimix: {os.path.basename(path)}")
+
+
+def fs_draft_step(delta: int, *_args: Any) -> None:
+    """Select the next/previous draft (wrapping)."""
+    ordered = [int(d.get("id")) for d in state.drafts_library.get("drafts", [])]
+    if not ordered:
+        return
+    if state.drafts_selected in ordered:
+        index = (ordered.index(state.drafts_selected) + int(delta)) % len(ordered)
+    else:
+        index = 0
+    state.drafts_selected = ordered[index]
+    refresh_drafts_ui()
+
+
+def fs_draft_next(*_args: Any) -> None:
+    """Select the next draft."""
+    fs_draft_step(1)
+
+
+def fs_draft_prev(*_args: Any) -> None:
+    """Select the previous draft."""
+    fs_draft_step(-1)
+
+
+def _exec_draft_load(params: dict[str, Any], value: int) -> None:
+    """e43s07: a momentary press asks to load the selected draft (with confirm)."""
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    fs_load_draft()
+
+
+def _exec_draft_save(params: dict[str, Any], value: int) -> None:
+    """e44s02: a momentary press saves the selected draft."""
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    fs_write_draft()
+
+
+def _exec_draft_step(delta: int) -> Callable[[dict[str, Any], int], None]:
+    """Build the next/previous draft executors."""
+
+    def run(params: dict[str, Any], value: int) -> None:
+        if value < MIDI_CC_TRIGGER_THRESHOLD:
+            return
+        fs_draft_step(delta)
+
+    return run
+
+
+def _sync_drafts_learn_markers() -> None:
+    """(Re)render the drafts pane learn markers (e33 rule)."""
+    if not dpg.does_item_exist(FS_DRAFT_LEARN_SLOT):
+        return
+    dpg.delete_item(FS_DRAFT_LEARN_SLOT, children_only=True)
+    if not state.midi_learn_mode:
+        return
+    for action_id, tag in (
+        (MIDI_ACTION_DRAFT_LOAD, "fs_mk_draft_load"),
+        (MIDI_ACTION_DRAFT_SAVE, "fs_mk_draft_save"),
+        (MIDI_ACTION_DRAFT_NEXT, "fs_mk_draft_next"),
+        (MIDI_ACTION_DRAFT_PREV, "fs_mk_draft_prev"),
+    ):
+        learn_marker(
+            action_id,
+            {},
+            parent=FS_DRAFT_LEARN_SLOT,
+            tag=tag,
+            tooltip=f"Map: {actions.action_label(action_id)}",
+        )
+
+
+def _sync_file_manager_learn_marker() -> None:
+    """(Re)render the File Manager toggle's learn marker (e33 rule)."""
+    if not dpg.does_item_exist(FILE_MANAGER_LEARN_SLOT):
+        return
+    dpg.delete_item(FILE_MANAGER_LEARN_SLOT, children_only=True)
+    if state.midi_learn_mode:
+        learn_marker(
+            MIDI_ACTION_FILE_MANAGER_TOGGLE,
+            {},
+            parent=FILE_MANAGER_LEARN_SLOT,
+            tag="fs_mk_toggle",
+            tooltip="Map: File Manager window",
+        )
+
+
 def midi_action_beat_source(mode: str) -> None:
     """Select the sequencer beat source — shared by mouse and MIDI (e09)."""
     state.beat_source = mode
@@ -3777,6 +5137,15 @@ _MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
     MIDI_ACTION_MAPPING_TOGGLE: lambda p, v: _exec_mapping_toggle(p, v),
     # e40s08: create a State Mapping on a source line (the State box '+')
     MIDI_ACTION_MAPPING_ADD: lambda p, v: _exec_mapping_add(p, v),
+    # e42s02: re-open the pairing prompt (viOSC restarted -> new code)
+    MIDI_ACTION_PAIRING_PROMPT: lambda p, v: _exec_pairing_prompt(p, v),
+    # e43s02: show/hide the File Manager window
+    MIDI_ACTION_FILE_MANAGER_TOGGLE: lambda p, v: _exec_file_manager_toggle(p, v),
+    # e43s07: Session Draft actions (Load always asks for the confirmation)
+    MIDI_ACTION_DRAFT_LOAD: lambda p, v: _exec_draft_load(p, v),
+    MIDI_ACTION_DRAFT_SAVE: _exec_draft_save,
+    MIDI_ACTION_DRAFT_NEXT: _exec_draft_step(1),
+    MIDI_ACTION_DRAFT_PREV: _exec_draft_step(-1),
 }
 
 _last_unknown_action_log: dict[str, float] = {}  # action id -> last log time (throttle)
@@ -3945,6 +5314,9 @@ def _refresh_learn_surfaces() -> None:
     _sync_seq_row_learn_strip()
     _sync_monitor_learn_marker()
     _sync_filter_learn_marker()
+    _sync_settings_pairing_learn_marker()
+    _sync_file_manager_learn_marker()
+    _sync_drafts_learn_markers()
 
 
 def learn_marker(
@@ -4640,6 +6012,17 @@ def _exec_monitor_toggle(params: dict[str, Any], value: int) -> None:
     toggle_io_monitor_window()
 
 
+def _exec_pairing_prompt(params: dict[str, Any], value: int) -> None:
+    """e42s02: a momentary press re-opens the pairing prompt (re-pair).
+
+    Needed because viOSC rotates its code on every start: after a daemon restart
+    viseq's token is stale and this is the way back without restarting viseq.
+    """
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    show_pairing_prompt()
+
+
 def _exec_mapping_toggle(params: dict[str, Any], value: int) -> None:
     """e40s01: a momentary press arms/disarms a Mapping (its Enabled gate).
 
@@ -4717,6 +6100,25 @@ def _sync_monitor_learn_marker() -> None:
             parent="io_monitor_learn_slot",
             tag="io_monitor_mk_toggle",
             tooltip="Map: I/O Monitor window",
+        )
+
+
+def _sync_settings_pairing_learn_marker() -> None:
+    """(Re)render the pairing action's learn marker (e42s02, e33 rule).
+
+    The Settings window is built once at boot, so its marker slot is re-rendered
+    on every learn transition, next to the 'Pair with viOSC...' button.
+    """
+    if not dpg.does_item_exist("settings_pairing_learn_slot"):
+        return
+    dpg.delete_item("settings_pairing_learn_slot", children_only=True)
+    if state.midi_learn_mode:
+        learn_marker(
+            MIDI_ACTION_PAIRING_PROMPT,
+            {},
+            parent="settings_pairing_learn_slot",
+            tag="settings_pairing_mk",
+            tooltip="Map: Pair with viOSC",
         )
 
 
@@ -6412,23 +7814,24 @@ def _open_mapping_editor(
         )
         with dpg.group(tag="mapping_source_group"):
             themed_text("Source", slot="text_dim")
-            has_source = bool(mapping.get("target_id"))
+            # A line's '+' already knows the Source (e40s10 / e45): only the
+            # GENERAL creator (no target_id) asks for it. The hidden combo keeps
+            # the value, so the confirm can never pick an empty source
+            # (BUG-2026-09-15T202915).
+            source_value = str(target_id or "") if creating else str(mapping.get("target_id") or "")
+            has_source = bool(source_value)
             dpg.add_combo(
                 items=list(mapper.row_targets()),
-                default_value=str(target_id or "")
-                if creating
-                else str(mapping.get("target_id") or ""),
+                default_value=source_value,
                 width=280,
-                show=creating or not has_source,
+                show=not has_source,
                 tag="mapping_source_combo",
             )
-            if not creating and has_source:
-                # e40s10: on modify the Source is INFORMATION, not a picker —
-                # re-pointing a Line is the row thumbnail's job (retarget_source).
-                # The hidden combo above keeps the current value, so a confirm can
-                # never re-point by accident.
+            if has_source:
                 themed_text(
-                    f"{mapping['target_id']} (use the row thumbnail to re-point)",
+                    source_value
+                    if creating
+                    else f"{source_value} (use the row thumbnail to re-point)",
                     slot="text_dim",
                     tag="mapping_source_text",
                 )
@@ -6867,7 +8270,15 @@ def refresh_mapper_ui() -> None:
                     )
                 for slot in slot_line:
                     if slot < len(control_mappings):
-                        _render_mapper_card(control_mappings[slot], parent=line, height=row_height)
+                        try:
+                            _render_mapper_card(
+                                control_mappings[slot], parent=line, height=row_height
+                            )
+                        except Exception as exc:  # one bad card must not kill the body
+                            log_error(
+                                "Mapper card",
+                                f"mapping {control_mappings[slot].get('id')}: {exc!r}",
+                            )
                 # e34s01: the small '+' rides the last card line when it fits
                 if add_inline and line_no == len(lines) - 1:
                     _mapper_row_add(
@@ -8284,9 +9695,6 @@ def _window_menu_entries() -> list[tuple[str, str]]:
     return entries
 
 
-_window_menu_dynamic_tags: list[str] = []  # live list items, deleted on refresh
-
-
 # The app's windows (BUG-2026-09-01T194500). Opening a menu makes DPG report the
 # menu itself as the active window (mvContainers.cpp: menu draw sets
 # GContext->activeWindow), so the focus track must accept ONLY real windows.
@@ -8338,39 +9746,11 @@ def _active_window_tag(tag: Any) -> str | None:
 _window_menu_sig: tuple[Any, ...] | None = None  # last (active, monitor tags) seen
 
 
-def refresh_window_menu() -> None:
-    """Rebuild the Windows-menu window list and mark the ACTIVE window (e17).
-
-    The list lives under the ``Windows`` menu (after its separator); each entry
-    is a checkable item wired to ``switch_to_window``. Missing windows are
-    skipped so a closed window never leaves a dead entry.
-    """
-    for tag in _window_menu_dynamic_tags:
-        if dpg.does_item_exist(tag):
-            dpg.delete_item(tag)
-    _window_menu_dynamic_tags.clear()
-    active = state.current_window
-    for tag, label in _window_menu_entries():
-        if not (dpg.does_item_exist(tag) and dpg.is_item_shown(tag)):
-            continue  # only list windows that are actually open
-        if not dpg.does_item_exist(tag):
-            continue
-        item_tag = dpg.add_menu_item(
-            label=label,
-            check=True,
-            default_value=(str(active) == str(tag)),
-            callback=switch_to_window,
-            user_data=tag,
-            parent="menu_windows",
-        )
-        _window_menu_dynamic_tags.append(item_tag)
-
-
-def tick_window_menu() -> None:
-    """Per-frame gate: refresh the Windows-menu list only when it can have changed.
+def tick_toolbar() -> None:
+    """Per-frame gate: repaint the toolbar highlight only when the state changed.
 
     The signature is (tracked current window, shown window tags); anything else
-    the list shows is static. We remember the last focused window: get_active_window()
+    the bar shows is static. We remember the last focused window: get_active_window()
     reports arbitrary widgets (step pads, combos) and the open menu itself, so
     the track resolves the active item up to its app window and never clears on
     a menu/popup/None result (BUG-2026-09-01T194500).
@@ -8390,7 +9770,16 @@ def tick_window_menu() -> None:
     )
     if sig != _window_menu_sig:
         _window_menu_sig = sig
-        refresh_window_menu()
+        refresh_toolbar_icons()
+    # e46s01: keep the toolbar anchored to the top-right on resize / width changes.
+    global _toolbar_geom_sig
+    geometry = (
+        int(dpg.get_item_width(TOOLBAR_BAR_TAG) or 0),
+        int(dpg.get_viewport_client_width() or 0),
+    )
+    if geometry != _toolbar_geom_sig:
+        _toolbar_geom_sig = geometry
+        reposition_toolbar()
 
 
 def switch_to_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -8946,8 +10335,7 @@ with dpg.window(
     label="Step Sequencer",
     width=1050,
     height=800,
-    pos=(10, 10),
-    no_close=True,
+    pos=(10, TOOLBAR_BAR_H),
     tag="sequencer_window",
 ):
     # Single compact row: transport + all beat sources (abbreviated labels, e10s08).
@@ -9111,7 +10499,6 @@ with dpg.window(
     width=350,
     height=272,
     pos=(10, 806),
-    no_close=True,
     tag="audio_window",
 ):
     dpg.add_combo(
@@ -9233,6 +10620,10 @@ with dpg.window(
         dpg.add_input_text(default_value="127.0.0.1", tag="viosc_ip", width=120)
         dpg.add_input_int(default_value=6666, tag="viosc_port", width=80, step=0)
         dpg.add_button(label="Connect Client", callback=connect_to_viosc)
+    with dpg.group(horizontal=True):
+        dpg.add_button(label="Pair with viOSC...", callback=show_pairing_prompt)
+        with dpg.group(tag="settings_pairing_learn_slot"):
+            pass
     themed_text("Client Status: Waiting", slot="text_dim", tag="viosc_status")
     dpg.add_separator()
     dpg.add_spacer(height=5)
@@ -9274,8 +10665,7 @@ with (
         label="Vimix sources",
         width=550,
         height=690,
-        pos=(1100, 10),
-        no_close=True,
+        pos=(1100, TOOLBAR_BAR_H),
         tag="vimix_media_window",
     ),
     dpg.group(tag="vimix_media_group"),
@@ -9496,8 +10886,53 @@ with dpg.item_handler_registry(tag="mapper_resize_reg"):
     dpg.add_item_resize_handler(callback=lambda s, a: refresh_mapper_ui())
 dpg.bind_item_handler_registry("mapper_window", "mapper_resize_reg")
 
+# WINDOW: FILE MANAGER (e43s02) — browse machine A's Media Roots over the /fs
+# data plane. A workspace window: LAYOUT_WINDOW_TAGS persists its pos/size/open.
+with dpg.window(
+    label="File Manager",
+    width=FILE_MANAGER_WIDTH,
+    height=FILE_MANAGER_HEIGHT,
+    pos=(30, 840),
+    tag=FILE_MANAGER_TAG,
+    show=False,
+):
+    with dpg.group(horizontal=True):
+        dpg.add_combo(
+            items=[],
+            width=360,
+            tag=FILE_MANAGER_ROOTS_TAG,
+            callback=_on_fs_root_selected,
+        )
+        dpg.add_button(label="Up", callback=fs_go_up)
+        dpg.add_button(label="Refresh", callback=fs_refresh)
+        with dpg.group(tag=FILE_MANAGER_LEARN_SLOT, horizontal=True):
+            pass
+    themed_text("", slot="text_dim", tag=FILE_MANAGER_BREADCRUMB_TAG)
+    with dpg.child_window(height=FILE_MANAGER_LIST_HEIGHT, border=False, tag="fs_scroll"):
+        pass
+    with dpg.group(parent="fs_scroll", tag=FILE_MANAGER_ENTRIES_TAG):
+        pass
+    themed_text("", slot="text_dim", tag=FILE_MANAGER_STATUS_TAG)
+    dpg.add_separator(tag=FS_DRAFTS_SEPARATOR_TAG)
+    themed_text("Session Drafts", slot="text")
+    with dpg.group(horizontal=True):
+        dpg.add_button(label="New", callback=fs_new_draft)
+        dpg.add_button(label="Open...", callback=fs_open_sessions)
+        dpg.add_button(label="Delete", callback=fs_delete_selected_draft)
+        dpg.add_button(label="Rename", callback=fs_open_rename_draft)
+        dpg.add_button(label="Save", callback=fs_write_draft)
+        dpg.add_button(label="Send to Vimix", callback=fs_load_draft)
+        with dpg.group(tag=FS_DRAFT_LEARN_SLOT, horizontal=True):
+            pass
+    themed_text("", slot="text_dim", tag=FS_DRAFT_STATUS_TAG)
+    with dpg.group(tag=FS_DRAFTS_GROUP):
+        pass
+    with dpg.group(tag=FS_DRAFT_FILES_GROUP):
+        pass
+
 # NEW THREAD FOR HIGH-FREQUENCY FADES
 threading.Thread(target=fade_tick_loop, daemon=True).start()
+threading.Thread(target=fsclient.fs_thumb_worker, daemon=True).start()  # e43s03
 threading.Thread(target=cue_tick_loop, daemon=True).start()  # e35s03: cue engine clock
 threading.Thread(target=spectrum_analyzer_loop, daemon=True).start()
 threading.Thread(target=midi_clock_loop, daemon=True).start()
@@ -9518,34 +10953,342 @@ dpg.create_viewport(title="viSeq - Audio-Reactive VJ Controller", width=1700, he
 dpg.set_exit_callback(request_exit)
 dpg.configure_viewport("__viewport", disable_close=True)
 apply_boot_config()  # e06: apply the saved theme + (optionally) the saved window layout
+_drafts_load()  # e43s05: the application-level Session Drafts library
+refresh_drafts_ui()
 ensure_user_dirs()  # e21s01: eager XDG user dirs (config + projects) + legacy .viseq migration
-with dpg.viewport_menu_bar():
-    with dpg.menu(label="viSeq"):  # e11s03: first menubar menu — project file flows
-        dpg.add_menu_item(label="New project", callback=request_new_project)  # e15s01/e37s04
-        dpg.add_menu_item(label="Open project", callback=show_open_project_dialog)
-        with dpg.menu(label="Last project", tag="menu_last_project"):
-            pass  # children rebuilt by rebuild_last_project_menu() (boot + after every save/open)
-        dpg.add_menu_item(label="Save", callback=save_current_project)  # e37s02: silent save
-        dpg.add_menu_item(label="Save as...", callback=show_save_project_dialog)  # e37s02
-        dpg.add_separator()
-        dpg.add_menu_item(label="Exit", callback=exit_app)
-    with dpg.menu(label="Windows", tag="menu_windows"):  # e12s01 + e17 (window list)
-        dpg.add_menu_item(label="Show Mapper", callback=show_mapper_window)  # e16
-        dpg.add_menu_item(label="Show Logs", callback=show_logs_window)
-        dpg.add_menu_item(label="Show I/O Monitor", callback=show_io_monitor)  # e39s01
-        dpg.add_menu_item(label="Show Info", callback=show_help_window)
-        dpg.add_separator(parent="menu_windows")  # e17: open windows below the actions
-        # the live window list is rebuilt by refresh_window_menu() (e17)
-    with dpg.menu(label="Settings"):  # e12s01: config panels under one menu
-        dpg.add_menu_item(label="General", callback=show_settings_window)
-        dpg.add_menu_item(label="MIDI", callback=show_midi_window)
-        dpg.add_menu_item(label="Leap Motion", callback=show_leap_window)  # e26
 
-# e11s03/e13s02: project file dialogs are created ON DEMAND by
-# show_open_project_dialog / show_save_project_dialog (_recreate_project_dialog)
-# with .viseq/.* filters — DPG shows only directories without extension filters,
-# and a fresh dialog guarantees the default path exists.
-rebuild_last_project_menu()  # e11s03: populate the Last-project submenu for boot
+# ---------------------------------------------------------------------------
+# e46s01: THE MAIN TOOLBAR — a flat row of FontAwesome icon buttons replacing the
+# viSeq / Windows / Settings dropdowns (ADR-main-toolbar.md). Icon-only, with a
+# tooltip per icon (name + shortcut) and a text fallback when the font is missing.
+TOOLBAR_ICON_FONT_SIZE = 16
+TOOLBAR_ICON_BUTTON_W = 32
+TOOLBAR_ICON_BUTTON_H = 26
+TOOLBAR_ICON_FONT_PATHS: tuple[str, ...] = (
+    str(Path(__file__).resolve().parent / "viseqapp" / "assets" / "fontawesome-webfont.ttf"),
+    "/usr/share/fonts/truetype/font-awesome/fontawesome-webfont.ttf",
+    "/usr/share/fonts/opentype/font-awesome/FontAwesome.otf",
+)
+# (kind, target, glyph, label, shortcut); kind: action | focus | toggle
+type ToolbarItem = tuple[str, str, str, str, str]
+TOOLBAR_ITEM_GROUPS: tuple[tuple[ToolbarItem, ...], ...] = (
+    (
+        ("action", "new_project", "\uf016", "New project", ""),
+        ("action", "open_project", "\uf115", "Open project", ""),
+        ("action", "save_project", "\uf0c7", "Save", ""),
+        ("action", "save_project_as", "\uf044", "Save as...", ""),
+        ("action", "last_project", "\uf1da", "Last project", ""),
+    ),
+    (
+        ("toggle", "sequencer_window", "\uf00a", "Step Sequencer", ""),
+        ("toggle", "audio_window", "\uf080", "Audio analyzer", ""),
+        ("toggle", "vimix_media_window", "\uf108", "Vimix sources", ""),
+        ("toggle", "mapper_window", "\uf0ce", "Mapper", ""),
+        ("toggle", "logs_window", "\uf0ca", "Logs", ""),
+        ("toggle", "io_monitor_window", "\uf0ec", "I/O Monitor", ""),
+        ("toggle", "file_manager_window", "\uf07b", "File Manager", ""),
+    ),
+    (
+        ("toggle", "settings_window", "\uf013", "Settings", ""),
+        ("toggle", "midi_window", "\uf11c", "MIDI", ""),
+        ("toggle", "leap_window", "\uf256", "Leap Motion", ""),
+        ("action", "pair", "\uf0c1", "Pair with viOSC...", ""),
+    ),
+    (("toggle", "help_window", "\uf05a", "Info", ""),),
+)
+TOOLBAR_RECENTS_TAG = "toolbar_recents_popup"
+TOOLBAR_BAR_TAG = "main_toolbar_bar"
+TOOLBAR_THEME_OPEN = "theme_toolbar_open"
+TOOLBAR_THEME_ACTIVE = "theme_toolbar_active"
+TOOLBAR_THEME_FLAT = "theme_toolbar_flat"
+TOOLBAR_THEME_PLAIN = "theme_toolbar_plain"
+TOOLBAR_THEME_TOOLTIP = "theme_toolbar_tooltip"
+TOOLBAR_BAR_MARGIN_RIGHT = 4
+TOOLBAR_ITEM_SPACING = 4
+TOOLBAR_BAR_PAD_X = 4
+TOOLBAR_BAR_PAD_Y = 3
+TOOLBAR_GROUP_GAP = 10
+toolbar_icon_font: Any = None
+_toolbar_geom_sig: tuple[int, int] | None = None
+
+
+def _toolbar_button_tag(kind: str, target: str) -> str:
+    return f"toolbar_{kind}_{target}"
+
+
+def load_toolbar_icon_font() -> Any:
+    """Register the FontAwesome font (with its private-use range) or None (e46s01).
+
+    DearPyGui renders NOTHING for the icon codepoints unless the 0xF000-0xF3FF
+    range is added to the font, and each button needs `bind_item_font`; when no
+    font is found the toolbar falls back to text labels. The result is stored in
+    the module global `toolbar_icon_font` (the builder reads it).
+    """
+    global toolbar_icon_font
+    for path in TOOLBAR_ICON_FONT_PATHS:
+        if not os.path.exists(path):
+            continue
+        try:
+            with dpg.font_registry():
+                font = dpg.add_font(path, size=TOOLBAR_ICON_FONT_SIZE)
+                dpg.add_font_range(0xF000, 0xF3FF, parent=font)
+            toolbar_icon_font = font
+            return font
+        except Exception as exc:  # a broken font must never block the boot
+            log_error("Toolbar icon font", f"{path}: {exc!r}")
+    toolbar_icon_font = None
+    return None
+
+
+def _toolbar_item_text(item: ToolbarItem) -> str:
+    """The icon glyph, or the text label when the icon font is unavailable."""
+    return item[2] if toolbar_icon_font is not None else item[3]
+
+
+def _show_and_focus(tag: str) -> None:
+    """Show + focus a workspace window (a toolbar toggle target, e46s01)."""
+    dpg.show_item(tag)
+    dpg.focus_item(tag)
+
+
+def show_sequencer_window(*_args: Any) -> None:
+    """Open the Step Sequencer (a toggle window since e46s01)."""
+    _show_and_focus("sequencer_window")
+
+
+def show_audio_window(*_args: Any) -> None:
+    """Open the Audio analyzer (a toggle window since e46s01)."""
+    _show_and_focus("audio_window")
+
+
+def show_vimix_window(*_args: Any) -> None:
+    """Open the Vimix sources grid (a toggle window since e46s01)."""
+    _show_and_focus("vimix_media_window")
+
+
+def _toolbar_show_func(target: str) -> Any:
+    """The show function of a toolbar window target."""
+    return {
+        "sequencer_window": show_sequencer_window,
+        "audio_window": show_audio_window,
+        "vimix_media_window": show_vimix_window,
+        "mapper_window": show_mapper_window,
+        "logs_window": show_logs_window,
+        "io_monitor_window": show_io_monitor,
+        "file_manager_window": show_file_manager_window,
+        "settings_window": show_settings_window,
+        "midi_window": show_midi_window,
+        "leap_window": show_leap_window,
+        "help_window": show_help_window,
+    }.get(target)
+
+
+def _toolbar_window_items() -> list[ToolbarItem]:
+    """The toolbar items that address a window (focus or toggle)."""
+    return [
+        item for group in TOOLBAR_ITEM_GROUPS for item in group if item[0] in ("focus", "toggle")
+    ]
+
+
+def toolbar_bar_width() -> int:
+    """The exact width of the icon row (e46s01).
+
+    `autosize` did NOT fit the window to the icons on the rig (it stayed almost
+    viewport-wide, whose bottom border read as a full-width line), so the width
+    is computed from the items and the spacing/padding the plain theme sets.
+    """
+    buttons = sum(len(group) for group in TOOLBAR_ITEM_GROUPS)
+    separators = len(TOOLBAR_ITEM_GROUPS)
+    frames = buttons * TOOLBAR_ICON_BUTTON_W + separators * TOOLBAR_GROUP_GAP
+    gaps = max(0, buttons + separators - 1) * TOOLBAR_ITEM_SPACING
+    return frames + gaps + 2 * TOOLBAR_BAR_PAD_X
+
+
+def reposition_toolbar() -> None:
+    """Anchor the toolbar to the top-RIGHT of the viewport (e46s01)."""
+    if not dpg.does_item_exist(TOOLBAR_BAR_TAG):
+        return
+    width = int(dpg.get_item_width(TOOLBAR_BAR_TAG) or 0)
+    client = int(dpg.get_viewport_client_width() or 0)
+    if width <= 0 or client <= 0:
+        return
+    dpg.set_item_pos(
+        TOOLBAR_BAR_TAG, (max(0, client - width - TOOLBAR_BAR_MARGIN_RIGHT), TOOLBAR_BAR_POS[1])
+    )
+
+
+def _toolbar_color(slot: str, alpha: int) -> tuple[int, int, int, int]:
+    """A palette colour with an explicit alpha, for the accent highlights (e46s01)."""
+    red, green, blue, _ = palette_rgba(state.active_palette[slot])
+    return (red, green, blue, alpha)
+
+
+def _build_main_toolbar() -> None:
+    """Build the flat icon bar (called once, at the menubar position).
+
+    The buttons are FLAT: no frame, no background, no border, so only the glyph
+    shows (the aligned frame top edges read as a "line" on the rig). The accent
+    marks an open window (soft) and the active one (full).
+    """
+    with dpg.theme(tag=TOOLBAR_THEME_FLAT), dpg.theme_component(dpg.mvThemeCat_Core):
+        dpg.add_theme_color(dpg.mvThemeCol_Button, (0, 0, 0, 0))
+        dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, _toolbar_color("accent", 80))
+        dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, _toolbar_color("accent", 140))
+        dpg.add_theme_color(dpg.mvThemeCol_Border, (0, 0, 0, 0))
+        dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 0)
+        dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 0)
+    with dpg.theme(tag=TOOLBAR_THEME_OPEN), dpg.theme_component(dpg.mvThemeCat_Core):
+        dpg.add_theme_color(dpg.mvThemeCol_Button, _toolbar_color("accent", 110))
+        dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, _toolbar_color("accent", 150))
+        dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, _toolbar_color("accent", 150))
+        dpg.add_theme_color(dpg.mvThemeCol_Border, (0, 0, 0, 0))
+        dpg.add_theme_color(dpg.mvThemeCol_BorderShadow, (0, 0, 0, 0))
+        dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 0)
+        dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 0)
+    with dpg.theme(tag=TOOLBAR_THEME_ACTIVE), dpg.theme_component(dpg.mvThemeCat_Core):
+        dpg.add_theme_color(dpg.mvThemeCol_Button, _toolbar_color("accent", 255))
+        dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, _toolbar_color("accent", 255))
+        dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, _toolbar_color("accent", 255))
+        dpg.add_theme_color(dpg.mvThemeCol_Border, (0, 0, 0, 0))
+        dpg.add_theme_color(dpg.mvThemeCol_BorderShadow, (0, 0, 0, 0))
+        dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 0)
+        dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 0)
+    # The toolbar window is fully plain: no background, no 1px window border
+    # (the rig line above the icons), a small padding.
+    with dpg.theme(tag=TOOLBAR_THEME_PLAIN), dpg.theme_component(dpg.mvThemeCat_Core):
+        dpg.add_theme_color(dpg.mvThemeCol_WindowBg, (0, 0, 0, 0))
+        dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (0, 0, 0, 0))
+        dpg.add_theme_color(dpg.mvThemeCol_PopupBg, (0, 0, 0, 0))
+        dpg.add_theme_color(dpg.mvThemeCol_MenuBarBg, (0, 0, 0, 0))
+        dpg.add_theme_color(dpg.mvThemeCol_TitleBg, (0, 0, 0, 0))
+        dpg.add_theme_color(dpg.mvThemeCol_TitleBgActive, (0, 0, 0, 0))
+        dpg.add_theme_color(dpg.mvThemeCol_TitleBgCollapsed, (0, 0, 0, 0))
+        dpg.add_theme_color(dpg.mvThemeCol_Border, (0, 0, 0, 255))
+        dpg.add_theme_color(dpg.mvThemeCol_BorderShadow, (0, 0, 0, 255))
+        dpg.add_theme_style(dpg.mvStyleVar_WindowBorderSize, 1)
+        dpg.add_theme_style(dpg.mvStyleVar_ChildBorderSize, 0)
+        dpg.add_theme_style(dpg.mvStyleVar_WindowRounding, 0)
+        dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, TOOLBAR_BAR_PAD_X, TOOLBAR_BAR_PAD_Y)
+        dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, TOOLBAR_ITEM_SPACING, 0)
+    # BUG-2026-09-16T155639: a tooltip is a child window and inherits the bar's
+    # opaque black border (DPG renders an alpha-0 colour as unset), so every
+    # tooltip carries its own borderless theme — alpha-0 border AND a 0 border
+    # size (verified with a minimal DPG repro: size 0 is what removes the frame).
+    with dpg.theme(tag=TOOLBAR_THEME_TOOLTIP), dpg.theme_component(dpg.mvThemeCat_Core):
+        dpg.add_theme_color(dpg.mvThemeCol_Border, (0, 0, 0, 0))
+        dpg.add_theme_color(dpg.mvThemeCol_BorderShadow, (0, 0, 0, 0))
+        dpg.add_theme_style(dpg.mvStyleVar_WindowBorderSize, 0)
+    # A compact, borderless, auto-sized toolbar WINDOW: the native viewport menu
+    # bar always spans the full width and ignores item themes (probed), so it
+    # cannot show "only the icons". This window is exactly as wide as the icons,
+    # has no background/border, and the workspace windows start at TOOLBAR_BAR_H.
+    with (
+        dpg.window(
+            tag=TOOLBAR_BAR_TAG,
+            no_title_bar=True,
+            no_resize=True,
+            no_move=True,
+            no_scrollbar=True,
+            no_collapse=True,
+            no_background=True,
+            no_bring_to_front_on_focus=True,
+            no_saved_settings=True,
+            no_scroll_with_mouse=True,
+            width=toolbar_bar_width(),
+            height=TOOLBAR_BAR_H,
+            pos=TOOLBAR_BAR_POS,
+        ),
+        dpg.group(horizontal=True),
+    ):
+        for group in TOOLBAR_ITEM_GROUPS:
+            for item in group:
+                kind, target, _glyph, label, shortcut = item
+                tag = _toolbar_button_tag(kind, target)
+                dpg.add_button(
+                    label=_toolbar_item_text(item),
+                    tag=tag,
+                    width=TOOLBAR_ICON_BUTTON_W,
+                    height=TOOLBAR_ICON_BUTTON_H,
+                    callback=on_toolbar_item,
+                    user_data={"kind": kind, "target": target},
+                )
+                if toolbar_icon_font is not None:
+                    dpg.bind_item_font(tag, toolbar_icon_font)
+                dpg.bind_item_theme(tag, TOOLBAR_THEME_FLAT)
+                tooltip_tag = f"{tag}_tooltip"
+                with dpg.tooltip(tag, tag=tooltip_tag):
+                    dpg.add_text(f"{label} ({shortcut})" if shortcut else label)
+                dpg.bind_item_theme(tooltip_tag, TOOLBAR_THEME_TOOLTIP)
+            dpg.add_spacer(width=TOOLBAR_GROUP_GAP)
+    dpg.bind_item_theme(TOOLBAR_BAR_TAG, TOOLBAR_THEME_PLAIN)
+
+
+def on_toolbar_item(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """One toolbar icon: focus a window, toggle a window, or run a project action."""
+    payload = user_data if isinstance(user_data, dict) else {}
+    kind = str(payload.get("kind") or "")
+    target = str(payload.get("target") or "")
+    if kind == "focus":
+        switch_to_window(None, None, target)
+        return
+    if kind == "toggle":
+        show = _toolbar_show_func(target)
+        if show is None:
+            return
+        if dpg.is_item_shown(target):
+            dpg.hide_item(target)
+            return
+        show()
+        return
+    {
+        "new_project": request_new_project,
+        "open_project": show_open_project_dialog,
+        "save_project": save_current_project,
+        "save_project_as": show_save_project_dialog,
+        "last_project": show_recent_projects_popup,
+        "pair": show_pairing_prompt,
+    }.get(target, lambda *_: None)()
+
+
+def refresh_toolbar_icons() -> None:
+    """Paint the open (soft) / active (full) accent on the window icons (e46s01)."""
+    active = str(state.current_window or "")
+    for kind, target, _glyph, _label, _shortcut in _toolbar_window_items():
+        tag = _toolbar_button_tag(kind, target)
+        if not dpg.does_item_exist(tag):
+            continue
+        if target == active:
+            dpg.bind_item_theme(tag, TOOLBAR_THEME_ACTIVE)
+        elif dpg.does_item_exist(target) and dpg.is_item_shown(target):
+            dpg.bind_item_theme(tag, TOOLBAR_THEME_OPEN)
+        else:
+            dpg.bind_item_theme(tag, TOOLBAR_THEME_FLAT)
+
+
+def show_recent_projects_popup() -> None:
+    """The Last project icon: a compact popup with the recent project files."""
+    if dpg.does_item_exist(TOOLBAR_RECENTS_TAG):
+        dpg.delete_item(TOOLBAR_RECENTS_TAG)
+    recent = recent_project_paths(load_config())
+    position = dpg.get_mouse_pos(local=False)
+    with dpg.window(
+        tag=TOOLBAR_RECENTS_TAG, popup=True, no_title_bar=True, pos=position, min_size=(240, 10)
+    ):
+        themed_text("Last projects", slot="text_dim")
+        if not recent:
+            dpg.add_text("No recent projects")
+        for path in recent:
+            dpg.add_button(
+                label=os.path.basename(path),
+                width=-1,
+                callback=open_recent_project,
+                user_data=path,
+            )
+    dpg.show_item(TOOLBAR_RECENTS_TAG)
+
+
+load_toolbar_icon_font()
+_build_main_toolbar()
 dpg.setup_dearpygui()
 dpg.show_viewport()
 refresh_window_title()  # e37s03: the title announces the boot project identity
@@ -9553,6 +11296,9 @@ autostart_osc()  # boot: auto-connect OSC client + start listening server (no ma
 
 try:
     while dpg.is_dearpygui_running():
+        if not state.pairing_prompt_shown:
+            state.pairing_prompt_shown = True
+            show_pairing_prompt()
         if dpg.does_item_exist("vimix_media_window"):
             w = dpg.get_item_width("vimix_media_window")
             current_cols = max(1, int((w - 20) / 145))
@@ -9594,12 +11340,16 @@ try:
         while not texture_queue.empty():
             name, idx, img_data, w, h = texture_queue.get()
             apply_thumbnail_texture(name, idx, img_data, w, h)
+            _fs_on_thumb_texture(name)
 
         tick_thumb_cycle(time.time())
 
-        tick_window_menu()  # e17: keep the Windows-menu list + active mark fresh
+        tick_toolbar()  # e46s01: keep the toolbar highlight + active mark fresh
 
         tick_project_dirty(time.time())  # e37s03: unsaved-changes marker cadence
+
+        tick_drafts(time.time())  # e43s05: persist the draft library (debounced)
+        tick_send_remap(time.monotonic())  # e45s02: expire an unreached reassignment
 
         tick_cue_triggers()  # e35s03: cue-list card running labels (idle-cheap)
 
