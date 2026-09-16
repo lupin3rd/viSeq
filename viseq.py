@@ -11002,7 +11002,7 @@ TOOLBAR_BAR_MARGIN_RIGHT = 4
 TOOLBAR_ITEM_SPACING = 4
 TOOLBAR_BAR_PAD_X = 4
 TOOLBAR_BAR_PAD_Y = 3
-TOOLBAR_SEPARATOR_W = 1
+TOOLBAR_GROUP_GAP = 10
 toolbar_icon_font: Any = None
 _toolbar_geom_sig: tuple[int, int] | None = None
 
@@ -11094,7 +11094,7 @@ def toolbar_bar_width() -> int:
     """
     buttons = sum(len(group) for group in TOOLBAR_ITEM_GROUPS)
     separators = len(TOOLBAR_ITEM_GROUPS)
-    frames = buttons * TOOLBAR_ICON_BUTTON_W + separators * TOOLBAR_SEPARATOR_W
+    frames = buttons * TOOLBAR_ICON_BUTTON_W + separators * TOOLBAR_GROUP_GAP
     gaps = max(0, buttons + separators - 1) * TOOLBAR_ITEM_SPACING
     return frames + gaps + 2 * TOOLBAR_BAR_PAD_X
 
@@ -11204,7 +11204,7 @@ def _build_main_toolbar() -> None:
                 dpg.bind_item_theme(tag, TOOLBAR_THEME_FLAT)
                 with dpg.tooltip(tag):
                     dpg.add_text(f"{label} ({shortcut})" if shortcut else label)
-            dpg.add_separator()
+            dpg.add_spacer(width=TOOLBAR_GROUP_GAP)
     dpg.bind_item_theme(TOOLBAR_BAR_TAG, TOOLBAR_THEME_PLAIN)
 
 
