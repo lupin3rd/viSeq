@@ -375,6 +375,15 @@ leap_values: dict[str, float] = {}
 leap_framerate: float = 0.0
 
 
+# BUG-2026-09-18T212400: worker liveness + restart generation. leap_worker_tick is
+# stamped by the worker loop on every pass (a dead or blocked worker stops
+# ticking, which is the only way to see it); leap_generation is bumped by
+# restart_leap_engine() and watched by the worker, so an explicit restart always
+# rebuilds the connection.
+leap_worker_tick: float = 0.0
+leap_generation: int = 0
+
+
 leap_lock = threading.Lock()
 
 

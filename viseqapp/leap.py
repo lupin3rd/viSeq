@@ -20,6 +20,7 @@ driving + rescale ranges keep mappings usable).
 """
 
 import math
+import time
 from itertools import pairwise
 from typing import Any
 
@@ -338,6 +339,11 @@ LEAP_CURL_FULL_BEND_DEG: float = 90.0
 # e49: spread normalization — the seed range for the hand-opening signal (mm).
 LEAP_SPREAD_MAX_MM: float = 100.0
 
+# BUG-2026-09-18T212400: a worker that stops ticking is dead or blocked — it ticks
+# on every pass and every keep-alive interval. The limit covers the longest
+# internal sleep (the 5 s missing-library retry).
+LEAP_WORKER_STALE_S: float = 8.0
+
 # e48: LeapC documents LEAP_HAND.visible_time in MICROSECONDS; the snapshot and
 # the monitor expose seconds (the 'visible' field metadata says 's').
 LEAP_MICROS_PER_SECOND: float = 1_000_000.0
@@ -429,10 +435,17 @@ def hand_spread(hand: Any) -> float:
     return sum(gaps) / len(gaps)
 
 
-def leap_status_label(enabled: bool, status: str) -> str:
-    """Status line text for the Leap Motion window (e26s02)."""
+def leap_status_label(enabled: bool, status: str, *, stalled: bool = False) -> str:
+    """Status line text for the Leap Motion window (e26s02).
+
+    ``stalled`` (BUG-2026-09-18T212400) overrides the engine status: it means the
+    worker itself stopped ticking, so the last status is stale information and
+    must not be shown as if it were live.
+    """
     if not enabled:
         return "Disabled"
+    if stalled:
+        return "Engine stalled - press Restart engine"
     labels = {
         "missing": "Leap library/service not available",
         "disconnected": "Disconnected - retrying...",
@@ -605,6 +618,31 @@ def set_leap_enabled(enabled: bool) -> None:
     cfg = load_config()
     cfg["leap"]["enabled"] = bool(enabled)
     save_config(cfg)
+
+
+def leap_engine_stalled(now: float, tick: float) -> bool:
+    """Has the Leap worker stopped ticking? (BUG-2026-09-18T212400, pure)
+
+    A tick of 0.0 means the worker never ran (or has not been enabled yet), which
+    is as stalled as one that went silent: the predicate is called only while the
+    engine is enabled.
+    """
+    return now - tick > LEAP_WORKER_STALE_S
+
+
+def restart_leap_engine() -> None:
+    """Force the Leap worker to rebuild its connection (BUG-2026-09-18T212400).
+
+    The generation bump makes the worker leave its keep-alive loop, tear the old
+    connection down off-thread and open a fresh one; the stall counter resets so
+    the backoff ladder starts over, and the tick is stamped so the status line
+    does not flash 'stalled' while the rebuild runs. No device call happens here
+    (the worker owns the connection, mirroring set_leap_enabled).
+    """
+    state.leap_generation += 1
+    state.leap_stall_count = 0
+    state.leap_worker_tick = time.time()
+    state.leap_status = "disconnected"
 
 
 def set_leap_visualizer(enabled: bool) -> None:

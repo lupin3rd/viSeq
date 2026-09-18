@@ -221,6 +221,7 @@ from viseqapp.constants import (
 from viseqapp.leap import (
     leap_init_from_config,
     normalize_tracking_event,
+    restart_leap_engine,
     set_leap_enabled,
     set_leap_visualizer,
 )
@@ -1278,6 +1279,9 @@ def apply_boot_config() -> None:
         dpg.configure_item("leap_viz_cb", enabled=state.leap_enabled)
         if state.leap_enabled and state.leap_visualizer:
             _apply_leap_viz_layout(True)
+    if dpg.does_item_exist("leap_restart_btn"):
+        # BUG-2026-09-18T212400: recovery control, live only while the engine is on.
+        dpg.configure_item("leap_restart_btn", enabled=state.leap_enabled)
     _apply_theme_config(cfg["theme"])
     if dpg.does_item_exist("cb_restore_project_boot"):
         dpg.set_value("cb_restore_project_boot", cfg["projects"]["restore_last_on_boot"])
@@ -6386,10 +6390,23 @@ def on_leap_enable(sender: Any = None, app_data: Any = None, user_data: Any = No
     set_leap_enabled(enabled)
     if dpg.does_item_exist("leap_viz_cb"):
         dpg.configure_item("leap_viz_cb", enabled=enabled)
+    if dpg.does_item_exist("leap_restart_btn"):
+        dpg.configure_item("leap_restart_btn", enabled=enabled)
     if not enabled:
         _apply_leap_viz_layout(False)
     elif state.leap_visualizer:
         _apply_leap_viz_layout(True)
+
+
+def on_leap_restart(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Rebuild the Leap engine from scratch (BUG-2026-09-18T212400).
+
+    Recovery path when the engine looks stuck: the worker watches
+    state.leap_generation, leaves its keep-alive loop and opens a fresh
+    connection. Nothing touches the device here (the worker owns the connection).
+    """
+    restart_leap_engine()
+    append_log("Leap", "restart requested from the window")
 
 
 def on_leap_visualizer(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -6485,7 +6502,10 @@ def tick_leap_monitor() -> None:
     if not dpg.is_item_shown("leap_window"):
         return
     enabled = state.leap_enabled
-    _leap_monitor_set_text("leap_status_text", leap.leap_status_label(enabled, state.leap_status))
+    stalled = enabled and leap.leap_engine_stalled(time.time(), state.leap_worker_tick)
+    _leap_monitor_set_text(
+        "leap_status_text", leap.leap_status_label(enabled, state.leap_status, stalled=stalled)
+    )
     # e48: frame rate is a per-frame diagnostic, not a per-hand signal.
     _leap_monitor_set_text(
         "leap_fps_text", leap.format_framerate(state.leap_framerate if enabled else 0.0)
@@ -9347,6 +9367,36 @@ def midi_clock_loop() -> None:
 # the queues (HIGH-1: no dpg from any thread here).
 
 
+# BUG-2026-09-18T212400: worker-loop timings (named constants, L-6). The idle and
+# retry sleeps are short; the stale limit in viseqapp/leap.py must cover the
+# longest of them (the missing-library retry).
+LEAP_IDLE_SLEEP_S: float = 0.2
+LEAP_MISSING_SLEEP_S: float = 5.0
+LEAP_RETRY_SLEEP_S: float = 2.0
+LEAP_KEEPALIVE_SLEEP_S: float = 0.5
+LEAP_WORKER_GUARD_SLEEP_S: float = 1.0
+
+
+def _leap_detach(connection: Any) -> None:
+    """Tear a LeapC connection down OFF the worker thread (BUG-2026-09-18T212400).
+
+    The library's `disconnect()` joins its poll thread with NO timeout, and that
+    thread sits inside a native `LeapPollConnection` call: on a wedged service the
+    join would block this worker forever, which is one of the ways the engine used
+    to become unrecoverable. The teardown therefore runs in a throwaway daemon
+    thread and the caller moves on; the binding destroys the native connection in
+    `__del__` once the reference is dropped.
+    """
+    if connection is None:
+        return
+
+    def _close() -> None:
+        with contextlib.suppress(Exception):
+            connection.disconnect()
+
+    threading.Thread(target=_close, name="leap-detach", daemon=True).start()
+
+
 def _leap_lib() -> Any:
     """The external leap package, imported lazily; None when unavailable (e26s01)."""
     try:
@@ -9511,91 +9561,113 @@ def _leap_backoff_sleep(seconds: float) -> None:
         time.sleep(min(1.0, deadline - time.time()))
 
 
+def _leap_worker_iteration() -> None:
+    """One Leap-worker lifecycle pass (BUG-2026-09-18T212400).
+
+    Extracted from leap_control_loop so the loop can guard it: this body may
+    raise (a missing library, a wedged service, a library bug) and the guard keeps
+    the thread alive. The library's own poll thread (auto_poll=True) owns the
+    LeapC handshake and event loop — the official example pattern; our listener
+    normalizes tracking frames into state.leap_values.
+    """
+    state.leap_worker_tick = time.time()  # liveness heartbeat for the window
+    if not state.leap_enabled:
+        time.sleep(LEAP_IDLE_SLEEP_S)
+        return
+    lib = _leap_lib()
+    if lib is None:
+        if state.leap_status != "missing":
+            append_log("Leap", "library/service not available (leapc-python-api + Gemini)")
+        state.leap_status = "missing"
+        time.sleep(LEAP_MISSING_SLEEP_S)
+        return
+    # The generation captured BEFORE the connect: a restart clicked while this
+    # connection is being built is honoured on the next pass (the counter moved).
+    generation = state.leap_generation
+    connection: Any = None
+    try:
+        connection = lib.Connection()
+        connection.add_listener(_leap_listener(lib))
+        # NOTE: connection.open() is a @contextmanager — calling it without
+        # `with` is a silent no-op. connect() is the plain-method equivalent
+        # that keeps the connection open for this worker's keep-alive loop.
+        connection.connect(auto_poll=True, timeout=3)
+        connection.set_tracking_mode(lib.TrackingMode.Desktop)
+        state.leap_status = "connected"
+        state.leap_last_frame = time.time()  # e26s05: silence window starts fresh
+        state.leap_worker_tick = time.time()
+        append_log("Leap", "connected")
+        # e26s04: a persisted visualizer toggle asks for IR as soon as the
+        # (re)connection is up; afterwards the keep-alive below follows it.
+        if state.leap_visualizer:
+            _leap_set_images_policy(connection, lib, True)
+    except Exception as e:
+        log_error("Leap", f"connect: {e}")
+        _leap_detach(connection)
+        state.leap_status = "disconnected"
+        time.sleep(LEAP_RETRY_SLEEP_S)
+        return
+    # Keep the connection open while enabled; a lost service/device flips the
+    # status to disconnected (listener) so this loop exits and reconnects.
+    # The keep-alive also watches the visualizer toggle and sets/clears the
+    # LeapC Images policy on the live connection (no reconnect needed), the
+    # e26s05 watchdog (the service can wedge silently — evaluator frozen while the
+    # process + USB stay alive — with NO events arriving, so after
+    # LEAP_STALL_TIMEOUT of tracking silence this loop forces a reconnect) and the
+    # BUG-2026-09-18T212400 restart request (a generation bump).
+    viz_policy = bool(state.leap_visualizer)
+    stall_exit = False
+    while state.leap_enabled and state.leap_status != "disconnected":
+        state.leap_worker_tick = time.time()
+        if state.leap_generation != generation:
+            append_log("Leap", "restart requested - rebuilding the connection")
+            break
+        if leap.stall_detected(time.time(), state.leap_last_frame):
+            stall_exit = True
+            state.leap_stall_count += 1
+            state.leap_status = "disconnected"
+            if state.leap_stall_count == leap.LEAP_STALL_ESCALATION_COUNT:
+                append_log(
+                    "Leap",
+                    "tracking keeps stalling - press Restart engine, or restart "
+                    "the hand-tracking service / replug the device",
+                )
+            elif state.leap_stall_count < leap.LEAP_STALL_ESCALATION_COUNT:
+                append_log(
+                    "Leap",
+                    "tracking stalled (no frames for "
+                    f"{leap.LEAP_STALL_TIMEOUT:.0f}s) - reconnecting "
+                    f"(attempt {state.leap_stall_count})",
+                )
+            break
+        viz_now = bool(state.leap_visualizer)
+        if viz_now != viz_policy:
+            viz_policy = viz_now
+            _leap_set_images_policy(connection, lib, viz_now)
+        time.sleep(LEAP_KEEPALIVE_SLEEP_S)
+    _leap_detach(connection)
+    if stall_exit:
+        # a wedged service is not hot-looped: back off (fast, then slow),
+        # interruptibly so an engine-off during the backoff reacts quickly.
+        _leap_backoff_sleep(leap.stall_retry_wait(state.leap_stall_count))
+
+
 def leap_control_loop() -> None:
     """Leap Motion worker (e26s01): keep one auto-polling connection while enabled.
 
-    The library's own poll thread (auto_poll=True) owns the LeapC handshake and
-    event loop — the official example pattern; our listener normalizes tracking
-    frames into state.leap_values. The worker thread only manages the lifecycle:
-    open when enabled (retry/backoff on failure), watch the status, reconnect
-    after a loss, close when disabled.
+    BUG-2026-09-18T212400: the WHOLE lifecycle lives behind this guard. The body
+    used to run unguarded, so any exception outside the connect block killed the
+    thread silently — and because the Enable toggle only flips state.leap_enabled,
+    nobody was left to read it and the engine could never come back without an app
+    restart. A worker thread must never die (CONVENTIONS, defensive posture).
     """
-    missing_logged = False
     while True:
-        if not state.leap_enabled:
-            time.sleep(0.2)
-            continue
-        lib = _leap_lib()
-        if lib is None:
-            state.leap_status = "missing"
-            if not missing_logged:
-                append_log("Leap", "library/service not available (leapc-python-api + Gemini)")
-                missing_logged = True
-            time.sleep(5.0)
-            continue
-        missing_logged = False
-        connection: Any = None
         try:
-            connection = lib.Connection()
-            connection.add_listener(_leap_listener(lib))
-            # NOTE: connection.open() is a @contextmanager — calling it without
-            # `with` is a silent no-op. connect() is the plain-method equivalent
-            # that keeps the connection open for this worker's keep-alive loop.
-            connection.connect(auto_poll=True, timeout=3)
-            connection.set_tracking_mode(lib.TrackingMode.Desktop)
-            state.leap_status = "connected"
-            state.leap_last_frame = time.time()  # e26s05: silence window starts fresh
-            append_log("Leap", "connected")
-            # e26s04: a persisted visualizer toggle asks for IR as soon as the
-            # (re)connection is up; afterwards the keep-alive below follows it.
-            if state.leap_visualizer:
-                _leap_set_images_policy(connection, lib, True)
+            _leap_worker_iteration()
         except Exception as e:
-            log_error("Leap", f"connect: {e}")
-            with contextlib.suppress(Exception):
-                connection.disconnect()
-            state.leap_status = "disconnected"
-            time.sleep(2.0)
-            continue
-        # Keep the connection open while enabled; a lost service/device flips the
-        # status to disconnected (listener) so this loop exits and reconnects.
-        # The keep-alive also watches the visualizer toggle and sets/clears the
-        # LeapC Images policy on the live connection (no reconnect needed) and
-        # the e26s05 watchdog: the service can wedge silently (evaluator frozen
-        # while the process + USB stay alive) with NO events arriving, so after
-        # LEAP_STALL_TIMEOUT of tracking silence this loop forces a reconnect.
-        viz_policy = bool(state.leap_visualizer)
-        stall_exit = False
-        while state.leap_enabled and state.leap_status != "disconnected":
-            if leap.stall_detected(time.time(), state.leap_last_frame):
-                stall_exit = True
-                state.leap_stall_count += 1
-                state.leap_status = "disconnected"
-                if state.leap_stall_count == leap.LEAP_STALL_ESCALATION_COUNT:
-                    append_log(
-                        "Leap",
-                        "tracking keeps stalling - restart the hand-tracking "
-                        "service or replug the device",
-                    )
-                elif state.leap_stall_count < leap.LEAP_STALL_ESCALATION_COUNT:
-                    append_log(
-                        "Leap",
-                        "tracking stalled (no frames for "
-                        f"{leap.LEAP_STALL_TIMEOUT:.0f}s) - reconnecting "
-                        f"(attempt {state.leap_stall_count})",
-                    )
-                break
-            viz_now = bool(state.leap_visualizer)
-            if viz_now != viz_policy:
-                viz_policy = viz_now
-                _leap_set_images_policy(connection, lib, viz_now)
-            time.sleep(0.5)
-        with contextlib.suppress(Exception):
-            connection.disconnect()
-        if stall_exit:
-            # a wedged service is not hot-looped: back off (fast, then slow),
-            # interruptibly so an engine-off during the backoff reacts quickly.
-            _leap_backoff_sleep(leap.stall_retry_wait(state.leap_stall_count))
+            log_error("Leap", f"worker: {e}")
+            state.leap_worker_tick = time.time()
+            time.sleep(LEAP_WORKER_GUARD_SLEEP_S)
 
 
 def show_settings_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -10762,6 +10834,14 @@ with dpg.window(
         tag="leap_enable_cb",
         default_value=state.leap_enabled,
         callback=on_leap_enable,
+    )
+    # BUG-2026-09-18T212400: recovery control. The worker rebuilds its connection on
+    # the generation bump, so a stuck engine never needs an app restart.
+    dpg.add_button(
+        label="Restart engine",
+        tag="leap_restart_btn",
+        callback=on_leap_restart,
+        enabled=state.leap_enabled,
     )
     dpg.add_separator()
     dpg.add_spacer(height=4)
