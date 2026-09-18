@@ -10710,8 +10710,11 @@ with dpg.window(label="MIDI", width=520, height=520, pos=(560, 320), tag="midi_w
         dpg.group(tag="midi_mappings_group"),
     ):
         pass
-    dpg.add_spacer(height=4)
-    dpg.add_button(label="Save", callback=save_midi_controllers, width=80)
+    # BUG-2026-09-18T194658: no Save button here. Every mutation of this window
+    # (enable, add/remove a controller, the grid role, learn, delete, a monitor
+    # bind) calls save_midi_controllers() at the moment it happens, so a manual
+    # save only re-wrote identical data — and pressing it after opening a project
+    # leaked that project's Mapper bindings into the global config.
 
 # WINDOW 8: Leap Motion (hidden; opened from Settings > "Leap Motion"). One
 # window hosts EVERYTHING (user request, e26s02): the Enable switch, the
