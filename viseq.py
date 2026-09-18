@@ -175,6 +175,7 @@ from viseqapp.constants import (
     MIDI_CLOCK_PULSES_PER_BEAT,
     MIDI_KIND_CC,
     MIDI_KIND_NOTE,
+    MIDI_LEARN_RED_RGBA,
     MIDI_LEARN_TIMEOUT_SECONDS,
     MIDI_OPEN_RETRY_COOLDOWN_SECONDS,
     NUM_STEPS,
@@ -220,6 +221,7 @@ from viseqapp.constants import (
 from viseqapp.leap import (
     leap_init_from_config,
     normalize_tracking_event,
+    restart_leap_engine,
     set_leap_enabled,
     set_leap_visualizer,
 )
@@ -304,7 +306,6 @@ from viseqapp.state import (
     band_prev_values,
     bands_enabled,
     log_queue,
-    midi_bindings,
     midi_controllers,
     osc_log_history,
     request_timestamps,
@@ -342,6 +343,9 @@ Image.MAX_IMAGE_PIXELS = 25_000_000  # PIL's hard ceiling (~25 MP)
 # viseq application version — single source of truth (matches specs/release-plan.yaml, e08s02).
 # e13s01: this is the first real release of viSeq (user decision).
 # e20s03: 0.2.0 — viseqapp refactor + controller profiles + new project + Mapper family.
+# 0.8.0 — MIDI Learn as the toolbar's red icon, the Leap Motion signal expansion (four-column
+# monitor, palm direction, finger curl + hand spread), the toolbar/window-cycle fixes and the Leap
+# engine restart fix.
 # 0.7.0 — link pairing gates the OSC and HTTP surfaces; File Manager + Session Drafts over the
 # viOSC /fs data plane (thumbnails, video preview, .mix write/load with crossfade); session
 # rename/overwrite/open+import; per-source alpha and the Send-time reassignment panel; the flat
@@ -354,7 +358,7 @@ Image.MAX_IMAGE_PIXELS = 25_000_000  # PIL's hard ceiling (~25 MP)
 # 0.4.0 — Leap Motion mapper source, per-mapping reset, project save + OSC config persist,
 # Mapper tile/row workflows (thumb assign, Add-to-Mapper submenu, line numbers).
 # 0.3.0 — Mapper family (rows/rescale/enable/cycle), compact Vimix-sources grid, windows, XDG.
-APP_VERSION: str = "0.7.0"
+APP_VERSION: str = "0.8.0"
 
 # Author's GitHub profile, shown as a link in the About window (e08s01, user request).
 GITHUB_URL: str = "https://github.com/lupin3rd"
@@ -1278,6 +1282,9 @@ def apply_boot_config() -> None:
         dpg.configure_item("leap_viz_cb", enabled=state.leap_enabled)
         if state.leap_enabled and state.leap_visualizer:
             _apply_leap_viz_layout(True)
+    if dpg.does_item_exist("leap_restart_btn"):
+        # BUG-2026-09-18T212400: recovery control, live only while the engine is on.
+        dpg.configure_item("leap_restart_btn", enabled=state.leap_enabled)
     _apply_theme_config(cfg["theme"])
     if dpg.does_item_exist("cb_restore_project_boot"):
         dpg.set_value("cb_restore_project_boot", cfg["projects"]["restore_last_on_boot"])
@@ -1721,9 +1728,6 @@ def update_step_ui(row: int, col: int) -> None:
         _text_color_bindings[f"seq_type_{row}_{col}"] = "text"
 
         with dpg.popup(cb, mousebutton=dpg.mvMouseButton_Right, tag=f"seq_pop_{row}_{col}"):
-            # 2026-09-06 (user): arm/cancel MIDI Learn from any right-click menu
-            _add_context_learn_item(tag=f"ctx_learn_cell_{row}_{col}")
-            dpg.add_separator()
             dpg.add_menu_item(label="Empty", callback=set_step_type, user_data=(row, col, "NONE"))
             dpg.add_separator()
             dpg.add_menu_item(
@@ -1978,7 +1982,7 @@ def update_step_ui(row: int, col: int) -> None:
             dpg.add_spacer(parent=cell_tag, height=5)
             options = entry.get("options") or []
             raw = step_data.get("last_idx")
-            text = "—"
+            text = "-"  # ASCII hyphen: a dash would render as a fallback glyph
             if raw is not None and 0 <= int(raw) < len(options):
                 text = str(options[int(raw)])
             elif raw is not None:
@@ -2047,10 +2051,9 @@ def _add_tile_context_items(target_id: str) -> None:
     e33s04 (user rule): the popup carries NO learn markers — a binding must
     never anchor to a volatile source. The selection-relative actions live on
     the stable surfaces instead: mapper line markers on the Mapper rows and
-    the regen marker in the sources-window learn bar. 2026-09-06 (user): the
-    popup DOES carry one trailing MODE item (_add_context_learn_item) that
-    arms/cancels MIDI Learn — a mode toggle is not a binding target, so the
-    no-marker rule above stands.
+    the regen marker in the sources-window learn bar. e47: the popup carries no
+    MODE-arm item either — MIDI Learn is armed from the toolbar icon alone
+    (ADR-midi-learn-entry-point).
     e38s03: the popup leads with "Preview..." for media sources that are not
     known images — a tile-anchored action like the others (no learn marker).
     """
@@ -2091,10 +2094,6 @@ def _add_tile_context_items(target_id: str) -> None:
         callback=on_tile_enable_color_correction,
         user_data=target_id,
     )
-    # 2026-09-06 (user): arm/cancel MIDI Learn from the popup. A MODE item, not
-    # a binding target — the e33s04 no-marker rule above stands unchanged.
-    dpg.add_separator()
-    _add_context_learn_item()
 
 
 def on_tile_enable_color_correction(
@@ -2961,7 +2960,7 @@ def _preview_reason(target_id: str, props: dict[str, Any] | None, meta_provider:
         return f"'{target_id}' is not a media source"
     kind = props.get("media_kind")
     if kind == "image":
-        return f"'{target_id}' is an image source — preview is video-only"
+        return f"'{target_id}' is an image source: preview is video-only"
     if kind is None:
         meta = meta_provider()
         if meta is None:
@@ -3595,7 +3594,9 @@ def show_file_manager_window(*_args: Any) -> None:
 
 def toggle_file_manager_window(*_args: Any) -> None:
     """e33 action: show the window, or hide it when it is already open."""
-    if dpg.is_item_shown(FILE_MANAGER_TAG):
+    # BUG-2026-09-19T002150: the same existence-before-shown guard as the
+    # toolbar dispatcher (the shown query raises for a tag with no item).
+    if dpg.does_item_exist(FILE_MANAGER_TAG) and dpg.is_item_shown(FILE_MANAGER_TAG):
         dpg.hide_item(FILE_MANAGER_TAG)
         return
     show_file_manager_window()
@@ -3609,9 +3610,9 @@ def _fs_endpoint() -> tuple[str, int]:
 def _fs_error_text(status: int | None) -> str:
     """A short, honest state line for a failed /fs request."""
     if status == 401:
-        return "Not paired with viOSC — use Settings > Pair with viOSC..."
+        return "Not paired with viOSC: use Settings > Pair with viOSC..."
     if status == 403:
-        return "Outside the allowed roots — check fs_roots in viOSC."
+        return "Outside the allowed roots: check fs_roots in viOSC."
     if status is None:
         return "viOSC unreachable."
     return f"Error ({status})."
@@ -4302,7 +4303,7 @@ def _render_sessions() -> None:
         )
         return
     for source in sources:
-        dpg.add_text(f"{source.get('name')}  —  {source.get('uri')}", parent=FS_SESSION_DETAIL_TAG)
+        dpg.add_text(f"{source.get('name')}  -  {source.get('uri')}", parent=FS_SESSION_DETAIL_TAG)
 
 
 def fs_select_session(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -4343,7 +4344,7 @@ def _draft_needs_write(draft: dict[str, Any]) -> bool:
 def _draft_error_text(status: int | None, tag: str | None) -> str:
     """A short, honest message for a rejected session write."""
     if status == 401:
-        return "Not paired with viOSC — use Settings > Pair with viOSC..."
+        return "Not paired with viOSC: use Settings > Pair with viOSC..."
     if status is None:
         return "viOSC unreachable."
     if tag == "missing_file":
@@ -5272,7 +5273,10 @@ def handle_midi_message(msg: Any, port_name: str) -> None:
             controller.get("auto_bindings") or []
         )
     else:
-        bindings = None  # legacy flat lists (pre-e14 paths/tests)
+        # BUG-2026-09-18T194700: no controller owns this port, so there is nothing
+        # to dispatch through (the worker only listens on configured controllers).
+        # The message is reported as NOBIND by the I/O Monitor; no bindings exist.
+        bindings = None
     outcome = IO_MONITOR_OUTCOME_NOBIND if bindings is None else IO_MONITOR_OUTCOME_NOMATCH
     details: list[str] = []
     for action, params, value in resolve_midi_message(msg, port_name, bindings):
@@ -5296,7 +5300,7 @@ def _exit_midi_learn() -> None:
     if dpg.does_item_exist("midi_learn_status"):
         dpg.set_value("midi_learn_status", "MIDI Learn off")
     _refresh_learn_surfaces()
-    _sync_context_learn_labels()  # static menus (step cell, monitor) follow the mode
+    refresh_toolbar_learn_icon()  # e47: the bar follows the mode (incl. the timeout)
 
 
 def _refresh_learn_surfaces() -> None:
@@ -5528,10 +5532,13 @@ def _sync_seq_row_learn_strip() -> None:
 
 def midi_learn_complete(binding: dict[str, Any], port_name: str | None = None) -> None:
     """Main thread: merge the captured source with the pending action and store the binding
-    on the owning controller (legacy flat list when no controller owns the port).
+    on the controller that owns the port.
 
     One-shot (e14 bug fix): learn mode exits after the capture, so the learnable
     sequencer controls (PLAY, beat sources, step cells) are never left hijacked.
+    BUG-2026-09-18T194700: with no owning controller the capture is REFUSED with a
+    log line and the mapping is left unbound — a binding stored nowhere used to be
+    lost on restart while a Mapper mapping still claimed its MIDI source.
     """
     if state.midi_learn_pending is None:
         return
@@ -5539,11 +5546,20 @@ def midi_learn_complete(binding: dict[str, Any], port_name: str | None = None) -
     binding["action"] = action
     binding["params"] = params
     controller = find_controller_by_port(port_name) if port_name else None
-    if controller is not None:
-        controller.setdefault("bindings", []).append(binding)
-        save_midi_controllers()  # 2026-09-07: a learned mapping persists immediately
-    else:
-        midi_bindings.append(binding)
+    if controller is None:
+        # Unreachable from the app (the worker listens only on configured
+        # controllers): refuse loudly rather than sink it into a lost list.
+        state.midi_learn_pending = None
+        _exit_midi_learn()
+        log_error(
+            "MIDI Learn",
+            f"no controller owns port {port_name!r} — add it in the MIDI window first",
+        )
+        if dpg.does_item_exist("midi_learn_status"):
+            dpg.set_value("midi_learn_status", "No controller owns that port")
+        return
+    controller.setdefault("bindings", []).append(binding)
+    save_midi_controllers()  # 2026-09-07: a learned mapping persists immediately
     state.midi_learn_pending = None
     _exit_midi_learn()
     refresh_midi_mappings_ui()
@@ -5603,7 +5619,7 @@ def toggle_midi_learn(sender: Any = None, app_data: Any = None, user_data: Any =
     if dpg.does_item_exist("midi_learn_status"):
         dpg.set_value("midi_learn_status", "MIDI Learn: click a viseq control")
     _refresh_learn_surfaces()  # e33s02: show the learn markers on the Mapper body
-    _sync_context_learn_labels()  # static menus (step cell, monitor) follow the mode
+    refresh_toolbar_learn_icon()  # e47: the bar shows the mode
 
 
 def on_midi_enable(sender: Any, app_data: Any, user_data: Any) -> None:
@@ -5611,48 +5627,7 @@ def on_midi_enable(sender: Any, app_data: Any, user_data: Any) -> None:
     set_midi_enabled(bool(app_data))
     if not app_data and state.midi_learn_mode:  # disabling cancels an in-flight learn
         _exit_midi_learn()
-
-
-# 2026-09-06 (user): context-menu arm items on STATIC menus (step cell, monitor
-# player head) need their label synced with the mode — their popups are not
-# rebuilt per open, so toggle tracks their tags and re-labels them in place.
-_context_learn_item_tags: set[str] = set()
-
-
-def _sync_context_learn_labels() -> None:
-    """Re-label the registered static context learn items to follow the mode.
-
-    Menus rebuilt per open (Mapper card menu, Mediagrid tile popup) read the
-    mode at build time and never register; the static step-cell and monitor
-    menus register a stable tag here so arm/cancel stays correct everywhere.
-    """
-    label = "Cancel MIDI Learn" if state.midi_learn_mode else "MIDI Learn..."
-    for tag in _context_learn_item_tags:
-        if dpg.does_item_exist(tag):
-            dpg.configure_item(tag, label=label)
-
-
-def _add_context_learn_item(tag: str | None = None) -> None:
-    """One context-menu item that arms/cancels MIDI Learn mode (user, 2026-09-06).
-
-    The right-click surfaces (Mapper card menu, Mediagrid tile popup) reuse the
-    one toggle_midi_learn path of the MIDI window button, so arming the mode
-    never requires opening that window. The label reflects the state at build
-    time: 'MIDI Learn...' arms; 'Cancel MIDI Learn' exits. It is a MODE item —
-    it never anchors a binding to the right-clicked entity (the e33s04 rule on
-    volatile sources stands: capture happens on the markers that then appear).
-    Static menus (step cell, monitor head) pass a stable tag: the label is then
-    kept current by _sync_context_learn_labels on every mode transition.
-    """
-    if tag is not None:
-        _context_learn_item_tags.add(tag)
-    item_kwargs: dict[str, Any] = {
-        "label": "Cancel MIDI Learn" if state.midi_learn_mode else "MIDI Learn...",
-        "callback": toggle_midi_learn,
-    }
-    if tag is not None:
-        item_kwargs["tag"] = tag  # tag=None would raise 'Must be int' in real DPG
-    dpg.add_menu_item(**item_kwargs)
+    refresh_toolbar_learn_icon()  # e47: grey the Learn icon while the engine is off
 
 
 def _midi_binding_label(binding: dict[str, Any]) -> str:
@@ -6230,14 +6205,22 @@ def assign_control_to_mapping(control: tuple[str, str, int, int, str], mapping_i
     """Bind an already-seen control to a Mapper mapping immediately (e39s03).
 
     The reverse of a learn session: the monitor already knows the source
-    (device/channel/type/number), so the dispatch binding lands on the owning
-    controller (or the legacy flat list) and the mapping's stored MIDI source
-    plus its 0..127 input range are set at once. An unknown mapping id is a
-    logged no-op.
+    (device/channel/type/number), so the dispatch binding lands on the controller
+    that owns the port and the mapping's stored MIDI source plus its 0..127 input
+    range are set at once. An unknown mapping id is a logged no-op; so is a port
+    no controller owns (BUG-2026-09-18T194700: the mapping must not claim a source
+    that can never fire).
     """
     port, msg_type, channel, number, _direction = control
     if mapper.find_mapping(mapping_id) is None:
         log_error("I/O Monitor", f"no mapping {mapping_id}")
+        return False
+    controller = find_controller_by_port(port)
+    if controller is None:
+        log_error(
+            "I/O Monitor",
+            f"no controller owns port {port!r} — add it in the MIDI window first",
+        )
         return False
     source: dict[str, Any] = {
         "device": port,
@@ -6246,11 +6229,7 @@ def assign_control_to_mapping(control: tuple[str, str, int, int, str], mapping_i
         "number": int(number),
     }
     binding = {**source, "action": MIDI_ACTION_MAPPER_MAPPING, "params": {"mapping_id": mapping_id}}
-    controller = find_controller_by_port(port)
-    if controller is not None:
-        controller.setdefault("bindings", []).append(binding)
-    else:
-        midi_bindings.append(binding)
+    controller.setdefault("bindings", []).append(binding)
     save_midi_controllers()
     mapper.set_mapping_midi(mapping_id, binding)
     refresh_midi_mappings_ui()
@@ -6416,10 +6395,23 @@ def on_leap_enable(sender: Any = None, app_data: Any = None, user_data: Any = No
     set_leap_enabled(enabled)
     if dpg.does_item_exist("leap_viz_cb"):
         dpg.configure_item("leap_viz_cb", enabled=enabled)
+    if dpg.does_item_exist("leap_restart_btn"):
+        dpg.configure_item("leap_restart_btn", enabled=enabled)
     if not enabled:
         _apply_leap_viz_layout(False)
     elif state.leap_visualizer:
         _apply_leap_viz_layout(True)
+
+
+def on_leap_restart(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Rebuild the Leap engine from scratch (BUG-2026-09-18T212400).
+
+    Recovery path when the engine looks stuck: the worker watches
+    state.leap_generation, leaves its keep-alive loop and opens a fresh
+    connection. Nothing touches the device here (the worker owns the connection).
+    """
+    restart_leap_engine()
+    append_log("Leap", "restart requested from the window")
 
 
 def on_leap_visualizer(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -6433,17 +6425,16 @@ def on_leap_visualizer(sender: Any = None, app_data: Any = None, user_data: Any 
 
 
 def _apply_leap_viz_layout(shown: bool) -> None:
-    """Fold/unfold the visualizer panel inside the COMPACT window (e26s04).
+    """Fold/unfold the visualizer panel (e26s04, simplified by e48s02).
 
-    The Leap Motion window never widens (user decision): showing the panel
-    shrinks the monitor child so the fixed 560x680 size never overflows.
+    The monitor is no longer its own scroll box: the four-column body lives in
+    the window, so the WINDOW's scrollbar absorbs the extra 158 px and nothing
+    has to be resized here.
     """
     if shown:
         dpg.show_item("leap_viz_panel")
-        dpg.configure_item("leap_monitor_scroll", height=LEAP_MONITOR_VIZ_H)
     else:
         dpg.hide_item("leap_viz_panel")
-        dpg.configure_item("leap_monitor_scroll", height=LEAP_MONITOR_H)
 
 
 def _leap_monitor_set_text(tag: str, text: str) -> None:
@@ -6516,7 +6507,14 @@ def tick_leap_monitor() -> None:
     if not dpg.is_item_shown("leap_window"):
         return
     enabled = state.leap_enabled
-    _leap_monitor_set_text("leap_status_text", leap.leap_status_label(enabled, state.leap_status))
+    stalled = enabled and leap.leap_engine_stalled(time.time(), state.leap_worker_tick)
+    _leap_monitor_set_text(
+        "leap_status_text", leap.leap_status_label(enabled, state.leap_status, stalled=stalled)
+    )
+    # e48: frame rate is a per-frame diagnostic, not a per-hand signal.
+    _leap_monitor_set_text(
+        "leap_fps_text", leap.format_framerate(state.leap_framerate if enabled else 0.0)
+    )
     if enabled:
         with state.leap_lock:
             snapshot = dict(state.leap_values)
@@ -7056,9 +7054,9 @@ def _render_mapper_source_menu(mapping: dict[str, Any]) -> None:
     marker captures mapper_band); the Leap picker row and Clear source are
     never marker targets (picker/destructive exclusion). The e18 'MIDI
     Learn...' modal item is gone — the card control marker captures the
-    value binding instead; 2026-09-06 the slot returns as a MODE-arm item
-    (_add_context_learn_item) so learning starts without opening the MIDI
-    window.
+    value binding instead. e47: the menu no longer arms or cancels the learn
+    mode — the toolbar icon does (ADR-midi-learn-entry-point) — while the
+    marker rows below stay the capture affordance.
     """
     mid = mapping["id"]
     # the control tag comes from the shared control->kind map (e34s04):
@@ -7073,10 +7071,6 @@ def _render_mapper_source_menu(mapping: dict[str, Any]) -> None:
             dpg.delete_item(stale)
     with dpg.window(popup=True, show=False, no_title_bar=True, autosize=True, tag=menu_tag):
         if state.midi_learn_mode:
-            # 2026-09-06 (user): the menu that armed the mode can cancel it
-            with dpg.group(horizontal=True):
-                dpg.add_button(label="Cancel MIDI Learn", callback=toggle_midi_learn)
-            dpg.add_separator()
             # e33s03: uniform label + learn-marker rows while learning — the
             # marker captures the band action, the label keeps its click behavior
             for band_id in (2, 3):
@@ -7119,9 +7113,8 @@ def _render_mapper_source_menu(mapping: dict[str, Any]) -> None:
                 callback=set_mapping_band,
                 user_data=(mid, 3),
             )
-            # 2026-09-06 (user): the e18 slot returns as a MODE arm — capture
-            # still happens on the uniform markers that appear once armed.
-            _add_context_learn_item()
+            # e47: no MODE-arm item here any more — the toolbar icon arms the
+            # mode; capture still happens on the markers once the mode is on.
             dpg.add_menu_item(
                 label="Leap Motion...",
                 check=True,
@@ -9379,6 +9372,36 @@ def midi_clock_loop() -> None:
 # the queues (HIGH-1: no dpg from any thread here).
 
 
+# BUG-2026-09-18T212400: worker-loop timings (named constants, L-6). The idle and
+# retry sleeps are short; the stale limit in viseqapp/leap.py must cover the
+# longest of them (the missing-library retry).
+LEAP_IDLE_SLEEP_S: float = 0.2
+LEAP_MISSING_SLEEP_S: float = 5.0
+LEAP_RETRY_SLEEP_S: float = 2.0
+LEAP_KEEPALIVE_SLEEP_S: float = 0.5
+LEAP_WORKER_GUARD_SLEEP_S: float = 1.0
+
+
+def _leap_detach(connection: Any) -> None:
+    """Tear a LeapC connection down OFF the worker thread (BUG-2026-09-18T212400).
+
+    The library's `disconnect()` joins its poll thread with NO timeout, and that
+    thread sits inside a native `LeapPollConnection` call: on a wedged service the
+    join would block this worker forever, which is one of the ways the engine used
+    to become unrecoverable. The teardown therefore runs in a throwaway daemon
+    thread and the caller moves on; the binding destroys the native connection in
+    `__del__` once the reference is dropped.
+    """
+    if connection is None:
+        return
+
+    def _close() -> None:
+        with contextlib.suppress(Exception):
+            connection.disconnect()
+
+    threading.Thread(target=_close, name="leap-detach", daemon=True).start()
+
+
 def _leap_lib() -> Any:
     """The external leap package, imported lazily; None when unavailable (e26s01)."""
     try:
@@ -9486,6 +9509,7 @@ def _leap_listener(lib: Any) -> Any:
                 state.leap_values.clear()
                 state.leap_values.update(snapshot)
             state.leap_status = "tracking"
+            state.leap_framerate = float(event.framerate)  # e48: diagnostics line
             state.leap_last_frame = time.time()  # e26s05: watchdog heartbeat
             if state.leap_stall_count:
                 # e26s05: a frame after an escalation = the stream is back.
@@ -9542,91 +9566,113 @@ def _leap_backoff_sleep(seconds: float) -> None:
         time.sleep(min(1.0, deadline - time.time()))
 
 
+def _leap_worker_iteration() -> None:
+    """One Leap-worker lifecycle pass (BUG-2026-09-18T212400).
+
+    Extracted from leap_control_loop so the loop can guard it: this body may
+    raise (a missing library, a wedged service, a library bug) and the guard keeps
+    the thread alive. The library's own poll thread (auto_poll=True) owns the
+    LeapC handshake and event loop — the official example pattern; our listener
+    normalizes tracking frames into state.leap_values.
+    """
+    state.leap_worker_tick = time.time()  # liveness heartbeat for the window
+    if not state.leap_enabled:
+        time.sleep(LEAP_IDLE_SLEEP_S)
+        return
+    lib = _leap_lib()
+    if lib is None:
+        if state.leap_status != "missing":
+            append_log("Leap", "library/service not available (leapc-python-api + Gemini)")
+        state.leap_status = "missing"
+        time.sleep(LEAP_MISSING_SLEEP_S)
+        return
+    # The generation captured BEFORE the connect: a restart clicked while this
+    # connection is being built is honoured on the next pass (the counter moved).
+    generation = state.leap_generation
+    connection: Any = None
+    try:
+        connection = lib.Connection()
+        connection.add_listener(_leap_listener(lib))
+        # NOTE: connection.open() is a @contextmanager — calling it without
+        # `with` is a silent no-op. connect() is the plain-method equivalent
+        # that keeps the connection open for this worker's keep-alive loop.
+        connection.connect(auto_poll=True, timeout=3)
+        connection.set_tracking_mode(lib.TrackingMode.Desktop)
+        state.leap_status = "connected"
+        state.leap_last_frame = time.time()  # e26s05: silence window starts fresh
+        state.leap_worker_tick = time.time()
+        append_log("Leap", "connected")
+        # e26s04: a persisted visualizer toggle asks for IR as soon as the
+        # (re)connection is up; afterwards the keep-alive below follows it.
+        if state.leap_visualizer:
+            _leap_set_images_policy(connection, lib, True)
+    except Exception as e:
+        log_error("Leap", f"connect: {e}")
+        _leap_detach(connection)
+        state.leap_status = "disconnected"
+        time.sleep(LEAP_RETRY_SLEEP_S)
+        return
+    # Keep the connection open while enabled; a lost service/device flips the
+    # status to disconnected (listener) so this loop exits and reconnects.
+    # The keep-alive also watches the visualizer toggle and sets/clears the
+    # LeapC Images policy on the live connection (no reconnect needed), the
+    # e26s05 watchdog (the service can wedge silently — evaluator frozen while the
+    # process + USB stay alive — with NO events arriving, so after
+    # LEAP_STALL_TIMEOUT of tracking silence this loop forces a reconnect) and the
+    # BUG-2026-09-18T212400 restart request (a generation bump).
+    viz_policy = bool(state.leap_visualizer)
+    stall_exit = False
+    while state.leap_enabled and state.leap_status != "disconnected":
+        state.leap_worker_tick = time.time()
+        if state.leap_generation != generation:
+            append_log("Leap", "restart requested - rebuilding the connection")
+            break
+        if leap.stall_detected(time.time(), state.leap_last_frame):
+            stall_exit = True
+            state.leap_stall_count += 1
+            state.leap_status = "disconnected"
+            if state.leap_stall_count == leap.LEAP_STALL_ESCALATION_COUNT:
+                append_log(
+                    "Leap",
+                    "tracking keeps stalling - press Restart engine, or restart "
+                    "the hand-tracking service / replug the device",
+                )
+            elif state.leap_stall_count < leap.LEAP_STALL_ESCALATION_COUNT:
+                append_log(
+                    "Leap",
+                    "tracking stalled (no frames for "
+                    f"{leap.LEAP_STALL_TIMEOUT:.0f}s) - reconnecting "
+                    f"(attempt {state.leap_stall_count})",
+                )
+            break
+        viz_now = bool(state.leap_visualizer)
+        if viz_now != viz_policy:
+            viz_policy = viz_now
+            _leap_set_images_policy(connection, lib, viz_now)
+        time.sleep(LEAP_KEEPALIVE_SLEEP_S)
+    _leap_detach(connection)
+    if stall_exit:
+        # a wedged service is not hot-looped: back off (fast, then slow),
+        # interruptibly so an engine-off during the backoff reacts quickly.
+        _leap_backoff_sleep(leap.stall_retry_wait(state.leap_stall_count))
+
+
 def leap_control_loop() -> None:
     """Leap Motion worker (e26s01): keep one auto-polling connection while enabled.
 
-    The library's own poll thread (auto_poll=True) owns the LeapC handshake and
-    event loop — the official example pattern; our listener normalizes tracking
-    frames into state.leap_values. The worker thread only manages the lifecycle:
-    open when enabled (retry/backoff on failure), watch the status, reconnect
-    after a loss, close when disabled.
+    BUG-2026-09-18T212400: the WHOLE lifecycle lives behind this guard. The body
+    used to run unguarded, so any exception outside the connect block killed the
+    thread silently — and because the Enable toggle only flips state.leap_enabled,
+    nobody was left to read it and the engine could never come back without an app
+    restart. A worker thread must never die (CONVENTIONS, defensive posture).
     """
-    missing_logged = False
     while True:
-        if not state.leap_enabled:
-            time.sleep(0.2)
-            continue
-        lib = _leap_lib()
-        if lib is None:
-            state.leap_status = "missing"
-            if not missing_logged:
-                append_log("Leap", "library/service not available (leapc-python-api + Gemini)")
-                missing_logged = True
-            time.sleep(5.0)
-            continue
-        missing_logged = False
-        connection: Any = None
         try:
-            connection = lib.Connection()
-            connection.add_listener(_leap_listener(lib))
-            # NOTE: connection.open() is a @contextmanager — calling it without
-            # `with` is a silent no-op. connect() is the plain-method equivalent
-            # that keeps the connection open for this worker's keep-alive loop.
-            connection.connect(auto_poll=True, timeout=3)
-            connection.set_tracking_mode(lib.TrackingMode.Desktop)
-            state.leap_status = "connected"
-            state.leap_last_frame = time.time()  # e26s05: silence window starts fresh
-            append_log("Leap", "connected")
-            # e26s04: a persisted visualizer toggle asks for IR as soon as the
-            # (re)connection is up; afterwards the keep-alive below follows it.
-            if state.leap_visualizer:
-                _leap_set_images_policy(connection, lib, True)
+            _leap_worker_iteration()
         except Exception as e:
-            log_error("Leap", f"connect: {e}")
-            with contextlib.suppress(Exception):
-                connection.disconnect()
-            state.leap_status = "disconnected"
-            time.sleep(2.0)
-            continue
-        # Keep the connection open while enabled; a lost service/device flips the
-        # status to disconnected (listener) so this loop exits and reconnects.
-        # The keep-alive also watches the visualizer toggle and sets/clears the
-        # LeapC Images policy on the live connection (no reconnect needed) and
-        # the e26s05 watchdog: the service can wedge silently (evaluator frozen
-        # while the process + USB stay alive) with NO events arriving, so after
-        # LEAP_STALL_TIMEOUT of tracking silence this loop forces a reconnect.
-        viz_policy = bool(state.leap_visualizer)
-        stall_exit = False
-        while state.leap_enabled and state.leap_status != "disconnected":
-            if leap.stall_detected(time.time(), state.leap_last_frame):
-                stall_exit = True
-                state.leap_stall_count += 1
-                state.leap_status = "disconnected"
-                if state.leap_stall_count == leap.LEAP_STALL_ESCALATION_COUNT:
-                    append_log(
-                        "Leap",
-                        "tracking keeps stalling - restart the hand-tracking "
-                        "service or replug the device",
-                    )
-                elif state.leap_stall_count < leap.LEAP_STALL_ESCALATION_COUNT:
-                    append_log(
-                        "Leap",
-                        "tracking stalled (no frames for "
-                        f"{leap.LEAP_STALL_TIMEOUT:.0f}s) - reconnecting "
-                        f"(attempt {state.leap_stall_count})",
-                    )
-                break
-            viz_now = bool(state.leap_visualizer)
-            if viz_now != viz_policy:
-                viz_policy = viz_now
-                _leap_set_images_policy(connection, lib, viz_now)
-            time.sleep(0.5)
-        with contextlib.suppress(Exception):
-            connection.disconnect()
-        if stall_exit:
-            # a wedged service is not hot-looped: back off (fast, then slow),
-            # interruptibly so an engine-off during the backoff reacts quickly.
-            _leap_backoff_sleep(leap.stall_retry_wait(state.leap_stall_count))
+            log_error("Leap", f"worker: {e}")
+            state.leap_worker_tick = time.time()
+            time.sleep(LEAP_WORKER_GUARD_SLEEP_S)
 
 
 def show_settings_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -9677,18 +9723,18 @@ def show_help_window(sender: Any = None, app_data: Any = None, user_data: Any = 
 
 # ---------- e17: window switching (Windows-menu list + Ctrl+Tab) ----------
 def _window_menu_entries() -> list[tuple[str, str]]:
-    """Windows in switching order: (tag, real window-title label).
+    """Windows in Ctrl+Tab switching order: (tag, label).
 
-    The main window (Step Sequencer) is always on screen and is not a switching
-    target; the workspace windows are appended live so the list (and Ctrl+Tab)
-    always match the windows that exist.
+    Every window icon in the bar is a switching target, in the bar's own order
+    (user decision 2026-09-19), so adding an icon adds it to the cycle without
+    touching this list. The transient preview joins while it is active. Only the
+    OPEN windows are actually cycled (the shown filter lives in on_cycle_window).
+
+    `_toolbar_window_items` is defined later in the module; this forward
+    reference is resolved at call time, never at import.
     """
     entries = [
-        ("sequencer_window", "Step Sequencer"),
-        ("audio_window", "Audio analyzer"),
-        ("vimix_media_window", "Vimix sources"),
-        ("logs_window", "Logs"),
-        ("mapper_window", "Mapper"),
+        (target, label) for _kind, target, _glyph, label, _shortcut in _toolbar_window_items()
     ]
     if state.preview_active is not None:  # the preview window exists while a preview is active
         entries.append((PREVIEW_WINDOW_TAG, "Preview"))
@@ -9704,6 +9750,10 @@ _FOCUS_TRACKED_WINDOWS: tuple[str, ...] = (
     "vimix_media_window",
     "logs_window",
     "mapper_window",
+    # BUG-2026-09-19T003052: both icon windows were missing here, so focusing
+    # them left the previously focused icon wearing the full accent.
+    "io_monitor_window",
+    "file_manager_window",
     "settings_window",
     "midi_window",
     "leap_window",
@@ -9745,29 +9795,69 @@ def _active_window_tag(tag: Any) -> str | None:
 
 _window_menu_sig: tuple[Any, ...] | None = None  # last (active, monitor tags) seen
 
+# BUG-2026-09-19T005453: Dear ImGui's built-in Ctrl+Tab panel lists every
+# visible root window and renders an unlabeled one as "(Untitled)". The bar is
+# the app's only unlabeled root window, so it showed up in that panel and could
+# be selected. ImGui's own filter is ImGuiWindowFlags_NoNavFocus, which
+# DearPyGui 2.3.1 does not expose (add_window/configure_item reject it, verified),
+# so while the panel is up the bar is simply NOT SUBMITTED — ImGui drops a window
+# absent from the previous frame (verified on a real display: a show=False window
+# is never listed) — and it is restored the moment Ctrl is released. The hide
+# waits just under ImGui's own 0.15 s panel delay, so a quick Ctrl+Tab tap never
+# blinks the bar.
+TOOLBAR_CTRL_TAB_HIDE_DELAY_SECONDS = 0.12
+_toolbar_ctrl_tab_held_since: float | None = None
+_toolbar_ctrl_tab_hidden = False
+
+
+def _keep_toolbar_out_of_window_switch(now: float | None = None) -> None:
+    """Keep the bar out of ImGui's Ctrl+Tab panel (BUG-2026-09-19T005453).
+
+    The bar is hidden while the panel is up and restored on Ctrl release. `now`
+    is injectable for the tests; production calls it with no argument.
+    """
+    global _toolbar_ctrl_tab_held_since, _toolbar_ctrl_tab_hidden
+    if not dpg.is_key_down(dpg.mvKey_ModCtrl):
+        _toolbar_ctrl_tab_held_since = None
+        if _toolbar_ctrl_tab_hidden:
+            _toolbar_ctrl_tab_hidden = False
+            if dpg.does_item_exist(TOOLBAR_BAR_TAG):
+                dpg.show_item(TOOLBAR_BAR_TAG)
+                reposition_toolbar()
+        return
+    if not dpg.is_key_down(dpg.mvKey_Tab):
+        return  # Ctrl held on its own: no window switching
+    moment = time.monotonic() if now is None else now
+    if _toolbar_ctrl_tab_held_since is None:
+        _toolbar_ctrl_tab_held_since = moment
+        return
+    if _toolbar_ctrl_tab_hidden:
+        return
+    if moment - _toolbar_ctrl_tab_held_since < TOOLBAR_CTRL_TAB_HIDE_DELAY_SECONDS:
+        return
+    if dpg.does_item_exist(TOOLBAR_BAR_TAG):
+        dpg.hide_item(TOOLBAR_BAR_TAG)
+        _toolbar_ctrl_tab_hidden = True
+
 
 def tick_toolbar() -> None:
     """Per-frame gate: repaint the toolbar highlight only when the state changed.
 
-    The signature is (tracked current window, shown window tags); anything else
-    the bar shows is static. We remember the last focused window: get_active_window()
+    The signature is (tracked current window, shown window tags of the BAR's
+    window items — BUG-2026-09-19T003052: the Ctrl+Tab list is a subset, so using
+    it left 6 icons stale); anything else the bar shows is static. We remember the
+    last focused window: get_active_window()
     reports arbitrary widgets (step pads, combos) and the open menu itself, so
     the track resolves the active item up to its app window and never clears on
     a menu/popup/None result (BUG-2026-09-01T194500).
     """
     global _window_menu_sig
+    _keep_toolbar_out_of_window_switch()
     active = dpg.get_active_window()
     window = _active_window_tag(active)
     if window is not None:
         state.current_window = window
-    sig = (
-        state.current_window,
-        tuple(
-            tag
-            for tag, _ in _window_menu_entries()
-            if dpg.does_item_exist(tag) and dpg.is_item_shown(tag)
-        ),
-    )
+    sig = (state.current_window, _toolbar_shown_signature())
     if sig != _window_menu_sig:
         _window_menu_sig = sig
         refresh_toolbar_icons()
@@ -9792,12 +9882,14 @@ def switch_to_window(sender: Any = None, app_data: Any = None, user_data: Any = 
 
 
 def on_cycle_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Ctrl+Tab / Ctrl+Shift+Tab: cycle through the SHOWN workspace windows.
+    """Ctrl+Tab / Ctrl+Shift+Tab: cycle through the OPEN windows, in bar order.
 
-    DPG 2.3.1 key handlers have no modifier support, so the wrapper checks the
-    modifier keys itself; Tab keeps its normal role while an input is focused.
-    The anchor is the tracked current window (not DPG get_active_window, which
-    is None while the menu bar has focus — BUG-2026-09-01T194500).
+    Every window icon is a stop (user decision 2026-09-19) and a hidden window
+    is skipped, so the cycle visits exactly the windows that are open. DPG 2.3.1
+    key handlers have no modifier support, so the wrapper checks the modifier
+    keys itself; Tab keeps its normal role while an input is focused. The anchor
+    is the tracked current window (not DPG get_active_window, which is None while
+    the menu bar has focus — BUG-2026-09-01T194500).
     """
     if not dpg.is_key_down(dpg.mvKey_ModCtrl) or _any_input_focused():
         return
@@ -10304,8 +10396,9 @@ with dpg.theme() as theme_mapper_compact, dpg.theme_component(dpg.mvAll):
 with dpg.theme() as theme_learn_marker, dpg.theme_component(dpg.mvButton):
     # e33: the red 'M' learn markers — the red text signals "bind this to MIDI"
     # and stands out from the dim card captions (fixed accent red on every
-    # palette; the markers only appear during a MIDI Learn session).
-    dpg.add_theme_color(dpg.mvThemeCol_Text, (225, 60, 60, 255))
+    # palette; the markers only appear during a MIDI Learn session). e47: the
+    # value comes from MIDI_LEARN_RED, shared with the toolbar's ON state.
+    dpg.add_theme_color(dpg.mvThemeCol_Text, MIDI_LEARN_RED_RGBA)
     dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 0, 0)
 
 with dpg.theme() as theme_learn_marker_armed, dpg.theme_component(dpg.mvButton):
@@ -10762,24 +10855,27 @@ with dpg.window(label="MIDI", width=520, height=520, pos=(560, 320), tag="midi_w
         dpg.group(tag="midi_mappings_group"),
     ):
         pass
-    dpg.add_spacer(height=4)
-    dpg.add_button(label="Save", callback=save_midi_controllers, width=80)
+    # BUG-2026-09-18T194658: no Save button here. Every mutation of this window
+    # (enable, add/remove a controller, the grid role, learn, delete, a monitor
+    # bind) calls save_midi_controllers() at the moment it happens, so a manual
+    # save only re-wrote identical data — and pressing it after opening a project
+    # leaked that project's Mapper bindings into the global config.
 
 # WINDOW 8: Leap Motion (hidden; opened from Settings > "Leap Motion"). One
 # window hosts EVERYTHING (user request, e26s02): the Enable switch, the
 # device/service status line and the LIVE two-hand value monitor — static rows
 # built ONCE at construction (one row per snapshot field, both hands), refreshed
 # by tick_leap_monitor on the main thread. e26s04 adds the embedded visualizer
-# toggle + hidden panel between the status line and the monitor; the window
-# stays COMPACT (560x680, never widens — user decision), the monitor child
-# shrinks when the panel is shown. Never touches the external leap package at
-# import time.
+# toggle + hidden panel between the status line and the monitor; the window stays
+# COMPACT (560x680, never widens — user decision). Never touches the external
+# leap package at import time.
+# e48s02 (user request): the monitor is FOUR columns — each hand on two — built
+# directly in the window with no inner scroll box, so the window's own scrollbar
+# is the only one.
 
 # e26s04: compact visualizer layout. The always-present toggle row costs the
-# monitor ~25 px; showing the 150-tall panel costs a further ~165 px and the
-# monitor scrolls (it is already a child_window).
-LEAP_MONITOR_H: int = 535
-LEAP_MONITOR_VIZ_H: int = 370
+# monitor ~25 px; the 150-tall panel costs a further ~165 px, absorbed by the
+# window scrollbar (e48s02).
 LEAP_VIZ_PANEL_H: int = 158
 with dpg.window(
     label="Leap Motion", width=560, height=680, pos=(560, 300), tag="leap_window", show=False
@@ -10790,9 +10886,19 @@ with dpg.window(
         default_value=state.leap_enabled,
         callback=on_leap_enable,
     )
+    # BUG-2026-09-18T212400: recovery control. The worker rebuilds its connection on
+    # the generation bump, so a stuck engine never needs an app restart.
+    dpg.add_button(
+        label="Restart engine",
+        tag="leap_restart_btn",
+        callback=on_leap_restart,
+        enabled=state.leap_enabled,
+    )
     dpg.add_separator()
     dpg.add_spacer(height=4)
     dpg.add_text("", tag="leap_status_text")
+    # e48: tracking frame rate (diagnostics; per frame, not per hand).
+    dpg.add_text("", tag="leap_fps_text")
     dpg.add_spacer(height=4)
     dpg.add_separator()
     dpg.add_checkbox(
@@ -10803,21 +10909,18 @@ with dpg.window(
     )
     with dpg.child_window(height=LEAP_VIZ_PANEL_H, show=False, tag="leap_viz_panel"):
         dpg.add_text("Waiting for the Leap device...", tag="leap_viz_wait_text")
-    with (
-        dpg.child_window(height=LEAP_MONITOR_H, tag="leap_monitor_scroll"),
-        dpg.group(horizontal=True),
-    ):
+    with dpg.group(horizontal=True, tag="leap_monitor_group"):
         for hand in leap.LEAP_HANDS:
-            with dpg.group(tag=f"leap_mon_{hand}_col"):
-                themed_text(f"{hand.capitalize()} hand", slot="text_bright")
-                for field in leap.LEAP_FIELDS:
-                    meta = leap.leap_field(field)
-                    with dpg.group(horizontal=True):
-                        themed_text(meta["label"], slot="text_dim")
-                        dpg.add_text(
-                            leap.LEAP_MONITOR_PLACEHOLDER,
-                            tag=f"leap_mon_{hand}_{field}",
-                        )
+            for column_index, column in enumerate(leap.monitor_columns()):
+                with dpg.group(tag=f"leap_mon_{hand}_col{column_index + 1}"):
+                    themed_text(leap.monitor_column_title(hand, column_index), slot="text_bright")
+                    for field in column:
+                        with dpg.group(horizontal=True):
+                            themed_text(leap.monitor_label(field), slot="text_dim")
+                            dpg.add_text(
+                                leap.LEAP_MONITOR_PLACEHOLDER,
+                                tag=f"leap_mon_{hand}_{field}",
+                            )
 
 # e16/e22/e23/e24: Mapper window — the body is rebuilt by refresh_mapper_ui()
 # (menu open, create, delete, prune, resize) as a stack of wrapping source
@@ -10991,6 +11094,7 @@ TOOLBAR_ITEM_GROUPS: tuple[tuple[ToolbarItem, ...], ...] = (
     (
         ("toggle", "settings_window", "\uf013", "Settings", ""),
         ("toggle", "midi_window", "\uf11c", "MIDI", ""),
+        ("mode", "midi_learn", "\uf140", "MIDI Learn", ""),
         ("toggle", "leap_window", "\uf256", "Leap Motion", ""),
         ("action", "pair", "\uf0c1", "Pair with viOSC...", ""),
     ),
@@ -11003,11 +11107,22 @@ TOOLBAR_THEME_ACTIVE = "theme_toolbar_active"
 TOOLBAR_THEME_FLAT = "theme_toolbar_flat"
 TOOLBAR_THEME_PLAIN = "theme_toolbar_plain"
 TOOLBAR_THEME_TOOLTIP = "theme_toolbar_tooltip"
+TOOLBAR_THEME_LEARN = "theme_toolbar_learn"
 TOOLBAR_BAR_MARGIN_RIGHT = 4
 TOOLBAR_ITEM_SPACING = 4
 TOOLBAR_BAR_PAD_X = 4
 TOOLBAR_BAR_PAD_Y = 3
 TOOLBAR_GROUP_GAP = 10
+# e47: the MIDI Learn mode item. The button tag mirrors `_toolbar_button_tag("mode",
+# "midi_learn")` — a test locks the two together — and the tooltip's text item is
+# tagged so the paint can reword it as the engine state changes.
+TOOLBAR_LEARN_BUTTON_TAG = "toolbar_mode_midi_learn"
+TOOLBAR_LEARN_TOOLTIP_TEXT_TAG = f"{TOOLBAR_LEARN_BUTTON_TAG}_tooltip_text"
+# ASCII only: ProggyClean renders U+2014 EM DASH as a fallback glyph, not a dash
+# (BUG-2026-09-18T193805; the e13s01 convention).
+TOOLBAR_LEARN_TIP_READY = "MIDI Learn: arm, then click a control to bind"
+TOOLBAR_LEARN_TIP_CANCEL = "Cancel MIDI Learn"
+TOOLBAR_LEARN_TIP_UNAVAILABLE = "MIDI Learn: enable MIDI first"
 toolbar_icon_font: Any = None
 _toolbar_geom_sig: tuple[int, int] | None = None
 
@@ -11090,6 +11205,20 @@ def _toolbar_window_items() -> list[ToolbarItem]:
     ]
 
 
+def _toolbar_shown_signature() -> tuple[str, ...]:
+    """The BAR's open windows, as the per-frame repaint gate (BUG-2026-09-19T003052).
+
+    Built from the bar's own window items, not from the Ctrl+Tab list: every
+    icon must repaint when its window opens or closes, and the Ctrl+Tab list
+    holds only the workspace windows.
+    """
+    return tuple(
+        target
+        for _kind, target, _glyph, _label, _shortcut in _toolbar_window_items()
+        if dpg.does_item_exist(target) and dpg.is_item_shown(target)
+    )
+
+
 def toolbar_bar_width() -> int:
     """The exact width of the icon row (e46s01).
 
@@ -11135,6 +11264,10 @@ def _build_main_toolbar() -> None:
         dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, _toolbar_color("accent", 80))
         dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, _toolbar_color("accent", 140))
         dpg.add_theme_color(dpg.mvThemeCol_Border, (0, 0, 0, 0))
+        # e47: the MIDI Learn icon greys out while the MIDI engine is off; the
+        # disabled text colour is palette-driven so it re-themes with the palette
+        # instead of falling back to an ImGui default on the transparent bar.
+        theme_color(dpg.mvThemeCol_TextDisabled, "text_dim")
         dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 0)
         dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 0)
     with dpg.theme(tag=TOOLBAR_THEME_OPEN), dpg.theme_component(dpg.mvThemeCat_Core):
@@ -11149,6 +11282,17 @@ def _build_main_toolbar() -> None:
         dpg.add_theme_color(dpg.mvThemeCol_Button, _toolbar_color("accent", 255))
         dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, _toolbar_color("accent", 255))
         dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, _toolbar_color("accent", 255))
+        dpg.add_theme_color(dpg.mvThemeCol_Border, (0, 0, 0, 0))
+        dpg.add_theme_color(dpg.mvThemeCol_BorderShadow, (0, 0, 0, 0))
+        dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 0)
+        dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 0)
+    with dpg.theme(tag=TOOLBAR_THEME_LEARN), dpg.theme_component(dpg.mvThemeCat_Core):
+        # e47: the MIDI Learn ON state wears the shared learn red on its button
+        # background. Deliberately NOT the accent — the full accent means "this
+        # window is active" on the icons next to it (ADR-midi-learn-entry-point).
+        dpg.add_theme_color(dpg.mvThemeCol_Button, MIDI_LEARN_RED_RGBA)
+        dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, MIDI_LEARN_RED_RGBA)
+        dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, MIDI_LEARN_RED_RGBA)
         dpg.add_theme_color(dpg.mvThemeCol_Border, (0, 0, 0, 0))
         dpg.add_theme_color(dpg.mvThemeCol_BorderShadow, (0, 0, 0, 0))
         dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 0)
@@ -11184,6 +11328,9 @@ def _build_main_toolbar() -> None:
     # has no background/border, and the workspace windows start at TOOLBAR_BAR_H.
     with (
         dpg.window(
+            # BUG-2026-09-19T005453: a label exists purely so ImGui's Ctrl+Tab
+            # panel never renders the bar as "(Untitled)" (no title bar shows it).
+            label="Toolbar",
             tag=TOOLBAR_BAR_TAG,
             no_title_bar=True,
             no_resize=True,
@@ -11217,10 +11364,16 @@ def _build_main_toolbar() -> None:
                 dpg.bind_item_theme(tag, TOOLBAR_THEME_FLAT)
                 tooltip_tag = f"{tag}_tooltip"
                 with dpg.tooltip(tag, tag=tooltip_tag):
-                    dpg.add_text(f"{label} ({shortcut})" if shortcut else label)
+                    dpg.add_text(
+                        f"{label} ({shortcut})" if shortcut else label,
+                        # e47: tagged so the mode item's tooltip can reword itself
+                        # as the engine state changes (see refresh_toolbar_learn_icon)
+                        tag=f"{tooltip_tag}_text",
+                    )
                 dpg.bind_item_theme(tooltip_tag, TOOLBAR_THEME_TOOLTIP)
             dpg.add_spacer(width=TOOLBAR_GROUP_GAP)
     dpg.bind_item_theme(TOOLBAR_BAR_TAG, TOOLBAR_THEME_PLAIN)
+    refresh_toolbar_learn_icon()  # e47: the learn item's boot state
 
 
 def on_toolbar_item(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -11235,10 +11388,18 @@ def on_toolbar_item(sender: Any = None, app_data: Any = None, user_data: Any = N
         show = _toolbar_show_func(target)
         if show is None:
             return
-        if dpg.is_item_shown(target):
+        # BUG-2026-09-19T002150: existence BEFORE the shown query. DearPyGui
+        # raises [1005] for a tag with no item, and the I/O Monitor is built
+        # lazily — an unguarded query aborted the callback on the first click.
+        if dpg.does_item_exist(target) and dpg.is_item_shown(target):
             dpg.hide_item(target)
             return
         show()
+        return
+    if kind == "mode":
+        # e47: a global MODE switch (MIDI Learn). It is not a window and not a
+        # binding target, so it runs the one shared toggle path.
+        {"midi_learn": toggle_midi_learn}.get(target, lambda *_: None)()
         return
     {
         "new_project": request_new_project,
@@ -11251,18 +11412,55 @@ def on_toolbar_item(sender: Any = None, app_data: Any = None, user_data: Any = N
 
 
 def refresh_toolbar_icons() -> None:
-    """Paint the open (soft) / active (full) accent on the window icons (e46s01)."""
+    """Paint the open (soft) / active (full) accent on the window icons (e46s01).
+
+    BUG-2026-09-19T003052: only an OPEN window wears an accent — state.current_window
+    keeps a hidden window's tag, so "open" is checked before the active mark.
+    """
     active = str(state.current_window or "")
     for kind, target, _glyph, _label, _shortcut in _toolbar_window_items():
         tag = _toolbar_button_tag(kind, target)
         if not dpg.does_item_exist(tag):
             continue
-        if target == active:
+        is_open = dpg.does_item_exist(target) and bool(dpg.is_item_shown(target))
+        if is_open and target == active:
             dpg.bind_item_theme(tag, TOOLBAR_THEME_ACTIVE)
-        elif dpg.does_item_exist(target) and dpg.is_item_shown(target):
+        elif is_open:
             dpg.bind_item_theme(tag, TOOLBAR_THEME_OPEN)
         else:
             dpg.bind_item_theme(tag, TOOLBAR_THEME_FLAT)
+
+
+def refresh_toolbar_learn_icon() -> None:
+    """Paint the MIDI Learn mode icon from the MIDI engine state (e47).
+
+    One global mode deserves one always-visible switch whose state is readable at
+    a glance (ADR-midi-learn-entry-point.md): plain/flat while ready, the shared
+    learn red while the mode is on, and greyed + non-clickable while MIDI is
+    disabled (user decision: the disabled affordance itself says the feature is
+    unavailable, and the bar never reflows as it would if the icon were hidden).
+    The tooltip always names the next step, so the refusal is never silent.
+
+    Called at the tails of the mode transitions and of the MIDI engine toggle
+    (toggle_midi_learn, _exit_midi_learn, on_midi_enable) and once after the bar
+    is built — never from a per-frame tick.
+    """
+    if not dpg.does_item_exist(TOOLBAR_LEARN_BUTTON_TAG):
+        return
+    enabled = bool(state.midi_enabled)
+    learning = enabled and bool(state.midi_learn_mode)
+    dpg.configure_item(TOOLBAR_LEARN_BUTTON_TAG, enabled=enabled)
+    dpg.bind_item_theme(
+        TOOLBAR_LEARN_BUTTON_TAG, TOOLBAR_THEME_LEARN if learning else TOOLBAR_THEME_FLAT
+    )
+    if not enabled:
+        tooltip = TOOLBAR_LEARN_TIP_UNAVAILABLE
+    elif learning:
+        tooltip = TOOLBAR_LEARN_TIP_CANCEL
+    else:
+        tooltip = TOOLBAR_LEARN_TIP_READY
+    if dpg.does_item_exist(TOOLBAR_LEARN_TOOLTIP_TEXT_TAG):
+        dpg.set_value(TOOLBAR_LEARN_TOOLTIP_TEXT_TAG, tooltip)
 
 
 def show_recent_projects_popup() -> None:

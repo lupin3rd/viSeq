@@ -37,7 +37,6 @@ from viseqapp.profiles import (
 from viseqapp.queues import append_log, log_error
 from viseqapp.state import (
     _controller_lock,
-    midi_bindings,
     midi_controllers,
     midi_selected_port,
     tracks_data,
@@ -98,8 +97,11 @@ def resolve_midi_message(
     if msg_type is None:
         return []
     channel = int(getattr(msg, "channel", 0))
+    # BUG-2026-09-18T194700: no legacy flat list any more — a caller that passes
+    # None simply has no bindings to match (the worker always passes the owning
+    # controller's list; an unowned port is reported as NOBIND by the monitor).
     if bindings is None:
-        bindings = list(midi_bindings)
+        bindings = []
     out: list[tuple[str, dict[str, Any], int]] = []
     for binding in bindings:
         if not _binding_device_ok(binding, port_name):
@@ -237,11 +239,16 @@ def selected_controller() -> dict[str, Any] | None:
 
 
 def selected_bindings() -> list[dict[str, Any]]:
-    """The bindings list the Bindings section edits (controller or legacy) (e14s03)."""
+    """The bindings list the Bindings section edits: the selected controller's.
+
+    BUG-2026-09-18T194700: bindings live on controllers only. With no controller
+    configured there is nothing to show, which is the honest empty state (the
+    legacy flat list this used to fall back to was never persisted).
+    """
     controller = selected_controller()
     if controller is not None:
         return controller.setdefault("bindings", [])
-    return midi_bindings
+    return []
 
 
 def midi_init_from_config(cfg: dict[str, Any]) -> None:
@@ -268,8 +275,6 @@ def midi_init_from_config(cfg: dict[str, Any]) -> None:
             }
         )
     midi_controllers[:] = rebuilt
-    # Legacy mirror so pre-e14 paths keep working until fully removed (e14s04).
-    midi_bindings[:] = rebuilt[0]["bindings"] if rebuilt else []
 
 
 def _migrate_legacy_controller(midi_cfg: dict[str, Any]) -> list[dict[str, Any]]:

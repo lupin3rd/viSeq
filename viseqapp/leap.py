@@ -19,6 +19,8 @@ a hand held still for 20 s while position/velocity read real values), so the
 driving + rescale ranges keep mappings usable).
 """
 
+import math
+import time
 from itertools import pairwise
 from typing import Any
 
@@ -32,7 +34,7 @@ from viseqapp.config import load_config, save_config
 LEAP_HANDS: tuple[str, ...] = ("left", "right")
 
 # Per-field metadata, one entry per normalized snapshot field. bindable=True
-# fields form the curated mapper catalog (18 per hand) and carry the default
+# fields form the curated mapper catalog (21 per hand, e48) and carry the default
 # input range seeded on a mapping bind; monitor-only fields (raw position,
 # distances, angles, timings) are shown by the live monitor but never bound.
 LEAP_FIELDS: dict[str, dict[str, Any]] = {
@@ -62,6 +64,7 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
     },
     "vel_x": {
         "label": "Velocity X",
+        "short": "Vel. X",
         "suffix": "mm/s",
         "decimals": 0,
         "bindable": True,
@@ -70,6 +73,7 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
     },
     "vel_y": {
         "label": "Velocity Y",
+        "short": "Vel. Y",
         "suffix": "mm/s",
         "decimals": 0,
         "bindable": True,
@@ -78,6 +82,7 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
     },
     "vel_z": {
         "label": "Velocity Z",
+        "short": "Vel. Z",
         "suffix": "mm/s",
         "decimals": 0,
         "bindable": True,
@@ -108,6 +113,33 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
         "input_from": -1.0,
         "input_to": 1.0,
     },
+    "dir_x": {
+        "label": "Direction X",
+        "short": "Dir. X",
+        "suffix": "",
+        "decimals": 2,
+        "bindable": True,
+        "input_from": -1.0,
+        "input_to": 1.0,
+    },
+    "dir_y": {
+        "label": "Direction Y",
+        "short": "Dir. Y",
+        "suffix": "",
+        "decimals": 2,
+        "bindable": True,
+        "input_from": -1.0,
+        "input_to": 1.0,
+    },
+    "dir_z": {
+        "label": "Direction Z",
+        "short": "Dir. Z",
+        "suffix": "",
+        "decimals": 2,
+        "bindable": True,
+        "input_from": -1.0,
+        "input_to": 1.0,
+    },
     "pinch": {
         "label": "Pinch",
         "suffix": "",
@@ -116,7 +148,13 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
         "input_from": 0.0,
         "input_to": 1.0,
     },
-    "pinch_dist": {"label": "Pinch dist.", "suffix": "mm", "decimals": 1, "bindable": False},
+    "pinch_dist": {
+        "label": "Pinch dist.",
+        "short": "Pinch d.",
+        "suffix": "mm",
+        "decimals": 1,
+        "bindable": False,
+    },
     "grab": {
         "label": "Grab",
         "suffix": "",
@@ -125,9 +163,16 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
         "input_from": 0.0,
         "input_to": 1.0,
     },
-    "grab_angle": {"label": "Grab angle", "suffix": "rad", "decimals": 2, "bindable": False},
+    "grab_angle": {
+        "label": "Grab angle",
+        "short": "Grab ang.",
+        "suffix": "rad",
+        "decimals": 2,
+        "bindable": False,
+    },
     "conf": {
         "label": "Confidence",
+        "short": "Conf.",
         "suffix": "",
         "decimals": 2,
         "bindable": True,
@@ -176,8 +221,59 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
         "input_from": 0.0,
         "input_to": 1.0,
     },
+    # e49: derived finger scalars — the continuous companion of ext_* plus one
+    # hand-opening aggregate. See finger_curl / hand_spread below.
+    "curl_thumb": {
+        "label": "Curl Thumb",
+        "suffix": "",
+        "decimals": 2,
+        "bindable": True,
+        "input_from": 0.0,
+        "input_to": 1.0,
+    },
+    "curl_index": {
+        "label": "Curl Index",
+        "suffix": "",
+        "decimals": 2,
+        "bindable": True,
+        "input_from": 0.0,
+        "input_to": 1.0,
+    },
+    "curl_middle": {
+        "label": "Curl Middle",
+        "suffix": "",
+        "decimals": 2,
+        "bindable": True,
+        "input_from": 0.0,
+        "input_to": 1.0,
+    },
+    "curl_ring": {
+        "label": "Curl Ring",
+        "suffix": "",
+        "decimals": 2,
+        "bindable": True,
+        "input_from": 0.0,
+        "input_to": 1.0,
+    },
+    "curl_pinky": {
+        "label": "Curl Pinky",
+        "suffix": "",
+        "decimals": 2,
+        "bindable": True,
+        "input_from": 0.0,
+        "input_to": 1.0,
+    },
+    "spread": {
+        "label": "Spread",
+        "suffix": "mm",
+        "decimals": 1,
+        "bindable": True,
+        "input_from": 0.0,
+        "input_to": 100.0,
+    },
     "present": {
         "label": "Hand present",
+        "short": "Present",
         "suffix": "",
         "decimals": 0,
         "bindable": True,
@@ -186,13 +282,79 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
     },
 }
 
+# e48s02: the monitor renders each hand as TWO columns (four in total) so the
+# window fits without an inner scroll box (user request 2026-09-19). The split is
+# declarative and total: every LEAP_FIELDS key appears in exactly one column, a
+# fact the suite asserts, so a new field cannot silently vanish from the monitor.
+LEAP_MONITOR_COLUMNS: tuple[tuple[str, ...], ...] = (
+    (
+        "present",
+        "palm_x",
+        "palm_y",
+        "palm_z",
+        "vel_x",
+        "vel_y",
+        "vel_z",
+        "nrm_x",
+        "nrm_y",
+        "nrm_z",
+        "dir_x",
+        "dir_y",
+        "dir_z",
+        "width",
+        "conf",
+        "visible",
+    ),
+    (
+        "pinch",
+        "pinch_dist",
+        "grab",
+        "grab_angle",
+        "ext_thumb",
+        "ext_index",
+        "ext_middle",
+        "ext_ring",
+        "ext_pinky",
+        "curl_thumb",
+        "curl_index",
+        "curl_middle",
+        "curl_ring",
+        "curl_pinky",
+        "spread",
+    ),
+)
+# Column titles, prefixed with the hand name by monitor_column_title().
+# e48s04: 'grip & arm' became 'grip' — the arm rows went (see the epic delta).
+LEAP_MONITOR_COLUMN_TITLES: tuple[str, ...] = ("hand", "grip")
+
 # Digit order of hand.digits (thumb..pinky) maps onto the ext_* field names.
 _FINGER_FIELDS: tuple[str, ...] = ("thumb", "index", "middle", "ring", "pinky")
+
+# e49: curl normalization. A finger whose MEAN inter-bone bend reaches one fully
+# flexed joint reads 1.0 (the mean keeps the thumb's zero-length metacarpal
+# harmless: it simply contributes no joint). Grounded in the skeletal model the
+# vendor websocket renders (metacarpal -> proximal -> intermediate -> distal).
+LEAP_CURL_FULL_BEND_DEG: float = 90.0
+
+# e49: spread normalization — the seed range for the hand-opening signal (mm).
+LEAP_SPREAD_MAX_MM: float = 100.0
+
+# BUG-2026-09-18T212400: a worker that stops ticking is dead or blocked — it ticks
+# on every pass and every keep-alive interval. The limit covers the longest
+# internal sleep (the 5 s missing-library retry).
+LEAP_WORKER_STALE_S: float = 8.0
+
+# e48: LeapC documents LEAP_HAND.visible_time in MICROSECONDS; the snapshot and
+# the monitor expose seconds (the 'visible' field metadata says 's').
+LEAP_MICROS_PER_SECOND: float = 1_000_000.0
 
 # e26s02: placeholder the live monitor shows while a hand is absent (no key in
 # the snapshot) or the engine is disabled. ASCII hyphen: U+2014 em dash renders
 # as a fallback glyph in ProggyClean (e13s01 convention).
 LEAP_MONITOR_PLACEHOLDER: str = "-"
+
+# e48: the frame-rate diagnostics line (per frame, not per hand).
+LEAP_FPS_DECIMALS: int = 1
 
 
 def format_value(field: str, value: float) -> str:
@@ -207,10 +369,83 @@ def format_value(field: str, value: float) -> str:
     return f"{text} {suffix}" if suffix else text
 
 
-def leap_status_label(enabled: bool, status: str) -> str:
-    """Status line text for the Leap Motion window (e26s02)."""
+def format_framerate(value: float) -> str:
+    """Render the tracking frame rate for the window's diagnostics line (e48).
+
+    A stopped or absent stream (0.0, or a negative sample) shows the placeholder
+    so a stale rate is never displayed as a live one: 114.26 -> '114.3 fps'.
+    """
+    if value <= 0.0:
+        return LEAP_MONITOR_PLACEHOLDER
+    return f"{float(value):.{LEAP_FPS_DECIMALS}f} fps"
+
+
+def _bone_direction(bone: Any) -> np.ndarray | None:
+    """Unit direction of one bone, or None for a zero-length bone (e49).
+
+    Ultraleap documents the thumb metacarpal as zero length, so the degenerate
+    case is a normal state, not an error: it contributes no direction.
+    """
+    prev, nxt = bone.prev_joint, bone.next_joint
+    delta = np.array([nxt.x - prev.x, nxt.y - prev.y, nxt.z - prev.z], dtype=float)
+    norm = float(np.linalg.norm(delta))
+    return None if norm == 0.0 else delta / norm
+
+
+def finger_curl(digit: Any) -> float:
+    """How bent one finger is, 0..1 (e49, pure and stateless).
+
+    The mean angle between consecutive bone directions, divided by
+    LEAP_CURL_FULL_BEND_DEG: an extended finger is collinear (0.0), a finger
+    flexing a single joint by a full bend reads 1.0. Orientation-free (only
+    relative directions) and computed from ONE frame.
+    """
+    directions = [d for d in (_bone_direction(bone) for bone in digit.bones) if d is not None]
+    angles = [
+        math.degrees(math.acos(min(1.0, max(-1.0, float(np.dot(first, second))))))
+        for first, second in pairwise(directions)
+    ]
+    if not angles:
+        return 0.0
+    mean_bend = sum(angles) / len(angles)
+    return min(1.0, max(0.0, mean_bend / LEAP_CURL_FULL_BEND_DEG))
+
+
+def hand_spread(hand: Any) -> float:
+    """Mean distance between adjacent fingertips in mm (e49, pure and stateless).
+
+    Uses the chain end the vendor protocol publishes as ``tipPosition``
+    (``distal.next_joint``): a fist reads ~0, a splayed hand tens of mm. Fewer
+    than two tips cannot spread and read 0.0.
+    """
+    tips = [
+        np.array(
+            [
+                digit.distal.next_joint.x,
+                digit.distal.next_joint.y,
+                digit.distal.next_joint.z,
+            ],
+            dtype=float,
+        )
+        for digit in hand.digits
+    ]
+    if len(tips) < 2:
+        return 0.0
+    gaps = [float(np.linalg.norm(second - first)) for first, second in pairwise(tips)]
+    return sum(gaps) / len(gaps)
+
+
+def leap_status_label(enabled: bool, status: str, *, stalled: bool = False) -> str:
+    """Status line text for the Leap Motion window (e26s02).
+
+    ``stalled`` (BUG-2026-09-18T212400) overrides the engine status: it means the
+    worker itself stopped ticking, so the last status is stale information and
+    must not be shown as if it were live.
+    """
     if not enabled:
         return "Disabled"
+    if stalled:
+        return "Engine stalled - press Restart engine"
     labels = {
         "missing": "Leap library/service not available",
         "disconnected": "Disconnected - retrying...",
@@ -255,6 +490,23 @@ def drive_ready(
 def leap_field(field: str) -> dict[str, Any]:
     """The metadata entry for a snapshot field (KeyError = catalog bug)."""
     return LEAP_FIELDS[field]
+
+
+def monitor_label(field: str) -> str:
+    """The MONITOR label for a field: the compact `short` form when it has one
+    (e48s02), otherwise the full label the Mapper picker shows."""
+    meta = leap_field(field)
+    return str(meta.get("short") or meta["label"])
+
+
+def monitor_columns() -> tuple[tuple[str, ...], ...]:
+    """The per-hand monitor column split (e48s02): two tuples of field keys."""
+    return LEAP_MONITOR_COLUMNS
+
+
+def monitor_column_title(hand: str, index: int) -> str:
+    """The themed header of one monitor column ('Left grip')."""
+    return f"{hand.capitalize()} {LEAP_MONITOR_COLUMN_TITLES[index]}"
 
 
 def bindable_signals() -> tuple[str, ...]:
@@ -305,14 +557,17 @@ def normalize_tracking_event(event: Any) -> dict[str, float]:
     Keys are ``<hand>.<field>`` for EVERY present hand plus
     ``<hand>.present = 1.0``. The raw palm position feeds the palm_* keys
     (stabilized_position is never populated by the Gemini 5.17.1.0 service on
-    the original controller — module docstring). A frame with no hands yields
-    an empty dict; absent hands produce no keys.
+    the original controller — module docstring). e48 adds the palm ``direction``
+    axis (dir_*) and converts ``visible_time`` from microseconds to seconds; the
+    arm bone was tried in e48s01 and removed in e48s04 (estimated by the service
+    when the elbow is out of view, and the wrist duplicates the palm base).
+    A frame with no hands yields an empty dict; absent hands produce no keys.
     """
     out: dict[str, float] = {}
     for hand in event.hands or []:
         side = _hand_side(hand)
         palm = hand.palm
-        pos, vel, nrm = palm.position, palm.velocity, palm.normal
+        pos, vel, nrm, direction = palm.position, palm.velocity, palm.normal, palm.direction
         out.update(
             {
                 f"{side}.present": 1.0,
@@ -325,18 +580,23 @@ def normalize_tracking_event(event: Any) -> dict[str, float]:
                 f"{side}.nrm_x": float(nrm.x),
                 f"{side}.nrm_y": float(nrm.y),
                 f"{side}.nrm_z": float(nrm.z),
+                f"{side}.dir_x": float(direction.x),
+                f"{side}.dir_y": float(direction.y),
+                f"{side}.dir_z": float(direction.z),
                 f"{side}.pinch": float(hand.pinch_strength),
                 f"{side}.pinch_dist": float(hand.pinch_distance),
                 f"{side}.grab": float(hand.grab_strength),
                 f"{side}.grab_angle": float(hand.grab_angle),
                 f"{side}.conf": float(hand.confidence),
-                f"{side}.visible": float(hand.visible_time),
+                f"{side}.visible": float(hand.visible_time) / LEAP_MICROS_PER_SECOND,
                 f"{side}.width": float(palm.width),
             }
         )
         for idx, finger in enumerate(_FINGER_FIELDS):
-            extended = bool(hand.digits[idx].is_extended)
-            out[f"{side}.ext_{finger}"] = 1.0 if extended else 0.0
+            digit = hand.digits[idx]
+            out[f"{side}.ext_{finger}"] = 1.0 if bool(digit.is_extended) else 0.0
+            out[f"{side}.curl_{finger}"] = finger_curl(digit)
+        out[f"{side}.spread"] = hand_spread(hand)
     return out
 
 
@@ -358,6 +618,31 @@ def set_leap_enabled(enabled: bool) -> None:
     cfg = load_config()
     cfg["leap"]["enabled"] = bool(enabled)
     save_config(cfg)
+
+
+def leap_engine_stalled(now: float, tick: float) -> bool:
+    """Has the Leap worker stopped ticking? (BUG-2026-09-18T212400, pure)
+
+    A tick of 0.0 means the worker never ran (or has not been enabled yet), which
+    is as stalled as one that went silent: the predicate is called only while the
+    engine is enabled.
+    """
+    return now - tick > LEAP_WORKER_STALE_S
+
+
+def restart_leap_engine() -> None:
+    """Force the Leap worker to rebuild its connection (BUG-2026-09-18T212400).
+
+    The generation bump makes the worker leave its keep-alive loop, tear the old
+    connection down off-thread and open a fresh one; the stall counter resets so
+    the backoff ladder starts over, and the tick is stamped so the status line
+    does not flash 'stalled' while the rebuild runs. No device call happens here
+    (the worker owns the connection, mirroring set_leap_enabled).
+    """
+    state.leap_generation += 1
+    state.leap_stall_count = 0
+    state.leap_worker_tick = time.time()
+    state.leap_status = "disconnected"
 
 
 def set_leap_visualizer(enabled: bool) -> None:
