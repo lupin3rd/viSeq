@@ -9747,6 +9747,10 @@ _FOCUS_TRACKED_WINDOWS: tuple[str, ...] = (
     "vimix_media_window",
     "logs_window",
     "mapper_window",
+    # BUG-2026-09-19T003052: both icon windows were missing here, so focusing
+    # them left the previously focused icon wearing the full accent.
+    "io_monitor_window",
+    "file_manager_window",
     "settings_window",
     "midi_window",
     "leap_window",
@@ -9792,8 +9796,10 @@ _window_menu_sig: tuple[Any, ...] | None = None  # last (active, monitor tags) s
 def tick_toolbar() -> None:
     """Per-frame gate: repaint the toolbar highlight only when the state changed.
 
-    The signature is (tracked current window, shown window tags); anything else
-    the bar shows is static. We remember the last focused window: get_active_window()
+    The signature is (tracked current window, shown window tags of the BAR's
+    window items — BUG-2026-09-19T003052: the Ctrl+Tab list is a subset, so using
+    it left 6 icons stale); anything else the bar shows is static. We remember the
+    last focused window: get_active_window()
     reports arbitrary widgets (step pads, combos) and the open menu itself, so
     the track resolves the active item up to its app window and never clears on
     a menu/popup/None result (BUG-2026-09-01T194500).
@@ -9803,14 +9809,7 @@ def tick_toolbar() -> None:
     window = _active_window_tag(active)
     if window is not None:
         state.current_window = window
-    sig = (
-        state.current_window,
-        tuple(
-            tag
-            for tag, _ in _window_menu_entries()
-            if dpg.does_item_exist(tag) and dpg.is_item_shown(tag)
-        ),
-    )
+    sig = (state.current_window, _toolbar_shown_signature())
     if sig != _window_menu_sig:
         _window_menu_sig = sig
         refresh_toolbar_icons()
@@ -11156,6 +11155,20 @@ def _toolbar_window_items() -> list[ToolbarItem]:
     ]
 
 
+def _toolbar_shown_signature() -> tuple[str, ...]:
+    """The BAR's open windows, as the per-frame repaint gate (BUG-2026-09-19T003052).
+
+    Built from the bar's own window items, not from the Ctrl+Tab list: every
+    icon must repaint when its window opens or closes, and the Ctrl+Tab list
+    holds only the workspace windows.
+    """
+    return tuple(
+        target
+        for _kind, target, _glyph, _label, _shortcut in _toolbar_window_items()
+        if dpg.does_item_exist(target) and dpg.is_item_shown(target)
+    )
+
+
 def toolbar_bar_width() -> int:
     """The exact width of the icon row (e46s01).
 
@@ -11346,15 +11359,20 @@ def on_toolbar_item(sender: Any = None, app_data: Any = None, user_data: Any = N
 
 
 def refresh_toolbar_icons() -> None:
-    """Paint the open (soft) / active (full) accent on the window icons (e46s01)."""
+    """Paint the open (soft) / active (full) accent on the window icons (e46s01).
+
+    BUG-2026-09-19T003052: only an OPEN window wears an accent — state.current_window
+    keeps a hidden window's tag, so "open" is checked before the active mark.
+    """
     active = str(state.current_window or "")
     for kind, target, _glyph, _label, _shortcut in _toolbar_window_items():
         tag = _toolbar_button_tag(kind, target)
         if not dpg.does_item_exist(tag):
             continue
-        if target == active:
+        is_open = dpg.does_item_exist(target) and bool(dpg.is_item_shown(target))
+        if is_open and target == active:
             dpg.bind_item_theme(tag, TOOLBAR_THEME_ACTIVE)
-        elif dpg.does_item_exist(target) and dpg.is_item_shown(target):
+        elif is_open:
             dpg.bind_item_theme(tag, TOOLBAR_THEME_OPEN)
         else:
             dpg.bind_item_theme(tag, TOOLBAR_THEME_FLAT)
