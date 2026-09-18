@@ -9792,6 +9792,50 @@ def _active_window_tag(tag: Any) -> str | None:
 
 _window_menu_sig: tuple[Any, ...] | None = None  # last (active, monitor tags) seen
 
+# BUG-2026-09-19T005453: Dear ImGui's built-in Ctrl+Tab panel lists every
+# visible root window and renders an unlabeled one as "(Untitled)". The bar is
+# the app's only unlabeled root window, so it showed up in that panel and could
+# be selected. ImGui's own filter is ImGuiWindowFlags_NoNavFocus, which
+# DearPyGui 2.3.1 does not expose (add_window/configure_item reject it, verified),
+# so while the panel is up the bar is simply NOT SUBMITTED — ImGui drops a window
+# absent from the previous frame (verified on a real display: a show=False window
+# is never listed) — and it is restored the moment Ctrl is released. The hide
+# waits just under ImGui's own 0.15 s panel delay, so a quick Ctrl+Tab tap never
+# blinks the bar.
+TOOLBAR_CTRL_TAB_HIDE_DELAY_SECONDS = 0.12
+_toolbar_ctrl_tab_held_since: float | None = None
+_toolbar_ctrl_tab_hidden = False
+
+
+def _keep_toolbar_out_of_window_switch(now: float | None = None) -> None:
+    """Keep the bar out of ImGui's Ctrl+Tab panel (BUG-2026-09-19T005453).
+
+    The bar is hidden while the panel is up and restored on Ctrl release. `now`
+    is injectable for the tests; production calls it with no argument.
+    """
+    global _toolbar_ctrl_tab_held_since, _toolbar_ctrl_tab_hidden
+    if not dpg.is_key_down(dpg.mvKey_ModCtrl):
+        _toolbar_ctrl_tab_held_since = None
+        if _toolbar_ctrl_tab_hidden:
+            _toolbar_ctrl_tab_hidden = False
+            if dpg.does_item_exist(TOOLBAR_BAR_TAG):
+                dpg.show_item(TOOLBAR_BAR_TAG)
+                reposition_toolbar()
+        return
+    if not dpg.is_key_down(dpg.mvKey_Tab):
+        return  # Ctrl held on its own: no window switching
+    moment = time.monotonic() if now is None else now
+    if _toolbar_ctrl_tab_held_since is None:
+        _toolbar_ctrl_tab_held_since = moment
+        return
+    if _toolbar_ctrl_tab_hidden:
+        return
+    if moment - _toolbar_ctrl_tab_held_since < TOOLBAR_CTRL_TAB_HIDE_DELAY_SECONDS:
+        return
+    if dpg.does_item_exist(TOOLBAR_BAR_TAG):
+        dpg.hide_item(TOOLBAR_BAR_TAG)
+        _toolbar_ctrl_tab_hidden = True
+
 
 def tick_toolbar() -> None:
     """Per-frame gate: repaint the toolbar highlight only when the state changed.
@@ -9805,6 +9849,7 @@ def tick_toolbar() -> None:
     a menu/popup/None result (BUG-2026-09-01T194500).
     """
     global _window_menu_sig
+    _keep_toolbar_out_of_window_switch()
     active = dpg.get_active_window()
     window = _active_window_tag(active)
     if window is not None:
@@ -11280,6 +11325,9 @@ def _build_main_toolbar() -> None:
     # has no background/border, and the workspace windows start at TOOLBAR_BAR_H.
     with (
         dpg.window(
+            # BUG-2026-09-19T005453: a label exists purely so ImGui's Ctrl+Tab
+            # panel never renders the bar as "(Untitled)" (no title bar shows it).
+            label="Toolbar",
             tag=TOOLBAR_BAR_TAG,
             no_title_bar=True,
             no_resize=True,
