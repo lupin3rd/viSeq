@@ -19,6 +19,7 @@ a hand held still for 20 s while position/velocity read real values), so the
 driving + rescale ranges keep mappings usable).
 """
 
+import math
 from itertools import pairwise
 from typing import Any
 
@@ -219,6 +220,56 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
         "input_from": 0.0,
         "input_to": 1.0,
     },
+    # e49: derived finger scalars — the continuous companion of ext_* plus one
+    # hand-opening aggregate. See finger_curl / hand_spread below.
+    "curl_thumb": {
+        "label": "Curl Thumb",
+        "suffix": "",
+        "decimals": 2,
+        "bindable": True,
+        "input_from": 0.0,
+        "input_to": 1.0,
+    },
+    "curl_index": {
+        "label": "Curl Index",
+        "suffix": "",
+        "decimals": 2,
+        "bindable": True,
+        "input_from": 0.0,
+        "input_to": 1.0,
+    },
+    "curl_middle": {
+        "label": "Curl Middle",
+        "suffix": "",
+        "decimals": 2,
+        "bindable": True,
+        "input_from": 0.0,
+        "input_to": 1.0,
+    },
+    "curl_ring": {
+        "label": "Curl Ring",
+        "suffix": "",
+        "decimals": 2,
+        "bindable": True,
+        "input_from": 0.0,
+        "input_to": 1.0,
+    },
+    "curl_pinky": {
+        "label": "Curl Pinky",
+        "suffix": "",
+        "decimals": 2,
+        "bindable": True,
+        "input_from": 0.0,
+        "input_to": 1.0,
+    },
+    "spread": {
+        "label": "Spread",
+        "suffix": "mm",
+        "decimals": 1,
+        "bindable": True,
+        "input_from": 0.0,
+        "input_to": 100.0,
+    },
     "present": {
         "label": "Hand present",
         "short": "Present",
@@ -263,6 +314,12 @@ LEAP_MONITOR_COLUMNS: tuple[tuple[str, ...], ...] = (
         "ext_middle",
         "ext_ring",
         "ext_pinky",
+        "curl_thumb",
+        "curl_index",
+        "curl_middle",
+        "curl_ring",
+        "curl_pinky",
+        "spread",
     ),
 )
 # Column titles, prefixed with the hand name by monitor_column_title().
@@ -271,6 +328,15 @@ LEAP_MONITOR_COLUMN_TITLES: tuple[str, ...] = ("hand", "grip")
 
 # Digit order of hand.digits (thumb..pinky) maps onto the ext_* field names.
 _FINGER_FIELDS: tuple[str, ...] = ("thumb", "index", "middle", "ring", "pinky")
+
+# e49: curl normalization. A finger whose MEAN inter-bone bend reaches one fully
+# flexed joint reads 1.0 (the mean keeps the thumb's zero-length metacarpal
+# harmless: it simply contributes no joint). Grounded in the skeletal model the
+# vendor websocket renders (metacarpal -> proximal -> intermediate -> distal).
+LEAP_CURL_FULL_BEND_DEG: float = 90.0
+
+# e49: spread normalization — the seed range for the hand-opening signal (mm).
+LEAP_SPREAD_MAX_MM: float = 100.0
 
 # e48: LeapC documents LEAP_HAND.visible_time in MICROSECONDS; the snapshot and
 # the monitor expose seconds (the 'visible' field metadata says 's').
@@ -306,6 +372,61 @@ def format_framerate(value: float) -> str:
     if value <= 0.0:
         return LEAP_MONITOR_PLACEHOLDER
     return f"{float(value):.{LEAP_FPS_DECIMALS}f} fps"
+
+
+def _bone_direction(bone: Any) -> np.ndarray | None:
+    """Unit direction of one bone, or None for a zero-length bone (e49).
+
+    Ultraleap documents the thumb metacarpal as zero length, so the degenerate
+    case is a normal state, not an error: it contributes no direction.
+    """
+    prev, nxt = bone.prev_joint, bone.next_joint
+    delta = np.array([nxt.x - prev.x, nxt.y - prev.y, nxt.z - prev.z], dtype=float)
+    norm = float(np.linalg.norm(delta))
+    return None if norm == 0.0 else delta / norm
+
+
+def finger_curl(digit: Any) -> float:
+    """How bent one finger is, 0..1 (e49, pure and stateless).
+
+    The mean angle between consecutive bone directions, divided by
+    LEAP_CURL_FULL_BEND_DEG: an extended finger is collinear (0.0), a finger
+    flexing a single joint by a full bend reads 1.0. Orientation-free (only
+    relative directions) and computed from ONE frame.
+    """
+    directions = [d for d in (_bone_direction(bone) for bone in digit.bones) if d is not None]
+    angles = [
+        math.degrees(math.acos(min(1.0, max(-1.0, float(np.dot(first, second))))))
+        for first, second in pairwise(directions)
+    ]
+    if not angles:
+        return 0.0
+    mean_bend = sum(angles) / len(angles)
+    return min(1.0, max(0.0, mean_bend / LEAP_CURL_FULL_BEND_DEG))
+
+
+def hand_spread(hand: Any) -> float:
+    """Mean distance between adjacent fingertips in mm (e49, pure and stateless).
+
+    Uses the chain end the vendor protocol publishes as ``tipPosition``
+    (``distal.next_joint``): a fist reads ~0, a splayed hand tens of mm. Fewer
+    than two tips cannot spread and read 0.0.
+    """
+    tips = [
+        np.array(
+            [
+                digit.distal.next_joint.x,
+                digit.distal.next_joint.y,
+                digit.distal.next_joint.z,
+            ],
+            dtype=float,
+        )
+        for digit in hand.digits
+    ]
+    if len(tips) < 2:
+        return 0.0
+    gaps = [float(np.linalg.norm(second - first)) for first, second in pairwise(tips)]
+    return sum(gaps) / len(gaps)
 
 
 def leap_status_label(enabled: bool, status: str) -> str:
@@ -459,8 +580,10 @@ def normalize_tracking_event(event: Any) -> dict[str, float]:
             }
         )
         for idx, finger in enumerate(_FINGER_FIELDS):
-            extended = bool(hand.digits[idx].is_extended)
-            out[f"{side}.ext_{finger}"] = 1.0 if extended else 0.0
+            digit = hand.digits[idx]
+            out[f"{side}.ext_{finger}"] = 1.0 if bool(digit.is_extended) else 0.0
+            out[f"{side}.curl_{finger}"] = finger_curl(digit)
+        out[f"{side}.spread"] = hand_spread(hand)
     return out
 
 
