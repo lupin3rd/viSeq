@@ -6487,6 +6487,10 @@ def tick_leap_monitor() -> None:
         return
     enabled = state.leap_enabled
     _leap_monitor_set_text("leap_status_text", leap.leap_status_label(enabled, state.leap_status))
+    # e48: frame rate is a per-frame diagnostic, not a per-hand signal.
+    _leap_monitor_set_text(
+        "leap_fps_text", leap.format_framerate(state.leap_framerate if enabled else 0.0)
+    )
     if enabled:
         with state.leap_lock:
             snapshot = dict(state.leap_values)
@@ -9451,6 +9455,7 @@ def _leap_listener(lib: Any) -> Any:
                 state.leap_values.clear()
                 state.leap_values.update(snapshot)
             state.leap_status = "tracking"
+            state.leap_framerate = float(event.framerate)  # e48: diagnostics line
             state.leap_last_frame = time.time()  # e26s05: watchdog heartbeat
             if state.leap_stall_count:
                 # e26s05: a frame after an escalation = the stream is back.
@@ -10762,6 +10767,8 @@ with dpg.window(
     dpg.add_separator()
     dpg.add_spacer(height=4)
     dpg.add_text("", tag="leap_status_text")
+    # e48: tracking frame rate (diagnostics; per frame, not per hand).
+    dpg.add_text("", tag="leap_fps_text")
     dpg.add_spacer(height=4)
     dpg.add_separator()
     dpg.add_checkbox(

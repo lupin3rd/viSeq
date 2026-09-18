@@ -32,7 +32,7 @@ from viseqapp.config import load_config, save_config
 LEAP_HANDS: tuple[str, ...] = ("left", "right")
 
 # Per-field metadata, one entry per normalized snapshot field. bindable=True
-# fields form the curated mapper catalog (18 per hand) and carry the default
+# fields form the curated mapper catalog (21 per hand, e48) and carry the default
 # input range seeded on a mapping bind; monitor-only fields (raw position,
 # distances, angles, timings) are shown by the live monitor but never bound.
 LEAP_FIELDS: dict[str, dict[str, Any]] = {
@@ -108,6 +108,30 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
         "input_from": -1.0,
         "input_to": 1.0,
     },
+    "dir_x": {
+        "label": "Direction X",
+        "suffix": "",
+        "decimals": 2,
+        "bindable": True,
+        "input_from": -1.0,
+        "input_to": 1.0,
+    },
+    "dir_y": {
+        "label": "Direction Y",
+        "suffix": "",
+        "decimals": 2,
+        "bindable": True,
+        "input_from": -1.0,
+        "input_to": 1.0,
+    },
+    "dir_z": {
+        "label": "Direction Z",
+        "suffix": "",
+        "decimals": 2,
+        "bindable": True,
+        "input_from": -1.0,
+        "input_to": 1.0,
+    },
     "pinch": {
         "label": "Pinch",
         "suffix": "",
@@ -136,6 +160,17 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
     },
     "visible": {"label": "Visible", "suffix": "s", "decimals": 2, "bindable": False},
     "width": {"label": "Width", "suffix": "mm", "decimals": 1, "bindable": False},
+    # e48: the arm bone (LEAP_HAND.arm): prev_joint = elbow, next_joint = wrist.
+    # MONITOR-ONLY until the rig proves this service populates them: the same
+    # Gemini 5.17.1.0 firmware leaves stabilized_position at zero, so a
+    # documented field is not evidence of live data (see the epic decision).
+    "arm_elbow_x": {"label": "Elbow X", "suffix": "mm", "decimals": 1, "bindable": False},
+    "arm_elbow_y": {"label": "Elbow Y", "suffix": "mm", "decimals": 1, "bindable": False},
+    "arm_elbow_z": {"label": "Elbow Z", "suffix": "mm", "decimals": 1, "bindable": False},
+    "arm_wrist_x": {"label": "Wrist X", "suffix": "mm", "decimals": 1, "bindable": False},
+    "arm_wrist_y": {"label": "Wrist Y", "suffix": "mm", "decimals": 1, "bindable": False},
+    "arm_wrist_z": {"label": "Wrist Z", "suffix": "mm", "decimals": 1, "bindable": False},
+    "arm_width": {"label": "Arm width", "suffix": "mm", "decimals": 1, "bindable": False},
     "ext_thumb": {
         "label": "Thumb",
         "suffix": "",
@@ -189,10 +224,17 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
 # Digit order of hand.digits (thumb..pinky) maps onto the ext_* field names.
 _FINGER_FIELDS: tuple[str, ...] = ("thumb", "index", "middle", "ring", "pinky")
 
+# e48: LeapC documents LEAP_HAND.visible_time in MICROSECONDS; the snapshot and
+# the monitor expose seconds (the 'visible' field metadata says 's').
+LEAP_MICROS_PER_SECOND: float = 1_000_000.0
+
 # e26s02: placeholder the live monitor shows while a hand is absent (no key in
 # the snapshot) or the engine is disabled. ASCII hyphen: U+2014 em dash renders
 # as a fallback glyph in ProggyClean (e13s01 convention).
 LEAP_MONITOR_PLACEHOLDER: str = "-"
+
+# e48: the frame-rate diagnostics line (per frame, not per hand).
+LEAP_FPS_DECIMALS: int = 1
 
 
 def format_value(field: str, value: float) -> str:
@@ -205,6 +247,17 @@ def format_value(field: str, value: float) -> str:
     text = f"{float(value):.{int(meta['decimals'])}f}"
     suffix = str(meta.get("suffix") or "")
     return f"{text} {suffix}" if suffix else text
+
+
+def format_framerate(value: float) -> str:
+    """Render the tracking frame rate for the window's diagnostics line (e48).
+
+    A stopped or absent stream (0.0, or a negative sample) shows the placeholder
+    so a stale rate is never displayed as a live one: 114.26 -> '114.3 fps'.
+    """
+    if value <= 0.0:
+        return LEAP_MONITOR_PLACEHOLDER
+    return f"{float(value):.{LEAP_FPS_DECIMALS}f} fps"
 
 
 def leap_status_label(enabled: bool, status: str) -> str:
@@ -305,14 +358,17 @@ def normalize_tracking_event(event: Any) -> dict[str, float]:
     Keys are ``<hand>.<field>`` for EVERY present hand plus
     ``<hand>.present = 1.0``. The raw palm position feeds the palm_* keys
     (stabilized_position is never populated by the Gemini 5.17.1.0 service on
-    the original controller — module docstring). A frame with no hands yields
-    an empty dict; absent hands produce no keys.
+    the original controller — module docstring). e48 adds the palm ``direction``
+    axis (dir_*), the arm bone (arm_elbow_* / arm_wrist_* / arm_width) and
+    converts ``visible_time`` from microseconds to seconds. A frame with no
+    hands yields an empty dict; absent hands produce no keys.
     """
     out: dict[str, float] = {}
     for hand in event.hands or []:
         side = _hand_side(hand)
         palm = hand.palm
-        pos, vel, nrm = palm.position, palm.velocity, palm.normal
+        pos, vel, nrm, direction = palm.position, palm.velocity, palm.normal, palm.direction
+        arm = hand.arm
         out.update(
             {
                 f"{side}.present": 1.0,
@@ -325,12 +381,22 @@ def normalize_tracking_event(event: Any) -> dict[str, float]:
                 f"{side}.nrm_x": float(nrm.x),
                 f"{side}.nrm_y": float(nrm.y),
                 f"{side}.nrm_z": float(nrm.z),
+                f"{side}.dir_x": float(direction.x),
+                f"{side}.dir_y": float(direction.y),
+                f"{side}.dir_z": float(direction.z),
+                f"{side}.arm_elbow_x": float(arm.prev_joint.x),
+                f"{side}.arm_elbow_y": float(arm.prev_joint.y),
+                f"{side}.arm_elbow_z": float(arm.prev_joint.z),
+                f"{side}.arm_wrist_x": float(arm.next_joint.x),
+                f"{side}.arm_wrist_y": float(arm.next_joint.y),
+                f"{side}.arm_wrist_z": float(arm.next_joint.z),
+                f"{side}.arm_width": float(arm.width),
                 f"{side}.pinch": float(hand.pinch_strength),
                 f"{side}.pinch_dist": float(hand.pinch_distance),
                 f"{side}.grab": float(hand.grab_strength),
                 f"{side}.grab_angle": float(hand.grab_angle),
                 f"{side}.conf": float(hand.confidence),
-                f"{side}.visible": float(hand.visible_time),
+                f"{side}.visible": float(hand.visible_time) / LEAP_MICROS_PER_SECOND,
                 f"{side}.width": float(palm.width),
             }
         )

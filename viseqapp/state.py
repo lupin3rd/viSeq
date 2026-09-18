@@ -370,6 +370,11 @@ leap_status: str = "missing"  # missing | disconnected | connected | tracking
 leap_values: dict[str, float] = {}
 
 
+# e48: tracking frame rate (Hz) of the last TrackingEvent (worker-owned). It is a
+# per-frame diagnostic rendered by the Leap window, not a per-hand signal.
+leap_framerate: float = 0.0
+
+
 leap_lock = threading.Lock()
 
 
