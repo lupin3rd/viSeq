@@ -9720,18 +9720,18 @@ def show_help_window(sender: Any = None, app_data: Any = None, user_data: Any = 
 
 # ---------- e17: window switching (Windows-menu list + Ctrl+Tab) ----------
 def _window_menu_entries() -> list[tuple[str, str]]:
-    """Windows in switching order: (tag, real window-title label).
+    """Windows in Ctrl+Tab switching order: (tag, label).
 
-    The main window (Step Sequencer) is always on screen and is not a switching
-    target; the workspace windows are appended live so the list (and Ctrl+Tab)
-    always match the windows that exist.
+    Every window icon in the bar is a switching target, in the bar's own order
+    (user decision 2026-09-19), so adding an icon adds it to the cycle without
+    touching this list. The transient preview joins while it is active. Only the
+    OPEN windows are actually cycled (the shown filter lives in on_cycle_window).
+
+    `_toolbar_window_items` is defined later in the module; this forward
+    reference is resolved at call time, never at import.
     """
     entries = [
-        ("sequencer_window", "Step Sequencer"),
-        ("audio_window", "Audio analyzer"),
-        ("vimix_media_window", "Vimix sources"),
-        ("logs_window", "Logs"),
-        ("mapper_window", "Mapper"),
+        (target, label) for _kind, target, _glyph, label, _shortcut in _toolbar_window_items()
     ]
     if state.preview_active is not None:  # the preview window exists while a preview is active
         entries.append((PREVIEW_WINDOW_TAG, "Preview"))
@@ -9834,12 +9834,14 @@ def switch_to_window(sender: Any = None, app_data: Any = None, user_data: Any = 
 
 
 def on_cycle_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Ctrl+Tab / Ctrl+Shift+Tab: cycle through the SHOWN workspace windows.
+    """Ctrl+Tab / Ctrl+Shift+Tab: cycle through the OPEN windows, in bar order.
 
-    DPG 2.3.1 key handlers have no modifier support, so the wrapper checks the
-    modifier keys itself; Tab keeps its normal role while an input is focused.
-    The anchor is the tracked current window (not DPG get_active_window, which
-    is None while the menu bar has focus — BUG-2026-09-01T194500).
+    Every window icon is a stop (user decision 2026-09-19) and a hidden window
+    is skipped, so the cycle visits exactly the windows that are open. DPG 2.3.1
+    key handlers have no modifier support, so the wrapper checks the modifier
+    keys itself; Tab keeps its normal role while an input is focused. The anchor
+    is the tracked current window (not DPG get_active_window, which is None while
+    the menu bar has focus — BUG-2026-09-01T194500).
     """
     if not dpg.is_key_down(dpg.mvKey_ModCtrl) or _any_input_focused():
         return
