@@ -1976,7 +1976,7 @@ def update_step_ui(row: int, col: int) -> None:
             dpg.add_spacer(parent=cell_tag, height=5)
             options = entry.get("options") or []
             raw = step_data.get("last_idx")
-            text = "—"
+            text = "-"  # ASCII hyphen: a dash would render as a fallback glyph
             if raw is not None and 0 <= int(raw) < len(options):
                 text = str(options[int(raw)])
             elif raw is not None:
@@ -2954,7 +2954,7 @@ def _preview_reason(target_id: str, props: dict[str, Any] | None, meta_provider:
         return f"'{target_id}' is not a media source"
     kind = props.get("media_kind")
     if kind == "image":
-        return f"'{target_id}' is an image source — preview is video-only"
+        return f"'{target_id}' is an image source: preview is video-only"
     if kind is None:
         meta = meta_provider()
         if meta is None:
@@ -3602,9 +3602,9 @@ def _fs_endpoint() -> tuple[str, int]:
 def _fs_error_text(status: int | None) -> str:
     """A short, honest state line for a failed /fs request."""
     if status == 401:
-        return "Not paired with viOSC — use Settings > Pair with viOSC..."
+        return "Not paired with viOSC: use Settings > Pair with viOSC..."
     if status == 403:
-        return "Outside the allowed roots — check fs_roots in viOSC."
+        return "Outside the allowed roots: check fs_roots in viOSC."
     if status is None:
         return "viOSC unreachable."
     return f"Error ({status})."
@@ -4295,7 +4295,7 @@ def _render_sessions() -> None:
         )
         return
     for source in sources:
-        dpg.add_text(f"{source.get('name')}  —  {source.get('uri')}", parent=FS_SESSION_DETAIL_TAG)
+        dpg.add_text(f"{source.get('name')}  -  {source.get('uri')}", parent=FS_SESSION_DETAIL_TAG)
 
 
 def fs_select_session(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -4336,7 +4336,7 @@ def _draft_needs_write(draft: dict[str, Any]) -> bool:
 def _draft_error_text(status: int | None, tag: str | None) -> str:
     """A short, honest message for a rejected session write."""
     if status == 401:
-        return "Not paired with viOSC — use Settings > Pair with viOSC..."
+        return "Not paired with viOSC: use Settings > Pair with viOSC..."
     if status is None:
         return "viOSC unreachable."
     if tag == "missing_file":
@@ -10963,9 +10963,11 @@ TOOLBAR_GROUP_GAP = 10
 # tagged so the paint can reword it as the engine state changes.
 TOOLBAR_LEARN_BUTTON_TAG = "toolbar_mode_midi_learn"
 TOOLBAR_LEARN_TOOLTIP_TEXT_TAG = f"{TOOLBAR_LEARN_BUTTON_TAG}_tooltip_text"
-TOOLBAR_LEARN_TIP_READY = "MIDI Learn — arm, then click a control to bind"
+# ASCII only: ProggyClean renders U+2014 EM DASH as a fallback glyph, not a dash
+# (BUG-2026-09-18T193805; the e13s01 convention).
+TOOLBAR_LEARN_TIP_READY = "MIDI Learn: arm, then click a control to bind"
 TOOLBAR_LEARN_TIP_CANCEL = "Cancel MIDI Learn"
-TOOLBAR_LEARN_TIP_UNAVAILABLE = "MIDI Learn — enable MIDI first"
+TOOLBAR_LEARN_TIP_UNAVAILABLE = "MIDI Learn: enable MIDI first"
 toolbar_icon_font: Any = None
 _toolbar_geom_sig: tuple[int, int] | None = None
 
