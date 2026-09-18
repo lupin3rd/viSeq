@@ -62,6 +62,7 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
     },
     "vel_x": {
         "label": "Velocity X",
+        "short": "Vel. X",
         "suffix": "mm/s",
         "decimals": 0,
         "bindable": True,
@@ -70,6 +71,7 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
     },
     "vel_y": {
         "label": "Velocity Y",
+        "short": "Vel. Y",
         "suffix": "mm/s",
         "decimals": 0,
         "bindable": True,
@@ -78,6 +80,7 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
     },
     "vel_z": {
         "label": "Velocity Z",
+        "short": "Vel. Z",
         "suffix": "mm/s",
         "decimals": 0,
         "bindable": True,
@@ -110,6 +113,7 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
     },
     "dir_x": {
         "label": "Direction X",
+        "short": "Dir. X",
         "suffix": "",
         "decimals": 2,
         "bindable": True,
@@ -118,6 +122,7 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
     },
     "dir_y": {
         "label": "Direction Y",
+        "short": "Dir. Y",
         "suffix": "",
         "decimals": 2,
         "bindable": True,
@@ -126,6 +131,7 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
     },
     "dir_z": {
         "label": "Direction Z",
+        "short": "Dir. Z",
         "suffix": "",
         "decimals": 2,
         "bindable": True,
@@ -140,7 +146,13 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
         "input_from": 0.0,
         "input_to": 1.0,
     },
-    "pinch_dist": {"label": "Pinch dist.", "suffix": "mm", "decimals": 1, "bindable": False},
+    "pinch_dist": {
+        "label": "Pinch dist.",
+        "short": "Pinch d.",
+        "suffix": "mm",
+        "decimals": 1,
+        "bindable": False,
+    },
     "grab": {
         "label": "Grab",
         "suffix": "",
@@ -149,9 +161,16 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
         "input_from": 0.0,
         "input_to": 1.0,
     },
-    "grab_angle": {"label": "Grab angle", "suffix": "rad", "decimals": 2, "bindable": False},
+    "grab_angle": {
+        "label": "Grab angle",
+        "short": "Grab ang.",
+        "suffix": "rad",
+        "decimals": 2,
+        "bindable": False,
+    },
     "conf": {
         "label": "Confidence",
+        "short": "Conf.",
         "suffix": "",
         "decimals": 2,
         "bindable": True,
@@ -170,7 +189,13 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
     "arm_wrist_x": {"label": "Wrist X", "suffix": "mm", "decimals": 1, "bindable": False},
     "arm_wrist_y": {"label": "Wrist Y", "suffix": "mm", "decimals": 1, "bindable": False},
     "arm_wrist_z": {"label": "Wrist Z", "suffix": "mm", "decimals": 1, "bindable": False},
-    "arm_width": {"label": "Arm width", "suffix": "mm", "decimals": 1, "bindable": False},
+    "arm_width": {
+        "label": "Arm width",
+        "short": "Arm w.",
+        "suffix": "mm",
+        "decimals": 1,
+        "bindable": False,
+    },
     "ext_thumb": {
         "label": "Thumb",
         "suffix": "",
@@ -213,6 +238,7 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
     },
     "present": {
         "label": "Hand present",
+        "short": "Present",
         "suffix": "",
         "decimals": 0,
         "bindable": True,
@@ -220,6 +246,51 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
         "input_to": 1.0,
     },
 }
+
+# e48s02: the monitor renders each hand as TWO columns (four in total) so the
+# window fits without an inner scroll box (user request 2026-09-19). The split is
+# declarative and total: every LEAP_FIELDS key appears in exactly one column, a
+# fact the suite asserts, so a new field cannot silently vanish from the monitor.
+LEAP_MONITOR_COLUMNS: tuple[tuple[str, ...], ...] = (
+    (
+        "present",
+        "palm_x",
+        "palm_y",
+        "palm_z",
+        "vel_x",
+        "vel_y",
+        "vel_z",
+        "nrm_x",
+        "nrm_y",
+        "nrm_z",
+        "dir_x",
+        "dir_y",
+        "dir_z",
+        "width",
+        "conf",
+        "visible",
+    ),
+    (
+        "pinch",
+        "pinch_dist",
+        "grab",
+        "grab_angle",
+        "ext_thumb",
+        "ext_index",
+        "ext_middle",
+        "ext_ring",
+        "ext_pinky",
+        "arm_elbow_x",
+        "arm_elbow_y",
+        "arm_elbow_z",
+        "arm_wrist_x",
+        "arm_wrist_y",
+        "arm_wrist_z",
+        "arm_width",
+    ),
+)
+# Column titles, prefixed with the hand name by monitor_column_title().
+LEAP_MONITOR_COLUMN_TITLES: tuple[str, ...] = ("hand", "grip & arm")
 
 # Digit order of hand.digits (thumb..pinky) maps onto the ext_* field names.
 _FINGER_FIELDS: tuple[str, ...] = ("thumb", "index", "middle", "ring", "pinky")
@@ -308,6 +379,23 @@ def drive_ready(
 def leap_field(field: str) -> dict[str, Any]:
     """The metadata entry for a snapshot field (KeyError = catalog bug)."""
     return LEAP_FIELDS[field]
+
+
+def monitor_label(field: str) -> str:
+    """The MONITOR label for a field: the compact `short` form when it has one
+    (e48s02), otherwise the full label the Mapper picker shows."""
+    meta = leap_field(field)
+    return str(meta.get("short") or meta["label"])
+
+
+def monitor_columns() -> tuple[tuple[str, ...], ...]:
+    """The per-hand monitor column split (e48s02): two tuples of field keys."""
+    return LEAP_MONITOR_COLUMNS
+
+
+def monitor_column_title(hand: str, index: int) -> str:
+    """The themed header of one monitor column ('Left grip & arm')."""
+    return f"{hand.capitalize()} {LEAP_MONITOR_COLUMN_TITLES[index]}"
 
 
 def bindable_signals() -> tuple[str, ...]:

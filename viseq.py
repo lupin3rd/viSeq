@@ -6403,17 +6403,16 @@ def on_leap_visualizer(sender: Any = None, app_data: Any = None, user_data: Any 
 
 
 def _apply_leap_viz_layout(shown: bool) -> None:
-    """Fold/unfold the visualizer panel inside the COMPACT window (e26s04).
+    """Fold/unfold the visualizer panel (e26s04, simplified by e48s02).
 
-    The Leap Motion window never widens (user decision): showing the panel
-    shrinks the monitor child so the fixed 560x680 size never overflows.
+    The monitor is no longer its own scroll box: the four-column body lives in
+    the window, so the WINDOW's scrollbar absorbs the extra 158 px and nothing
+    has to be resized here.
     """
     if shown:
         dpg.show_item("leap_viz_panel")
-        dpg.configure_item("leap_monitor_scroll", height=LEAP_MONITOR_VIZ_H)
     else:
         dpg.hide_item("leap_viz_panel")
-        dpg.configure_item("leap_monitor_scroll", height=LEAP_MONITOR_H)
 
 
 def _leap_monitor_set_text(tag: str, text: str) -> None:
@@ -10744,16 +10743,16 @@ with dpg.window(label="MIDI", width=520, height=520, pos=(560, 320), tag="midi_w
 # device/service status line and the LIVE two-hand value monitor — static rows
 # built ONCE at construction (one row per snapshot field, both hands), refreshed
 # by tick_leap_monitor on the main thread. e26s04 adds the embedded visualizer
-# toggle + hidden panel between the status line and the monitor; the window
-# stays COMPACT (560x680, never widens — user decision), the monitor child
-# shrinks when the panel is shown. Never touches the external leap package at
-# import time.
+# toggle + hidden panel between the status line and the monitor; the window stays
+# COMPACT (560x680, never widens — user decision). Never touches the external
+# leap package at import time.
+# e48s02 (user request): the monitor is FOUR columns — each hand on two — built
+# directly in the window with no inner scroll box, so the window's own scrollbar
+# is the only one.
 
 # e26s04: compact visualizer layout. The always-present toggle row costs the
-# monitor ~25 px; showing the 150-tall panel costs a further ~165 px and the
-# monitor scrolls (it is already a child_window).
-LEAP_MONITOR_H: int = 535
-LEAP_MONITOR_VIZ_H: int = 370
+# monitor ~25 px; the 150-tall panel costs a further ~165 px, absorbed by the
+# window scrollbar (e48s02).
 LEAP_VIZ_PANEL_H: int = 158
 with dpg.window(
     label="Leap Motion", width=560, height=680, pos=(560, 300), tag="leap_window", show=False
@@ -10779,21 +10778,18 @@ with dpg.window(
     )
     with dpg.child_window(height=LEAP_VIZ_PANEL_H, show=False, tag="leap_viz_panel"):
         dpg.add_text("Waiting for the Leap device...", tag="leap_viz_wait_text")
-    with (
-        dpg.child_window(height=LEAP_MONITOR_H, tag="leap_monitor_scroll"),
-        dpg.group(horizontal=True),
-    ):
+    with dpg.group(horizontal=True, tag="leap_monitor_group"):
         for hand in leap.LEAP_HANDS:
-            with dpg.group(tag=f"leap_mon_{hand}_col"):
-                themed_text(f"{hand.capitalize()} hand", slot="text_bright")
-                for field in leap.LEAP_FIELDS:
-                    meta = leap.leap_field(field)
-                    with dpg.group(horizontal=True):
-                        themed_text(meta["label"], slot="text_dim")
-                        dpg.add_text(
-                            leap.LEAP_MONITOR_PLACEHOLDER,
-                            tag=f"leap_mon_{hand}_{field}",
-                        )
+            for column_index, column in enumerate(leap.monitor_columns()):
+                with dpg.group(tag=f"leap_mon_{hand}_col{column_index + 1}"):
+                    themed_text(leap.monitor_column_title(hand, column_index), slot="text_bright")
+                    for field in column:
+                        with dpg.group(horizontal=True):
+                            themed_text(leap.monitor_label(field), slot="text_dim")
+                            dpg.add_text(
+                                leap.LEAP_MONITOR_PLACEHOLDER,
+                                tag=f"leap_mon_{hand}_{field}",
+                            )
 
 # e16/e22/e23/e24: Mapper window — the body is rebuilt by refresh_mapper_ui()
 # (menu open, create, delete, prune, resize) as a stack of wrapping source
