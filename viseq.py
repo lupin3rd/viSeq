@@ -175,6 +175,7 @@ from viseqapp.constants import (
     MIDI_CLOCK_PULSES_PER_BEAT,
     MIDI_KIND_CC,
     MIDI_KIND_NOTE,
+    MIDI_LEARN_RED_RGBA,
     MIDI_LEARN_TIMEOUT_SECONDS,
     MIDI_OPEN_RETRY_COOLDOWN_SECONDS,
     NUM_STEPS,
@@ -5297,6 +5298,7 @@ def _exit_midi_learn() -> None:
         dpg.set_value("midi_learn_status", "MIDI Learn off")
     _refresh_learn_surfaces()
     _sync_context_learn_labels()  # static menus (step cell, monitor) follow the mode
+    refresh_toolbar_learn_icon()  # e47: the bar follows the mode (incl. the timeout)
 
 
 def _refresh_learn_surfaces() -> None:
@@ -5604,6 +5606,7 @@ def toggle_midi_learn(sender: Any = None, app_data: Any = None, user_data: Any =
         dpg.set_value("midi_learn_status", "MIDI Learn: click a viseq control")
     _refresh_learn_surfaces()  # e33s02: show the learn markers on the Mapper body
     _sync_context_learn_labels()  # static menus (step cell, monitor) follow the mode
+    refresh_toolbar_learn_icon()  # e47: the bar shows the mode
 
 
 def on_midi_enable(sender: Any, app_data: Any, user_data: Any) -> None:
@@ -5611,6 +5614,7 @@ def on_midi_enable(sender: Any, app_data: Any, user_data: Any) -> None:
     set_midi_enabled(bool(app_data))
     if not app_data and state.midi_learn_mode:  # disabling cancels an in-flight learn
         _exit_midi_learn()
+    refresh_toolbar_learn_icon()  # e47: grey the Learn icon while the engine is off
 
 
 # 2026-09-06 (user): context-menu arm items on STATIC menus (step cell, monitor
@@ -10304,8 +10308,9 @@ with dpg.theme() as theme_mapper_compact, dpg.theme_component(dpg.mvAll):
 with dpg.theme() as theme_learn_marker, dpg.theme_component(dpg.mvButton):
     # e33: the red 'M' learn markers — the red text signals "bind this to MIDI"
     # and stands out from the dim card captions (fixed accent red on every
-    # palette; the markers only appear during a MIDI Learn session).
-    dpg.add_theme_color(dpg.mvThemeCol_Text, (225, 60, 60, 255))
+    # palette; the markers only appear during a MIDI Learn session). e47: the
+    # value comes from MIDI_LEARN_RED, shared with the toolbar's ON state.
+    dpg.add_theme_color(dpg.mvThemeCol_Text, MIDI_LEARN_RED_RGBA)
     dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 0, 0)
 
 with dpg.theme() as theme_learn_marker_armed, dpg.theme_component(dpg.mvButton):
@@ -10991,6 +10996,7 @@ TOOLBAR_ITEM_GROUPS: tuple[tuple[ToolbarItem, ...], ...] = (
     (
         ("toggle", "settings_window", "\uf013", "Settings", ""),
         ("toggle", "midi_window", "\uf11c", "MIDI", ""),
+        ("mode", "midi_learn", "\uf140", "MIDI Learn", ""),
         ("toggle", "leap_window", "\uf256", "Leap Motion", ""),
         ("action", "pair", "\uf0c1", "Pair with viOSC...", ""),
     ),
@@ -11003,11 +11009,20 @@ TOOLBAR_THEME_ACTIVE = "theme_toolbar_active"
 TOOLBAR_THEME_FLAT = "theme_toolbar_flat"
 TOOLBAR_THEME_PLAIN = "theme_toolbar_plain"
 TOOLBAR_THEME_TOOLTIP = "theme_toolbar_tooltip"
+TOOLBAR_THEME_LEARN = "theme_toolbar_learn"
 TOOLBAR_BAR_MARGIN_RIGHT = 4
 TOOLBAR_ITEM_SPACING = 4
 TOOLBAR_BAR_PAD_X = 4
 TOOLBAR_BAR_PAD_Y = 3
 TOOLBAR_GROUP_GAP = 10
+# e47: the MIDI Learn mode item. The button tag mirrors `_toolbar_button_tag("mode",
+# "midi_learn")` — a test locks the two together — and the tooltip's text item is
+# tagged so the paint can reword it as the engine state changes.
+TOOLBAR_LEARN_BUTTON_TAG = "toolbar_mode_midi_learn"
+TOOLBAR_LEARN_TOOLTIP_TEXT_TAG = f"{TOOLBAR_LEARN_BUTTON_TAG}_tooltip_text"
+TOOLBAR_LEARN_TIP_READY = "MIDI Learn — arm, then click a control to bind"
+TOOLBAR_LEARN_TIP_CANCEL = "Cancel MIDI Learn"
+TOOLBAR_LEARN_TIP_UNAVAILABLE = "MIDI Learn — enable MIDI first"
 toolbar_icon_font: Any = None
 _toolbar_geom_sig: tuple[int, int] | None = None
 
@@ -11135,6 +11150,10 @@ def _build_main_toolbar() -> None:
         dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, _toolbar_color("accent", 80))
         dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, _toolbar_color("accent", 140))
         dpg.add_theme_color(dpg.mvThemeCol_Border, (0, 0, 0, 0))
+        # e47: the MIDI Learn icon greys out while the MIDI engine is off; the
+        # disabled text colour is palette-driven so it re-themes with the palette
+        # instead of falling back to an ImGui default on the transparent bar.
+        theme_color(dpg.mvThemeCol_TextDisabled, "text_dim")
         dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 0)
         dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 0)
     with dpg.theme(tag=TOOLBAR_THEME_OPEN), dpg.theme_component(dpg.mvThemeCat_Core):
@@ -11149,6 +11168,17 @@ def _build_main_toolbar() -> None:
         dpg.add_theme_color(dpg.mvThemeCol_Button, _toolbar_color("accent", 255))
         dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, _toolbar_color("accent", 255))
         dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, _toolbar_color("accent", 255))
+        dpg.add_theme_color(dpg.mvThemeCol_Border, (0, 0, 0, 0))
+        dpg.add_theme_color(dpg.mvThemeCol_BorderShadow, (0, 0, 0, 0))
+        dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 0)
+        dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 0)
+    with dpg.theme(tag=TOOLBAR_THEME_LEARN), dpg.theme_component(dpg.mvThemeCat_Core):
+        # e47: the MIDI Learn ON state wears the shared learn red on its button
+        # background. Deliberately NOT the accent — the full accent means "this
+        # window is active" on the icons next to it (ADR-midi-learn-entry-point).
+        dpg.add_theme_color(dpg.mvThemeCol_Button, MIDI_LEARN_RED_RGBA)
+        dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, MIDI_LEARN_RED_RGBA)
+        dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, MIDI_LEARN_RED_RGBA)
         dpg.add_theme_color(dpg.mvThemeCol_Border, (0, 0, 0, 0))
         dpg.add_theme_color(dpg.mvThemeCol_BorderShadow, (0, 0, 0, 0))
         dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 0)
@@ -11217,10 +11247,16 @@ def _build_main_toolbar() -> None:
                 dpg.bind_item_theme(tag, TOOLBAR_THEME_FLAT)
                 tooltip_tag = f"{tag}_tooltip"
                 with dpg.tooltip(tag, tag=tooltip_tag):
-                    dpg.add_text(f"{label} ({shortcut})" if shortcut else label)
+                    dpg.add_text(
+                        f"{label} ({shortcut})" if shortcut else label,
+                        # e47: tagged so the mode item's tooltip can reword itself
+                        # as the engine state changes (see refresh_toolbar_learn_icon)
+                        tag=f"{tooltip_tag}_text",
+                    )
                 dpg.bind_item_theme(tooltip_tag, TOOLBAR_THEME_TOOLTIP)
             dpg.add_spacer(width=TOOLBAR_GROUP_GAP)
     dpg.bind_item_theme(TOOLBAR_BAR_TAG, TOOLBAR_THEME_PLAIN)
+    refresh_toolbar_learn_icon()  # e47: the learn item's boot state
 
 
 def on_toolbar_item(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -11239,6 +11275,11 @@ def on_toolbar_item(sender: Any = None, app_data: Any = None, user_data: Any = N
             dpg.hide_item(target)
             return
         show()
+        return
+    if kind == "mode":
+        # e47: a global MODE switch (MIDI Learn). It is not a window and not a
+        # binding target, so it runs the one shared toggle path.
+        {"midi_learn": toggle_midi_learn}.get(target, lambda *_: None)()
         return
     {
         "new_project": request_new_project,
@@ -11263,6 +11304,38 @@ def refresh_toolbar_icons() -> None:
             dpg.bind_item_theme(tag, TOOLBAR_THEME_OPEN)
         else:
             dpg.bind_item_theme(tag, TOOLBAR_THEME_FLAT)
+
+
+def refresh_toolbar_learn_icon() -> None:
+    """Paint the MIDI Learn mode icon from the MIDI engine state (e47).
+
+    One global mode deserves one always-visible switch whose state is readable at
+    a glance (ADR-midi-learn-entry-point.md): plain/flat while ready, the shared
+    learn red while the mode is on, and greyed + non-clickable while MIDI is
+    disabled (user decision: the disabled affordance itself says the feature is
+    unavailable, and the bar never reflows as it would if the icon were hidden).
+    The tooltip always names the next step, so the refusal is never silent.
+
+    Called at the tails of the mode transitions and of the MIDI engine toggle
+    (toggle_midi_learn, _exit_midi_learn, on_midi_enable) and once after the bar
+    is built — never from a per-frame tick.
+    """
+    if not dpg.does_item_exist(TOOLBAR_LEARN_BUTTON_TAG):
+        return
+    enabled = bool(state.midi_enabled)
+    learning = enabled and bool(state.midi_learn_mode)
+    dpg.configure_item(TOOLBAR_LEARN_BUTTON_TAG, enabled=enabled)
+    dpg.bind_item_theme(
+        TOOLBAR_LEARN_BUTTON_TAG, TOOLBAR_THEME_LEARN if learning else TOOLBAR_THEME_FLAT
+    )
+    if not enabled:
+        tooltip = TOOLBAR_LEARN_TIP_UNAVAILABLE
+    elif learning:
+        tooltip = TOOLBAR_LEARN_TIP_CANCEL
+    else:
+        tooltip = TOOLBAR_LEARN_TIP_READY
+    if dpg.does_item_exist(TOOLBAR_LEARN_TOOLTIP_TEXT_TAG):
+        dpg.set_value(TOOLBAR_LEARN_TOOLTIP_TEXT_TAG, tooltip)
 
 
 def show_recent_projects_popup() -> None:
