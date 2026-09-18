@@ -42,9 +42,6 @@ is_server_running: bool = False
 midi_enabled: bool = False
 
 
-midi_bindings: list[dict[str, Any]] = []
-
-
 midi_learn_mode: bool = False
 
 
@@ -371,6 +368,20 @@ leap_status: str = "missing"  # missing | disconnected | connected | tracking
 
 
 leap_values: dict[str, float] = {}
+
+
+# e48: tracking frame rate (Hz) of the last TrackingEvent (worker-owned). It is a
+# per-frame diagnostic rendered by the Leap window, not a per-hand signal.
+leap_framerate: float = 0.0
+
+
+# BUG-2026-09-18T212400: worker liveness + restart generation. leap_worker_tick is
+# stamped by the worker loop on every pass (a dead or blocked worker stops
+# ticking, which is the only way to see it); leap_generation is bumped by
+# restart_leap_engine() and watched by the worker, so an explicit restart always
+# rebuilds the connection.
+leap_worker_tick: float = 0.0
+leap_generation: int = 0
 
 
 leap_lock = threading.Lock()

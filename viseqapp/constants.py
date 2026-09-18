@@ -582,6 +582,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
 # auto-exits after this many seconds if no capture completes.
 MIDI_LEARN_TIMEOUT_SECONDS = 30.0
 
+# e47: the learn red — the fixed accent shared by the `M` learn markers and the
+# toolbar MIDI Learn ON state (ADR-midi-learn-entry-point.md). Fixed on every
+# palette by user decision: red is the learn colour and must stay distinguishable
+# from the accent that marks the active window, so it is a constant rather than a
+# palette slot. The RGBA the themes need derives from it — one source, no drift.
+MIDI_LEARN_RED: tuple[int, int, int] = (225, 60, 60)
+MIDI_LEARN_RED_RGBA: tuple[int, int, int, int] = (*MIDI_LEARN_RED, 255)
+
 
 # BUG-2026-09-07: after a failed input open (or clock reconnect) the worker waits
 # this long before trying again. Every failing mido/rtmidi open can leak an ALSA
