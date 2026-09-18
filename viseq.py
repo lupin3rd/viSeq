@@ -3591,7 +3591,9 @@ def show_file_manager_window(*_args: Any) -> None:
 
 def toggle_file_manager_window(*_args: Any) -> None:
     """e33 action: show the window, or hide it when it is already open."""
-    if dpg.is_item_shown(FILE_MANAGER_TAG):
+    # BUG-2026-09-19T002150: the same existence-before-shown guard as the
+    # toolbar dispatcher (the shown query raises for a tag with no item).
+    if dpg.does_item_exist(FILE_MANAGER_TAG) and dpg.is_item_shown(FILE_MANAGER_TAG):
         dpg.hide_item(FILE_MANAGER_TAG)
         return
     show_file_manager_window()
@@ -11320,7 +11322,10 @@ def on_toolbar_item(sender: Any = None, app_data: Any = None, user_data: Any = N
         show = _toolbar_show_func(target)
         if show is None:
             return
-        if dpg.is_item_shown(target):
+        # BUG-2026-09-19T002150: existence BEFORE the shown query. DearPyGui
+        # raises [1005] for a tag with no item, and the I/O Monitor is built
+        # lazily — an unguarded query aborted the callback on the first click.
+        if dpg.does_item_exist(target) and dpg.is_item_shown(target):
             dpg.hide_item(target)
             return
         show()
