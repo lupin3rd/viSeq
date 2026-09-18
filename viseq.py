@@ -305,7 +305,6 @@ from viseqapp.state import (
     band_prev_values,
     bands_enabled,
     log_queue,
-    midi_bindings,
     midi_controllers,
     osc_log_history,
     request_timestamps,
@@ -5265,7 +5264,10 @@ def handle_midi_message(msg: Any, port_name: str) -> None:
             controller.get("auto_bindings") or []
         )
     else:
-        bindings = None  # legacy flat lists (pre-e14 paths/tests)
+        # BUG-2026-09-18T194700: no controller owns this port, so there is nothing
+        # to dispatch through (the worker only listens on configured controllers).
+        # The message is reported as NOBIND by the I/O Monitor; no bindings exist.
+        bindings = None
     outcome = IO_MONITOR_OUTCOME_NOBIND if bindings is None else IO_MONITOR_OUTCOME_NOMATCH
     details: list[str] = []
     for action, params, value in resolve_midi_message(msg, port_name, bindings):
@@ -5521,10 +5523,13 @@ def _sync_seq_row_learn_strip() -> None:
 
 def midi_learn_complete(binding: dict[str, Any], port_name: str | None = None) -> None:
     """Main thread: merge the captured source with the pending action and store the binding
-    on the owning controller (legacy flat list when no controller owns the port).
+    on the controller that owns the port.
 
     One-shot (e14 bug fix): learn mode exits after the capture, so the learnable
     sequencer controls (PLAY, beat sources, step cells) are never left hijacked.
+    BUG-2026-09-18T194700: with no owning controller the capture is REFUSED with a
+    log line and the mapping is left unbound — a binding stored nowhere used to be
+    lost on restart while a Mapper mapping still claimed its MIDI source.
     """
     if state.midi_learn_pending is None:
         return
@@ -5532,11 +5537,20 @@ def midi_learn_complete(binding: dict[str, Any], port_name: str | None = None) -
     binding["action"] = action
     binding["params"] = params
     controller = find_controller_by_port(port_name) if port_name else None
-    if controller is not None:
-        controller.setdefault("bindings", []).append(binding)
-        save_midi_controllers()  # 2026-09-07: a learned mapping persists immediately
-    else:
-        midi_bindings.append(binding)
+    if controller is None:
+        # Unreachable from the app (the worker listens only on configured
+        # controllers): refuse loudly rather than sink it into a lost list.
+        state.midi_learn_pending = None
+        _exit_midi_learn()
+        log_error(
+            "MIDI Learn",
+            f"no controller owns port {port_name!r} — add it in the MIDI window first",
+        )
+        if dpg.does_item_exist("midi_learn_status"):
+            dpg.set_value("midi_learn_status", "No controller owns that port")
+        return
+    controller.setdefault("bindings", []).append(binding)
+    save_midi_controllers()  # 2026-09-07: a learned mapping persists immediately
     state.midi_learn_pending = None
     _exit_midi_learn()
     refresh_midi_mappings_ui()
@@ -6182,14 +6196,22 @@ def assign_control_to_mapping(control: tuple[str, str, int, int, str], mapping_i
     """Bind an already-seen control to a Mapper mapping immediately (e39s03).
 
     The reverse of a learn session: the monitor already knows the source
-    (device/channel/type/number), so the dispatch binding lands on the owning
-    controller (or the legacy flat list) and the mapping's stored MIDI source
-    plus its 0..127 input range are set at once. An unknown mapping id is a
-    logged no-op.
+    (device/channel/type/number), so the dispatch binding lands on the controller
+    that owns the port and the mapping's stored MIDI source plus its 0..127 input
+    range are set at once. An unknown mapping id is a logged no-op; so is a port
+    no controller owns (BUG-2026-09-18T194700: the mapping must not claim a source
+    that can never fire).
     """
     port, msg_type, channel, number, _direction = control
     if mapper.find_mapping(mapping_id) is None:
         log_error("I/O Monitor", f"no mapping {mapping_id}")
+        return False
+    controller = find_controller_by_port(port)
+    if controller is None:
+        log_error(
+            "I/O Monitor",
+            f"no controller owns port {port!r} — add it in the MIDI window first",
+        )
         return False
     source: dict[str, Any] = {
         "device": port,
@@ -6198,11 +6220,7 @@ def assign_control_to_mapping(control: tuple[str, str, int, int, str], mapping_i
         "number": int(number),
     }
     binding = {**source, "action": MIDI_ACTION_MAPPER_MAPPING, "params": {"mapping_id": mapping_id}}
-    controller = find_controller_by_port(port)
-    if controller is not None:
-        controller.setdefault("bindings", []).append(binding)
-    else:
-        midi_bindings.append(binding)
+    controller.setdefault("bindings", []).append(binding)
     save_midi_controllers()
     mapper.set_mapping_midi(mapping_id, binding)
     refresh_midi_mappings_ui()

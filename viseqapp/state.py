@@ -42,9 +42,6 @@ is_server_running: bool = False
 midi_enabled: bool = False
 
 
-midi_bindings: list[dict[str, Any]] = []
-
-
 midi_learn_mode: bool = False
 
 
