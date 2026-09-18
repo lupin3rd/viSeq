@@ -20,8 +20,8 @@ root**. Starting with release **0.5.0**, download
 [GitHub Releases](https://github.com/lupin3rd/viseq/releases) page, then:
 
 ```bash
-chmod +x viseq-0.7.0-x86_64.AppImage
-./viseq-0.7.0-x86_64.AppImage
+chmod +x viseq-0.7.1-x86_64.AppImage
+./viseq-0.7.1-x86_64.AppImage
 ```
 
 ### Where your data lives
