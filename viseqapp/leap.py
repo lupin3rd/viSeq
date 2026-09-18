@@ -179,23 +179,6 @@ LEAP_FIELDS: dict[str, dict[str, Any]] = {
     },
     "visible": {"label": "Visible", "suffix": "s", "decimals": 2, "bindable": False},
     "width": {"label": "Width", "suffix": "mm", "decimals": 1, "bindable": False},
-    # e48: the arm bone (LEAP_HAND.arm): prev_joint = elbow, next_joint = wrist.
-    # MONITOR-ONLY until the rig proves this service populates them: the same
-    # Gemini 5.17.1.0 firmware leaves stabilized_position at zero, so a
-    # documented field is not evidence of live data (see the epic decision).
-    "arm_elbow_x": {"label": "Elbow X", "suffix": "mm", "decimals": 1, "bindable": False},
-    "arm_elbow_y": {"label": "Elbow Y", "suffix": "mm", "decimals": 1, "bindable": False},
-    "arm_elbow_z": {"label": "Elbow Z", "suffix": "mm", "decimals": 1, "bindable": False},
-    "arm_wrist_x": {"label": "Wrist X", "suffix": "mm", "decimals": 1, "bindable": False},
-    "arm_wrist_y": {"label": "Wrist Y", "suffix": "mm", "decimals": 1, "bindable": False},
-    "arm_wrist_z": {"label": "Wrist Z", "suffix": "mm", "decimals": 1, "bindable": False},
-    "arm_width": {
-        "label": "Arm width",
-        "short": "Arm w.",
-        "suffix": "mm",
-        "decimals": 1,
-        "bindable": False,
-    },
     "ext_thumb": {
         "label": "Thumb",
         "suffix": "",
@@ -280,17 +263,11 @@ LEAP_MONITOR_COLUMNS: tuple[tuple[str, ...], ...] = (
         "ext_middle",
         "ext_ring",
         "ext_pinky",
-        "arm_elbow_x",
-        "arm_elbow_y",
-        "arm_elbow_z",
-        "arm_wrist_x",
-        "arm_wrist_y",
-        "arm_wrist_z",
-        "arm_width",
     ),
 )
 # Column titles, prefixed with the hand name by monitor_column_title().
-LEAP_MONITOR_COLUMN_TITLES: tuple[str, ...] = ("hand", "grip & arm")
+# e48s04: 'grip & arm' became 'grip' — the arm rows went (see the epic delta).
+LEAP_MONITOR_COLUMN_TITLES: tuple[str, ...] = ("hand", "grip")
 
 # Digit order of hand.digits (thumb..pinky) maps onto the ext_* field names.
 _FINGER_FIELDS: tuple[str, ...] = ("thumb", "index", "middle", "ring", "pinky")
@@ -394,7 +371,7 @@ def monitor_columns() -> tuple[tuple[str, ...], ...]:
 
 
 def monitor_column_title(hand: str, index: int) -> str:
-    """The themed header of one monitor column ('Left grip & arm')."""
+    """The themed header of one monitor column ('Left grip')."""
     return f"{hand.capitalize()} {LEAP_MONITOR_COLUMN_TITLES[index]}"
 
 
@@ -447,16 +424,16 @@ def normalize_tracking_event(event: Any) -> dict[str, float]:
     ``<hand>.present = 1.0``. The raw palm position feeds the palm_* keys
     (stabilized_position is never populated by the Gemini 5.17.1.0 service on
     the original controller — module docstring). e48 adds the palm ``direction``
-    axis (dir_*), the arm bone (arm_elbow_* / arm_wrist_* / arm_width) and
-    converts ``visible_time`` from microseconds to seconds. A frame with no
-    hands yields an empty dict; absent hands produce no keys.
+    axis (dir_*) and converts ``visible_time`` from microseconds to seconds; the
+    arm bone was tried in e48s01 and removed in e48s04 (estimated by the service
+    when the elbow is out of view, and the wrist duplicates the palm base).
+    A frame with no hands yields an empty dict; absent hands produce no keys.
     """
     out: dict[str, float] = {}
     for hand in event.hands or []:
         side = _hand_side(hand)
         palm = hand.palm
         pos, vel, nrm, direction = palm.position, palm.velocity, palm.normal, palm.direction
-        arm = hand.arm
         out.update(
             {
                 f"{side}.present": 1.0,
@@ -472,13 +449,6 @@ def normalize_tracking_event(event: Any) -> dict[str, float]:
                 f"{side}.dir_x": float(direction.x),
                 f"{side}.dir_y": float(direction.y),
                 f"{side}.dir_z": float(direction.z),
-                f"{side}.arm_elbow_x": float(arm.prev_joint.x),
-                f"{side}.arm_elbow_y": float(arm.prev_joint.y),
-                f"{side}.arm_elbow_z": float(arm.prev_joint.z),
-                f"{side}.arm_wrist_x": float(arm.next_joint.x),
-                f"{side}.arm_wrist_y": float(arm.next_joint.y),
-                f"{side}.arm_wrist_z": float(arm.next_joint.z),
-                f"{side}.arm_width": float(arm.width),
                 f"{side}.pinch": float(hand.pinch_strength),
                 f"{side}.pinch_dist": float(hand.pinch_distance),
                 f"{side}.grab": float(hand.grab_strength),
