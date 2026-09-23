@@ -35,10 +35,17 @@ from viseqapp import (
     preview,
     state,
 )
+from viseqapp.actions import STEP_ACTIONS
 from viseqapp.audio import (
     _set_band_variable,
     apply_spectrum_agc,
     audio_callback,
+    band_rect_contains,
+    band_rect_drag,
+    band_rect_edge_segment,
+    band_rect_hit_test,
+    band_rect_local_pointer,
+    band_rect_px,
     band_value_from_bars,
     compute_spectrum_bars,
     get_audio_snapshot,
@@ -48,6 +55,7 @@ from viseqapp.audio import (
 from viseqapp.config import _sanitize_palette, load_config, save_config, user_config_dir
 from viseqapp.constants import (
     BAND_BEAT_THRESHOLD,
+    BAND_EDGE_HIGHLIGHT_THICKNESS,
     BEAT_SOURCE_ANALYSIS,
     BEAT_SOURCE_BAND1,
     BEAT_SOURCE_LABELS,
@@ -75,12 +83,12 @@ from viseqapp.constants import (
     IO_MONITOR_DIRECTION_OUT,
     IO_MONITOR_OUTCOME_LEARN,
     IO_MONITOR_OUTCOME_MATCH,
+    IO_MONITOR_OUTCOME_MUTED,
     IO_MONITOR_OUTCOME_NOBIND,
     IO_MONITOR_OUTCOME_NOMATCH,
     IO_MONITOR_REFRESH_INTERVAL,
     IO_MONITOR_TRANSPORT_MIDI,
     IO_MONITOR_TRANSPORT_OSC,
-    LAYOUT_ALWAYS_HIDDEN_TAGS,
     LAYOUT_WINDOW_TAGS,
     LOG_HISTORY_LIMIT,
     MAPPER_ADD_H,
@@ -91,6 +99,7 @@ from viseqapp.constants import (
     MAPPER_CTRL_H,
     MAPPER_DRAG_W,
     MAPPER_FILTER_ADD_GAP,
+    MAPPER_INPUT_ALT_TOOLTIP,
     MAPPER_KNOB_H,
     MAPPER_LEARN_SLOTS,
     MAPPER_LINE_NO_DIGIT_PX,
@@ -101,6 +110,8 @@ from viseqapp.constants import (
     MAPPER_MARKER_W,
     MAPPER_MAX_MAPPINGS,
     MAPPER_MINI_W,
+    MAPPER_PASTE_SLOT_W,
+    MAPPER_PASTE_W,
     MAPPER_RESET_H,
     MAPPER_RESET_W,
     MAPPER_ROW_GAP,
@@ -146,8 +157,12 @@ from viseqapp.constants import (
     MIDI_ACTION_DRAFT_NEXT,
     MIDI_ACTION_DRAFT_PREV,
     MIDI_ACTION_DRAFT_SAVE,
+    MIDI_ACTION_DRAFT_STEP,
     MIDI_ACTION_ENABLE_CORRECTION,
     MIDI_ACTION_FILE_MANAGER_TOGGLE,
+    MIDI_ACTION_FILE_NEXT,
+    MIDI_ACTION_FILE_PREV,
+    MIDI_ACTION_FILE_STEP,
     MIDI_ACTION_IO_MONITOR_TOGGLE,
     MIDI_ACTION_MAPPER_BAND,
     MIDI_ACTION_MAPPER_CUE_OPEN,
@@ -156,7 +171,13 @@ from viseqapp.constants import (
     MIDI_ACTION_MAPPER_MAPPING,
     MIDI_ACTION_MAPPER_RESET,
     MIDI_ACTION_MAPPING_ADD,
+    MIDI_ACTION_MAPPING_COPY,
+    MIDI_ACTION_MAPPING_CUT,
+    MIDI_ACTION_MAPPING_MOVE,
+    MIDI_ACTION_MAPPING_PASTE,
     MIDI_ACTION_MAPPING_TOGGLE,
+    MIDI_ACTION_MODE_TOGGLE,
+    MIDI_ACTION_MODES_CLEAR,
     MIDI_ACTION_NUDGE_BACK,
     MIDI_ACTION_NUDGE_FORWARD,
     MIDI_ACTION_PAIRING_PROMPT,
@@ -165,8 +186,10 @@ from viseqapp.constants import (
     MIDI_ACTION_SEQ_ROW_DISABLE,
     MIDI_ACTION_SEQ_ROW_ENABLE,
     MIDI_ACTION_SEQ_TOGGLE,
+    MIDI_ACTION_SET_CURRENT,
     MIDI_ACTION_SOURCE_NEXT,
     MIDI_ACTION_SOURCE_PREV,
+    MIDI_ACTION_SOURCE_STEP,
     MIDI_ACTION_TRACK_ASSIGN,
     MIDI_ACTION_TRANSPORT_PLAY,
     MIDI_ACTION_TRANSPORT_RESYNC,
@@ -177,7 +200,13 @@ from viseqapp.constants import (
     MIDI_KIND_NOTE,
     MIDI_LEARN_RED_RGBA,
     MIDI_LEARN_TIMEOUT_SECONDS,
+    MIDI_LED_BEHAVIOR_PRESS,
+    MIDI_LED_BEHAVIOR_STATE,
+    MIDI_MODE_LED_KINDS,
+    MIDI_MODE_LED_OFF_DEFAULT,
+    MIDI_MODE_LED_ON_DEFAULT,
     MIDI_OPEN_RETRY_COOLDOWN_SECONDS,
+    MIDI_PORT_RESCAN_SECONDS,
     NUM_STEPS,
     NUM_TRACKS,
     ORIGIN_CLOCK,
@@ -203,6 +232,7 @@ from viseqapp.constants import (
     SPEC_DRAWLIST_W,
     SPECTRUM_BARS,
     SPECTRUM_FPS,
+    SPECTRUM_MOUSE_REG,
     STEP_CELL_SIZE,
     STEP_COLOR_SQUARE_INDENT,
     STEP_COLOR_SQUARE_SIZE,
@@ -229,27 +259,55 @@ from viseqapp.midi import (
     _clock_port_name,
     _close_midi_input,
     _parse_midi_msg,
+    add_mode,
     apply_project_mapper_bindings,
+    apply_project_mode_bindings,
     available_controller_ports,
+    binding_led_behavior,
+    binding_led_key,
+    binding_mode,
     binding_source_from_message,
+    capture_mode_defs,
+    clear_all_modes,
     controller_connect,
     controller_disconnect,
     controller_profile_of,
     controller_profiles,
     ensure_mapping_output,
     find_controller_by_port,
+    flash_binding_led,
     grid_controller,
     grid_flash_playhead,
     grid_mirror_step,
+    led_bindings_for_message,
     midi_init_from_config,
     midi_open_retry_due,
+    mode_definition,
+    mode_names,
+    mode_usage,
+    modes_for_mapping,
+    most_recent_mode,
     project_mapper_bindings,
-    resolve_midi_message,
+    project_mode_bindings,
+    reapply_mode_leds,
+    refresh_binding_leds,
+    remove_mode,
+    reset_step_memory,
+    resolve_binding_led,
+    resolve_midi_message,  # noqa: F401 — facade re-export (REFACTOR_LATEST contract)
+    resolve_midi_message_report,
+    restore_mode_defs,
     save_midi_controllers,
     scan_midi_inputs,
     selected_bindings,
+    selected_controller,
     send_mapping_midi,
+    send_mode_led,
+    set_binding_mode,
     set_midi_enabled,
+    set_mode_led,
+    stale_ports,
+    toggle_mode,
 )
 from viseqapp.osc import (
     ALL_PROPERTIES,
@@ -343,6 +401,8 @@ Image.MAX_IMAGE_PIXELS = 25_000_000  # PIL's hard ceiling (~25 MP)
 # viseq application version — single source of truth (matches specs/release-plan.yaml, e08s02).
 # e13s01: this is the first real release of viSeq (user decision).
 # e20s03: 0.2.0 — viseqapp refactor + controller profiles + new project + Mapper family.
+# 0.9.0 — audio band rectangles, Mapper toggle/clipboard/move, MIDI modes + LED feedback +
+# rotation stepping, window layout/centering, tile "Set current".
 # 0.8.0 — MIDI Learn as the toolbar's red icon, the Leap Motion signal expansion (four-column
 # monitor, palm direction, finger curl + hand spread), the toolbar/window-cycle fixes and the Leap
 # engine restart fix.
@@ -358,7 +418,7 @@ Image.MAX_IMAGE_PIXELS = 25_000_000  # PIL's hard ceiling (~25 MP)
 # 0.4.0 — Leap Motion mapper source, per-mapping reset, project save + OSC config persist,
 # Mapper tile/row workflows (thumb assign, Add-to-Mapper submenu, line numbers).
 # 0.3.0 — Mapper family (rows/rescale/enable/cycle), compact Vimix-sources grid, windows, XDG.
-APP_VERSION: str = "0.8.0"
+APP_VERSION: str = "0.9.0"
 
 # Author's GitHub profile, shown as a link in the About window (e08s01, user request).
 GITHUB_URL: str = "https://github.com/lupin3rd"
@@ -439,6 +499,11 @@ _mapper_line_no_font: Any = None
 # ==============================================================================
 
 
+# Windows already given a position this run: a saved project layout (apply) or
+# the first-open centering below. Shared so a project layout always wins (e55).
+_positioned_windows: set[str] = set()
+
+
 def _existing_layout_window_tags() -> list[str]:
     """Tags of every layout-tracked window currently present in the UI."""
     tags = [t for t in LAYOUT_WINDOW_TAGS if dpg.does_item_exist(t)]
@@ -446,19 +511,14 @@ def _existing_layout_window_tags() -> list[str]:
 
 
 def snapshot_window_layout() -> list[dict[str, Any]]:
-    """Record shown/pos/size for every existing layout-tracked window (main thread only).
-
-    LAYOUT_ALWAYS_HIDDEN_TAGS (the Settings window) are always recorded as closed: they
-    stay open while the user saves a project, and must not come back at boot.
-    """
+    """Record shown/pos/size for every existing layout-tracked window (main thread only)."""
     records: list[dict[str, Any]] = []
     for tag in _existing_layout_window_tags():
         try:
-            shown = bool(dpg.is_item_shown(tag)) and tag not in LAYOUT_ALWAYS_HIDDEN_TAGS
             records.append(
                 {
                     "tag": tag,
-                    "shown": shown,
+                    "shown": bool(dpg.is_item_shown(tag)),
                     "pos": list(dpg.get_item_pos(tag)),
                     "size": [
                         int(dpg.get_item_width(tag) or 0),
@@ -472,14 +532,16 @@ def snapshot_window_layout() -> list[dict[str, Any]]:
 
 
 def apply_window_layout(records: list[dict[str, Any]]) -> None:
-    """Re-apply a saved layout to currently existing windows; missing windows are skipped.
+    """Re-apply a saved layout to the workspace windows; unknown tags are skipped.
 
-    LAYOUT_ALWAYS_HIDDEN_TAGS are never shown by a restore, even if the record says
-    otherwise (heals configs saved before the e06s01 revision).
+    Only LAYOUT_WINDOW_TAGS are honoured: an older project that still carries a
+    config/diagnostic record (settings_window) must never move that window (e55s01).
+    Applied tags join `_positioned_windows`, so first-open centering yields to the
+    saved layout.
     """
     for rec in records:
         tag = rec.get("tag")
-        if not tag or not dpg.does_item_exist(tag):
+        if not tag or tag not in LAYOUT_WINDOW_TAGS or not dpg.does_item_exist(tag):
             continue
         try:
             pos = list(rec["pos"])
@@ -487,11 +549,11 @@ def apply_window_layout(records: list[dict[str, Any]]) -> None:
             dpg.set_item_pos(tag, pos)
             dpg.set_item_width(tag, rec["size"][0])
             dpg.set_item_height(tag, rec["size"][1])
-            shown = bool(rec.get("shown")) and tag not in LAYOUT_ALWAYS_HIDDEN_TAGS
-            if shown:
+            if bool(rec.get("shown")):
                 dpg.show_item(tag)
             else:
                 dpg.hide_item(tag)
+            _positioned_windows.add(tag)
         except Exception as e:
             log_error("Layout", f"apply {tag}: {e}")
 
@@ -606,7 +668,12 @@ def capture_project_state() -> dict[str, Any]:
         "mapper": _capture_mapper_state(),
         # 2026-09-07: the project also carries the MIDI rows that drive ITS
         # Mapper mappings, so opening the project restores its MIDI routing.
-        "midi": {"mapper_bindings": project_mapper_bindings()},
+        # e52s03: and its modes (definitions + LED) with their Binding rows.
+        "midi": {
+            "modes": capture_mode_defs(),
+            "mapper_bindings": project_mapper_bindings(),
+            "mode_bindings": project_mode_bindings(),
+        },
     }
 
 
@@ -755,6 +822,13 @@ def apply_project_state(doc: dict[str, Any]) -> None:
     if isinstance(midi_section, dict):  # 2026-09-07: restore the project's MIDI routing
         live_ids = {int(m["id"]) for m in state.mapper_mappings}
         apply_project_mapper_bindings(midi_section.get("mapper_bindings"), live_ids)
+        if "modes" in midi_section:  # e52s03: the project's mode layer
+            clear_all_modes()  # off LEDs while the OLD registry is still known
+            restore_mode_defs(midi_section.get("modes"))
+            apply_project_mode_bindings(midi_section.get("mode_bindings"), mode_names())
+            refresh_midi_modes_ui()
+            refresh_midi_mappings_ui()
+            refresh_mode_chip()
     apply_window_layout(doc.get("layout", {}).get("windows", []))
     theme = doc.get("theme")
     if isinstance(theme, dict):
@@ -987,9 +1061,20 @@ def _sanitize_project_state(raw: dict[str, Any]) -> dict[str, Any]:
     # 2026-09-07: project-scoped Midi rows pass through (bounded; missing/older
     # projects simply carry none and leave the global routing untouched).
     raw_midi = raw.get("midi")
-    if isinstance(raw_midi, dict) and isinstance(raw_midi.get("mapper_bindings"), list):
-        rows = [r for r in raw_midi["mapper_bindings"] if isinstance(r, dict)]
-        clean["midi"] = {"mapper_bindings": rows[: MAPPER_MAX_MAPPINGS * 8]}
+    if isinstance(raw_midi, dict):
+        clean_midi: dict[str, Any] = {}
+        if isinstance(raw_midi.get("mapper_bindings"), list):
+            rows = [r for r in raw_midi["mapper_bindings"] if isinstance(r, dict)]
+            clean_midi["mapper_bindings"] = rows[: MAPPER_MAX_MAPPINGS * 8]
+        # e52s03: the mode registry and its Binding rows, same bounds as the rows
+        if isinstance(raw_midi.get("modes"), list):
+            modes = [m for m in raw_midi["modes"] if isinstance(m, dict)]
+            clean_midi["modes"] = modes[:MAPPER_MAX_MAPPINGS]
+        if isinstance(raw_midi.get("mode_bindings"), list):
+            rows = [r for r in raw_midi["mode_bindings"] if isinstance(r, dict)]
+            clean_midi["mode_bindings"] = rows[: MAPPER_MAX_MAPPINGS * 8]
+        if clean_midi:
+            clean["midi"] = clean_midi
     return clean
 
 
@@ -1186,7 +1271,7 @@ def show_exit_confirm(sender: Any = None, app_data: Any = None, user_data: Any =
         with dpg.group(horizontal=True):
             dpg.add_button(label="Cancel", callback=cancel_exit, width=140)
             dpg.add_button(label="Exit", callback=confirm_exit, width=140)
-    dpg.show_item(EXIT_CONFIRM_TAG)
+    show_centered_window(EXIT_CONFIRM_TAG)  # e55: dialogs open centered
 
 
 def cancel_exit(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -1231,7 +1316,7 @@ def show_new_project_confirm(
         with dpg.group(horizontal=True):
             dpg.add_button(label="Cancel", callback=cancel_new_project, width=140)
             dpg.add_button(label="New project", callback=confirm_new_project, width=140)
-    dpg.show_item(NEW_PROJECT_CONFIRM_TAG)
+    show_centered_window(NEW_PROJECT_CONFIRM_TAG)  # e55: dialogs open centered
 
 
 def cancel_new_project(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -1517,7 +1602,7 @@ def open_step_picker(sender: Any = None, app_data: Any = None, user_data: Any = 
                     )
         with dpg.group(horizontal=True):
             dpg.add_button(label="Close", callback=_step_picker_close, width=280)
-    dpg.show_item(_STEP_PICKER_WIN)
+    show_centered_window(_STEP_PICKER_WIN)  # e55: dialogs open centered
 
 
 def _step_picker_apply(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -1611,6 +1696,7 @@ def _set_step_active(row: int, col: int, active: bool) -> None:
     if dpg.does_item_exist(f"seq_cb_{row}_{col}"):
         dpg.set_value(f"seq_cb_{row}_{col}", active)  # keep the cell checkbox in sync
     update_step_theme(row, col)
+    refresh_binding_leds()  # e53s02
 
 
 def set_step_row_active(row: int, active: bool) -> None:
@@ -1626,6 +1712,7 @@ def set_step_row_active(row: int, active: bool) -> None:
         if dpg.does_item_exist(f"seq_cb_{row}_{col}"):
             dpg.set_value(f"seq_cb_{row}_{col}", bool(active))
         update_step_theme(row, col)
+    refresh_binding_leds()  # e53s02
 
 
 def enable_step_row(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -2094,6 +2181,12 @@ def _add_tile_context_items(target_id: str) -> None:
         callback=on_tile_enable_color_correction,
         user_data=target_id,
     )
+    # e56: Set current — make this source the active/current one in vimix
+    dpg.add_menu_item(
+        label="Set current",
+        callback=on_tile_set_current,
+        user_data=target_id,
+    )
 
 
 def on_tile_enable_color_correction(
@@ -2110,6 +2203,20 @@ def on_tile_enable_color_correction(
     addr = f"/vimix/{target_id}/correction"
     osc_client.send_message(addr, 1.0)
     append_log("OUT", f"{addr} [1.00]")
+
+
+def on_tile_set_current(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Tile context menu > Set current: make the source current in vimix.
+
+    The address /vimix/<name> under the 'current' target is the no-arg trigger
+    from the vimix wiki ("A source name : Set source by name as current"); the
+    mouse path is tile-anchored, the MIDI twin is selection-relative
+    (set_current) per the volatile-source rule.
+    """
+    target_id = user_data
+    addr = f"/vimix/current/{target_id}"
+    osc_client.send_message(addr, [])
+    append_log("OUT", addr)
 
 
 def _tile_popup_tag(target_id: str) -> str:
@@ -2915,12 +3022,11 @@ PREVIEW_TRANSPORT_CONTROLS: tuple[tuple[str, int], ...] = (
     (PREVIEW_CLOSE_TAG, PREVIEW_BTN_CLOSE_W),
 )
 
-# Default window geometry when no remembered rect exists yet (a session rect
-# is remembered while the app runs and reused for the next preview).
+# Default window SIZE when no remembered rect exists yet (the position is
+# centered on first open, e55; a session rect is remembered while the app runs
+# and reused for the next preview).
 PREVIEW_WIN_W = 560
 PREVIEW_WIN_H = 440
-PREVIEW_WIN_X = 640
-PREVIEW_WIN_Y = 120
 
 _preview_player: Any = None  # composition-root-owned PreviewPlayer instance
 _preview_tex_dims: tuple[int, int] | None = None
@@ -3109,7 +3215,9 @@ def _open_preview_window(target_id: str, message: str | None = None) -> None:
     if _preview_win_rect is not None:
         x, y, w, h = _preview_win_rect
     else:
-        x, y, w, h = PREVIEW_WIN_X, PREVIEW_WIN_Y, PREVIEW_WIN_W, PREVIEW_WIN_H
+        # e55: first open -> centered on the viewport; later opens reuse the rect.
+        w, h = PREVIEW_WIN_W, PREVIEW_WIN_H
+        x, y = first_open_pos(w, h)
     if message is not None:
         title = "Preview"
         with dpg.window(label=title, tag=PREVIEW_WINDOW_TAG, width=420, height=120, pos=(x, y)):
@@ -3465,7 +3573,47 @@ PAIRING_PROMPT_TAG = "pairing_prompt_modal"
 PAIRING_CODE_INPUT_TAG = "pairing_code_input"
 PAIRING_STATUS_TAG = "pairing_status_text"
 PAIRING_PROMPT_WIDTH = 440
-PAIRING_PROMPT_HEIGHT = 210
+PAIRING_PROMPT_HEIGHT = 240
+# e55s02: the code field is as wide as four big monospace digits plus padding.
+PAIRING_CODE_INPUT_WIDTH = 140
+PAIRING_CODE_FONT_SIZE = 30
+# First existing path wins; the bundled ProggyTiny is the guaranteed fallback.
+_PAIRING_CODE_FONT_PATHS: tuple[str, ...] = (
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+    *_HELP_MONO_FONT_PATHS,
+    str(Path(__file__).resolve().parent / "viseqapp" / "assets" / "ProggyTiny.ttf"),
+)
+_pairing_code_font: Any = None
+
+
+def sanitize_pairing_code(value: Any) -> str:
+    """The first four ASCII digits of a typed pairing code (e55s02).
+
+    Non-digits (letters, spaces, punctuation) and anything past the fourth digit
+    are dropped, so the value that reaches `/auth` is always at most four digits.
+    """
+    return "".join(ch for ch in str(value or "") if ch in "0123456789")[:4]
+
+
+def _on_pairing_code_edit(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Input change: keep only the first four digits (e55s02).
+
+    Rewrites the value ONLY when it differs, so the cursor is not fought while
+    the digits are already clean.
+    """
+    code = sanitize_pairing_code(app_data)
+    if code != str(app_data or ""):
+        dpg.set_value(PAIRING_CODE_INPUT_TAG, code)
+
+
+def _on_pairing_code_enter(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Global Enter handler: submit ONLY while the pairing prompt is up (e55s02).
+
+    The digit filter owns the input callback, so Enter is routed here; the
+    existence guard keeps Enter inert in every other window.
+    """
+    if dpg.does_item_exist(PAIRING_PROMPT_TAG):
+        _pairing_connect()
 
 
 def _pairing_endpoint() -> tuple[str, int]:
@@ -3474,7 +3622,7 @@ def _pairing_endpoint() -> tuple[str, int]:
 
 
 def show_pairing_prompt(*_args: Any) -> None:
-    """Open the pairing modal (shown once at boot, e42s02)."""
+    """Open the pairing modal (shown once at boot, centered, e42s02/e55s02)."""
     if dpg.does_item_exist(PAIRING_PROMPT_TAG):
         dpg.delete_item(PAIRING_PROMPT_TAG)
     with dpg.window(
@@ -3492,16 +3640,19 @@ def show_pairing_prompt(*_args: Any) -> None:
         dpg.add_input_text(
             tag=PAIRING_CODE_INPUT_TAG,
             hint="4 digits",
-            width=160,
-            on_enter=True,
-            callback=_pairing_connect,
+            width=PAIRING_CODE_INPUT_WIDTH,
+            decimal=True,
+            auto_select_all=True,
+            callback=_on_pairing_code_edit,
         )
+        if _pairing_code_font is not None:
+            dpg.bind_item_font(PAIRING_CODE_INPUT_TAG, _pairing_code_font)
         dpg.add_text("", tag=PAIRING_STATUS_TAG, wrap=PAIRING_PROMPT_WIDTH - 40)
         dpg.add_separator()
         with dpg.group(horizontal=True):
             dpg.add_button(label="Skip", width=120, callback=hide_pairing_prompt)
             dpg.add_button(label="Connect", width=140, callback=_pairing_connect)
-    dpg.show_item(PAIRING_PROMPT_TAG)
+    show_centered_window(PAIRING_PROMPT_TAG)
 
 
 def hide_pairing_prompt(*_args: Any) -> None:
@@ -3513,7 +3664,7 @@ def hide_pairing_prompt(*_args: Any) -> None:
 def _pairing_connect(*_args: Any) -> None:
     """Connect button / Enter: exchange the code on a worker (HIGH-1)."""
     host, port = _pairing_endpoint()
-    code = str(dpg.get_value(PAIRING_CODE_INPUT_TAG) or "").strip()
+    code = sanitize_pairing_code(dpg.get_value(PAIRING_CODE_INPUT_TAG))
     if not host or not port:
         dpg.set_value(PAIRING_STATUS_TAG, "viOSC endpoint not configured.")
         return
@@ -3885,6 +4036,34 @@ def _on_fs_entry_click(sender: Any = None, app_data: Any = None, user_data: Any 
     state.fs_selected = str(entry.get("name") or "")
 
 
+def fs_file_step(delta: int, *_args: Any) -> None:
+    """Select the next/previous entry of the File Manager listing (wrap) (e54s02).
+
+    The walk follows `state.fs_entries` in list order (directories included); an
+    absent/unknown selection starts at the first entry going forward and the last
+    one going backward; an empty listing is a no-op. The selection is reflected
+    on the entry selectables so a rotary step is visible like a click.
+    """
+    names = [str(entry.get("name") or "") for entry in state.fs_entries]
+    names = [name for name in names if name]
+    if not names:
+        return
+    if state.fs_selected in names:
+        index = (names.index(state.fs_selected) + int(delta)) % len(names)
+    else:
+        index = 0 if int(delta) >= 0 else len(names) - 1
+    state.fs_selected = names[index]
+    _highlight_fs_selection()
+
+
+def _highlight_fs_selection() -> None:
+    """Reflect `state.fs_selected` on the File Manager entry selectables (e54s02)."""
+    for index, entry in enumerate(state.fs_entries):
+        tag = f"fs_entry_{index}"
+        if dpg.does_item_exist(tag):
+            dpg.set_value(tag, str(entry.get("name") or "") == state.fs_selected)
+
+
 def fs_go_up(*_args: Any) -> None:
     """Up one level, but never above the configured roots."""
     current = state.fs_current_path
@@ -4159,7 +4338,7 @@ def fs_open_rename_draft(*_args: Any) -> None:
         with dpg.group(horizontal=True):
             dpg.add_button(label="Cancel", width=130, callback=cancel_draft_rename)
             dpg.add_button(label="Rename", width=130, callback=confirm_draft_rename)
-    dpg.show_item(FS_DRAFT_RENAME_TAG)
+    show_centered_window(FS_DRAFT_RENAME_TAG)  # e55: dialogs open centered
 
 
 def cancel_draft_rename(*_args: Any) -> None:
@@ -4213,7 +4392,7 @@ def fs_open_sessions(*_args: Any) -> None:
         with dpg.group(horizontal=True):
             dpg.add_button(label="Close", width=130, callback=close_session_picker)
             dpg.add_button(label="Import as draft", width=170, callback=import_selected_session)
-    dpg.show_item(FS_SESSION_PICKER_TAG)
+    show_centered_window(FS_SESSION_PICKER_TAG)  # e55: dialogs open centered
     _fs_request_sessions()
 
 
@@ -4671,7 +4850,7 @@ def _show_draft_load_confirm(path: str) -> None:
         with dpg.group(horizontal=True):
             dpg.add_button(label="Cancel", width=130, callback=cancel_draft_load)
             dpg.add_button(label="Send", width=130, callback=confirm_draft_load)
-    dpg.show_item(FS_DRAFT_CONFIRM_TAG)
+    show_centered_window(FS_DRAFT_CONFIRM_TAG)  # e55: dialogs open centered
 
 
 def cancel_draft_load(*_args: Any) -> None:
@@ -4773,6 +4952,7 @@ def _sync_drafts_learn_markers() -> None:
         (MIDI_ACTION_DRAFT_SAVE, "fs_mk_draft_save"),
         (MIDI_ACTION_DRAFT_NEXT, "fs_mk_draft_next"),
         (MIDI_ACTION_DRAFT_PREV, "fs_mk_draft_prev"),
+        (MIDI_ACTION_DRAFT_STEP, "fs_mk_draft_step"),
     ):
         learn_marker(
             action_id,
@@ -4789,13 +4969,19 @@ def _sync_file_manager_learn_marker() -> None:
         return
     dpg.delete_item(FILE_MANAGER_LEARN_SLOT, children_only=True)
     if state.midi_learn_mode:
-        learn_marker(
-            MIDI_ACTION_FILE_MANAGER_TOGGLE,
-            {},
-            parent=FILE_MANAGER_LEARN_SLOT,
-            tag="fs_mk_toggle",
-            tooltip="Map: File Manager window",
-        )
+        for action_id, tag in (
+            (MIDI_ACTION_FILE_MANAGER_TOGGLE, "fs_mk_toggle"),
+            (MIDI_ACTION_FILE_STEP, "fs_mk_file_step"),
+            (MIDI_ACTION_FILE_NEXT, "fs_mk_file_next"),
+            (MIDI_ACTION_FILE_PREV, "fs_mk_file_prev"),
+        ):
+            learn_marker(
+                action_id,
+                {},
+                parent=FILE_MANAGER_LEARN_SLOT,
+                tag=tag,
+                tooltip=f"Map: {actions.action_label(action_id)}",
+            )
 
 
 def midi_action_beat_source(mode: str) -> None:
@@ -4891,6 +5077,7 @@ def _exec_mapper_enable(params: dict[str, Any], value: int) -> None:
     mapper.set_mapping_enabled(mid, enabled)
     if dpg.does_item_exist(f"mapper_enable_{mid}"):
         dpg.set_value(f"mapper_enable_{mid}", enabled)  # the card checkbox follows in place
+    refresh_binding_leds()  # e53s02
 
 
 def _exec_mapper_reset(params: dict[str, Any], value: int) -> None:
@@ -4902,6 +5089,63 @@ def _exec_mapper_reset(params: dict[str, Any], value: int) -> None:
     if value < MIDI_CC_TRIGGER_THRESHOLD:
         return
     reset_mapping(None, None, mid)  # neutral + widget re-sync, mouse-path identical
+
+
+def _exec_mapping_copy(params: dict[str, Any], value: int) -> None:
+    """e51s02: snapshot a Mapping into the clipboard (momentary marker)."""
+    mid = int(params.get("mapping_id", -1))
+    if mapper.find_mapping(mid) is None:
+        _log_stale_midi_target(MIDI_ACTION_MAPPING_COPY, f"no mapping {mid}")
+        return
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    copy_mapper_mapping(None, None, mid)
+
+
+def _exec_mapping_cut(params: dict[str, Any], value: int) -> None:
+    """e51s02: snapshot a Mapping into the clipboard and remove it."""
+    mid = int(params.get("mapping_id", -1))
+    if mapper.find_mapping(mid) is None:
+        _log_stale_midi_target(MIDI_ACTION_MAPPING_CUT, f"no mapping {mid}")
+        return
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    cut_mapper_mapping(None, None, mid)
+
+
+def _exec_mapping_move(params: dict[str, Any], value: int) -> None:
+    """e51s02: shift a Mapping by ``delta`` slots inside its own line."""
+    mid = int(params.get("mapping_id", -1))
+    delta = int(params.get("delta", 0))
+    if mapper.find_mapping(mid) is None:
+        _log_stale_midi_target(MIDI_ACTION_MAPPING_MOVE, f"no mapping {mid}")
+        return
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    move_mapper_mapping(None, None, (mid, delta))
+
+
+def _exec_mapping_paste(params: dict[str, Any], value: int) -> None:
+    """e51s02: append the clipboard to the line resolved at trigger time.
+
+    Variant B (same rule as _exec_mapper_line): the LINE is bound, the target
+    source is read from mapper.row_targets() at trigger time; a stale line index
+    is a logged no-op, an empty clipboard is a silent no-op. A Global marker
+    (``{"global": True}``) pastes onto the source-less line instead.
+    """
+    if params.get("global"):
+        if value < MIDI_CC_TRIGGER_THRESHOLD:
+            return
+        paste_mapper_mapping(None, None, None)
+        return
+    line = int(params.get("line", -1))
+    rows = mapper.row_targets()
+    if line < 0 or line >= len(rows):
+        _log_stale_midi_target(MIDI_ACTION_MAPPING_PASTE, f"no line {line}")
+        return
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    paste_mapper_mapping(None, None, rows[line])
 
 
 def _exec_mapper_line(params: dict[str, Any], value: int) -> None:
@@ -5006,6 +5250,34 @@ def _exec_source_prev(params: dict[str, Any], value: int) -> None:
     _cycle_media_selection(-1)
 
 
+def _exec_step(step_action: str, params: dict[str, Any], value: int) -> None:
+    """e54s02: fire a step action's next/prev pair by the resolver's detent count.
+
+    ONE dispatcher for every rotary target: the pair comes from the step table
+    (source browsing, Session Drafts, the File Manager), the signed count from
+    `params["steps"]`. `steps` is never forwarded to the target, a zero count or
+    an unknown step action is a no-op, and the fired value clears the momentary
+    executors' trigger gate.
+    """
+    steps = int(params.get("steps") or 0)
+    if steps == 0:
+        return
+    pair = STEP_ACTIONS.get(step_action)
+    if pair is None:
+        return
+    target = pair[0] if steps > 0 else pair[1]
+    forwarded = {key: item for key, item in params.items() if key != "steps"}
+    for _ in range(abs(steps)):
+        midi_execute(target, forwarded, MIDI_CC_TRIGGER_THRESHOLD)
+
+
+def _exec_file_step(params: dict[str, Any], value: int, delta: int) -> None:
+    """e54s02: a momentary press steps the File Manager selection (threshold-gated)."""
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    fs_file_step(delta)
+
+
 def _cycle_media_selection(direction: int) -> None:
     """Step the Mediagrid selection by one in the grid order (e33s04).
 
@@ -5101,8 +5373,53 @@ def _exec_enable_correction(params: dict[str, Any], value: int) -> None:
     append_log("OUT", f"{addr} [1.00]")
 
 
+def _exec_set_current(params: dict[str, Any], value: int) -> None:
+    """Make the SELECTED source current in vimix (no-arg /vimix/current/<name>).
+
+    The mouse twin (tile menu) is tile-anchored; the MIDI action is
+    selection-relative per the volatile-source rule.
+    """
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    selected = state.viseq_selected_source
+    if selected is None:
+        _log_stale_midi_target(MIDI_ACTION_SET_CURRENT, "no selection")
+        return
+    addr = f"/vimix/current/{selected}"
+    osc_client.send_message(addr, [])
+    append_log("OUT", addr)
+
+
 # e33s01: one dispatcher per registered action (viseqapp/actions.py owns the
 # metadata). Lambdas close over the module helpers, which resolve at call time.
+
+
+def _exec_mode_toggle(params: dict[str, Any], value: int) -> None:
+    """A MIDI note (always) or a CC at the trigger threshold toggles a mode (e52s01)."""
+    source_type = str(params.get("source_type") or "")
+    if source_type != "note" and value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    mode = str(params.get("mode") or "")
+    active = toggle_mode(mode)
+    if active is None:
+        _log_stale_midi_target(MIDI_ACTION_MODE_TOGGLE, f"no mode {mode!r}")
+        return
+    if active:
+        reset_step_memory(mode)  # e52s04: a knob moved while the mode was off must not burst
+    send_mode_led(mode, active)
+    refresh_midi_modes_ui()
+    refresh_mode_chip()
+    refresh_binding_leds()  # e53s02
+
+
+def _exec_modes_clear(params: dict[str, Any], value: int) -> None:
+    """Turn every active mode off, LEDs included (e52s01)."""
+    clear_all_modes()
+    refresh_midi_modes_ui()
+    refresh_mode_chip()
+    refresh_binding_leds()  # e53s02
+
+
 _MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
     MIDI_ACTION_SEQ_TOGGLE: lambda p, v: midi_action_seq_toggle(
         int(p.get("row", 0)), int(p.get("col", 0))
@@ -5126,18 +5443,31 @@ _MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
     # e33s04: source browsing (Mediagrid selection cycle)
     MIDI_ACTION_SOURCE_NEXT: _exec_source_next,
     MIDI_ACTION_SOURCE_PREV: _exec_source_prev,
+    # e52s04 / e54s02: rotation stepping — ONE generic dispatcher over the step table
+    MIDI_ACTION_SOURCE_STEP: lambda p, v: _exec_step(MIDI_ACTION_SOURCE_STEP, p, v),
+    MIDI_ACTION_DRAFT_STEP: lambda p, v: _exec_step(MIDI_ACTION_DRAFT_STEP, p, v),
+    MIDI_ACTION_FILE_STEP: lambda p, v: _exec_step(MIDI_ACTION_FILE_STEP, p, v),
     # e33s04: selection-relative actions — never anchored to a volatile source
     MIDI_ACTION_REGEN_SELECTED: _exec_regen_selected,
     MIDI_ACTION_SEQ_ROW_ASSIGN: _exec_seq_row_assign,
     MIDI_ACTION_SEQ_ROW_ENABLE: _exec_seq_row_active_true,
     MIDI_ACTION_SEQ_ROW_DISABLE: _exec_seq_row_active_false,
     MIDI_ACTION_ENABLE_CORRECTION: _exec_enable_correction,
+    MIDI_ACTION_SET_CURRENT: _exec_set_current,
     # e39s01: the I/O Monitor window toggle (mappable per the e33 rule)
     MIDI_ACTION_IO_MONITOR_TOGGLE: lambda p, v: _exec_monitor_toggle(p, v),
     # e40s01: arm/disarm a Mapping's Enabled gate
     MIDI_ACTION_MAPPING_TOGGLE: lambda p, v: _exec_mapping_toggle(p, v),
     # e40s08: create a State Mapping on a source line (the State box '+')
     MIDI_ACTION_MAPPING_ADD: lambda p, v: _exec_mapping_add(p, v),
+    # e51s02: clipboard + in-line moves (MIDI-mappable per the e33 rule)
+    MIDI_ACTION_MAPPING_COPY: _exec_mapping_copy,
+    MIDI_ACTION_MAPPING_CUT: _exec_mapping_cut,
+    MIDI_ACTION_MAPPING_MOVE: _exec_mapping_move,
+    MIDI_ACTION_MAPPING_PASTE: _exec_mapping_paste,
+    # e52s01: MIDI modes — toggle ONE named mode / clear every mode
+    MIDI_ACTION_MODE_TOGGLE: _exec_mode_toggle,
+    MIDI_ACTION_MODES_CLEAR: _exec_modes_clear,
     # e42s02: re-open the pairing prompt (viOSC restarted -> new code)
     MIDI_ACTION_PAIRING_PROMPT: lambda p, v: _exec_pairing_prompt(p, v),
     # e43s02: show/hide the File Manager window
@@ -5147,6 +5477,9 @@ _MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
     MIDI_ACTION_DRAFT_SAVE: _exec_draft_save,
     MIDI_ACTION_DRAFT_NEXT: _exec_draft_step(1),
     MIDI_ACTION_DRAFT_PREV: _exec_draft_step(-1),
+    # e54s02: the File Manager selection by rotation or by a button
+    MIDI_ACTION_FILE_NEXT: lambda p, v: _exec_file_step(p, v, 1),
+    MIDI_ACTION_FILE_PREV: lambda p, v: _exec_file_step(p, v, -1),
 }
 
 _last_unknown_action_log: dict[str, float] = {}  # action id -> last log time (throttle)
@@ -5250,6 +5583,32 @@ def _record_monitor_rx(
     )
 
 
+def _fire_binding_leds(controller: dict[str, Any], msg: Any, port_name: str) -> None:
+    """Flash the press LEDs of the eligible Bindings for one incoming message (e53s01).
+
+    A `state` Binding is left to the state oracle (e53s02), and a Binding
+    suppressed by an inactive mode never lights (the same gate the resolver
+    uses), so the LEDs cannot disagree with the dispatch.
+    """
+    bindings = list(controller.get("bindings") or []) + list(controller.get("auto_bindings") or [])
+    profile = controller_profile_of(controller)
+    resolved: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    state_targets: set[str] = set()
+    for binding in led_bindings_for_message(msg, port_name, bindings):
+        led = resolve_binding_led(binding, profile)
+        if led is None:
+            continue
+        resolved.append((binding, led))
+        if binding_led_behavior(binding) == MIDI_LED_BEHAVIOR_STATE:
+            state_targets.add(binding_led_key(led))
+    for binding, led in resolved:
+        if binding_led_behavior(binding) == MIDI_LED_BEHAVIOR_STATE:
+            continue  # e53s02 owns the state behaviour
+        if binding_led_key(led) in state_targets:
+            continue  # a state LED governs this target: a flash would fight it
+        flash_binding_led(controller, led)
+
+
 def handle_midi_message(msg: Any, port_name: str) -> None:
     """Mapping one incoming message (main thread): learn capture first, then dispatch.
 
@@ -5279,10 +5638,20 @@ def handle_midi_message(msg: Any, port_name: str) -> None:
         bindings = None
     outcome = IO_MONITOR_OUTCOME_NOBIND if bindings is None else IO_MONITOR_OUTCOME_NOMATCH
     details: list[str] = []
-    for action, params, value in resolve_midi_message(msg, port_name, bindings):
+    muted_modes: set[str] = set()
+    if bindings is not None:
+        resolved, muted_modes = resolve_midi_message_report(msg, port_name, bindings)
+        if controller is not None:
+            _fire_binding_leds(controller, msg, port_name)  # e53s01
+    else:
+        resolved = []
+    for action, params, value in resolved:
         _midi_enqueue_execute(action, params, value)
         outcome, detail = _monitor_outcome_for(action, params, value)
         details.append(detail)
+    if not details and muted_modes:  # e52s02: an active mode gate swallowed everything
+        outcome = IO_MONITOR_OUTCOME_MUTED
+        details = [f"mode {', '.join(sorted(muted_modes))}"]
     if not details and bindings is not None:
         _log_unmatched_midi(msg, port_name)
     _record_monitor_rx(port_name, msg_type, channel, number, raw, outcome, "; ".join(details))
@@ -5313,6 +5682,7 @@ def _refresh_learn_surfaces() -> None:
     """
     if dpg.does_item_exist("mapper_mappings_group"):
         refresh_mapper_ui()
+    refresh_midi_modes_ui()  # e52s01: the Modes list's red-M markers follow the mode
     _sync_media_learn_bar()
     _sync_sequencer_learn_strip()
     _sync_seq_row_learn_strip()
@@ -5392,11 +5762,12 @@ def _sync_media_learn_bar() -> None:
     """Create or drop the Mediagrid source-browsing learn bar (e33s04).
 
     While MIDI Learn is on, the sources window shows ONE grouped marker bar
-    above the grid — the user asked for fixed slots with separators: three
-    generic markers (next/prev/regen), a dash, the 8 step-sequencer slots, a
-    dash, the 4 Mapper slots. Slot bindings are selection-relative and
-    pre-bindable even when fewer rows exist (a missing line is a logged
-    no-op). Leaving learn mode removes the bar; rebuilt from scratch each time.
+    above the grid — the user asked for fixed slots with separators: six
+    generic markers (next/prev/step/regen/correction/set-current), a dash, the
+    8 step-sequencer slots, a dash, the 4 Mapper slots. Slot bindings are
+    selection-relative and pre-bindable even when fewer rows exist (a missing
+    line is a logged no-op). Leaving learn mode removes the bar; rebuilt from
+    scratch each time.
     """
     bar_tag = "media_learn_bar"
     if dpg.does_item_exist(bar_tag):
@@ -5415,8 +5786,16 @@ def _sync_media_learn_bar() -> None:
     with dpg.group(**bar_kwargs) as bar:
         learn_marker(MIDI_ACTION_SOURCE_NEXT, {}, parent=bar, tag="media_mk_next")
         learn_marker(MIDI_ACTION_SOURCE_PREV, {}, parent=bar, tag="media_mk_prev")
+        learn_marker(
+            MIDI_ACTION_SOURCE_STEP,
+            {},
+            parent=bar,
+            tag="media_mk_step",
+            tooltip="Map: step sources by rotation",
+        )
         learn_marker(MIDI_ACTION_REGEN_SELECTED, {}, parent=bar, tag="media_mk_regen")
         learn_marker(MIDI_ACTION_ENABLE_CORRECTION, {}, parent=bar, tag="media_mk_cc")
+        learn_marker(MIDI_ACTION_SET_CURRENT, {}, parent=bar, tag="media_mk_setcurrent")
         _learn_group_gap(bar)
         for slot in range(1, NUM_TRACKS + 1):
             learn_marker(
@@ -5545,6 +5924,11 @@ def midi_learn_complete(binding: dict[str, Any], port_name: str | None = None) -
     action, params = state.midi_learn_pending
     binding["action"] = action
     binding["params"] = params
+    # e52s08: the learned Binding also takes the mode that is active right now
+    # (the most recently activated one); a MODE_TOGGLE never gates itself.
+    learned_mode = "" if action == MIDI_ACTION_MODE_TOGGLE else (most_recent_mode() or "")
+    if learned_mode:
+        set_binding_mode(binding, learned_mode)
     controller = find_controller_by_port(port_name) if port_name else None
     if controller is None:
         # Unreachable from the app (the worker listens only on configured
@@ -5569,11 +5953,12 @@ def midi_learn_complete(binding: dict[str, Any], port_name: str | None = None) -
     if dpg.does_item_exist("midi_learn_btn"):
         dpg.set_item_label("midi_learn_btn", "Learn mapping...")
     if dpg.does_item_exist("midi_learn_status"):
+        mode_suffix = f" [mode {learned_mode}]" if learned_mode else ""
         dpg.set_value(
             "midi_learn_status",
             "Bound: "
             f"{actions.action_label(action)} <- "
-            f"{binding['device']} {binding['type']} {binding['number']}",
+            f"{binding['device']} {binding['type']} {binding['number']}{mode_suffix}",
         )
 
 
@@ -5631,26 +6016,151 @@ def on_midi_enable(sender: Any, app_data: Any, user_data: Any) -> None:
 
 
 def _midi_binding_label(binding: dict[str, Any]) -> str:
-    """Human-readable row label for one mapping (e09s02)."""
+    """Human-readable row label for one mapping (e09s02; e52s02 adds the mode tag)."""
     params = binding.get("params") or {}
     suffix = f" {params}" if params else ""
+    tag = binding_mode(binding)
+    mode_suffix = f" [mode {tag}]" if tag else ""
     return (
         f"{binding.get('device', '?')} {binding.get('type', '?')} "
         f"{binding.get('number', '?')} -> "
-        f"{actions.action_label(str(binding.get('action', '?')))}{suffix}"
+        f"{actions.action_label(str(binding.get('action', '?')))}{suffix}{mode_suffix}"
+    )
+
+
+MIDI_MODE_BASE_CHOICE = "(base)"  # the "no gate tag" choice of the per-Binding combo
+
+
+def on_binding_mode_change(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Bindings list > Mode: write the gate tag on that Binding and persist (e52s02)."""
+    idx = int(user_data)
+    bindings = selected_bindings()
+    if not (0 <= idx < len(bindings)):
+        return
+    chosen = "" if app_data in (None, MIDI_MODE_BASE_CHOICE) else str(app_data)
+    set_binding_mode(bindings[idx], chosen)
+    save_midi_controllers()
+    refresh_midi_mappings_ui()
+    refresh_mapper_ui()
+
+
+MIDI_LED_BEHAVIOR_NONE = "-"
+MIDI_LED_BEHAVIOR_CHOICES: tuple[str, ...] = (
+    MIDI_LED_BEHAVIOR_NONE,
+    MIDI_LED_BEHAVIOR_PRESS,
+    MIDI_LED_BEHAVIOR_STATE,
+)
+MIDI_LED_BINDING_FIELDS: tuple[str, ...] = ("number", "on_value", "off_value")
+
+
+def on_binding_led_behavior_change(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Bindings list > Behavior: set (or clear) that Binding's LED behaviour (e53s03)."""
+    idx = int(user_data)
+    bindings = selected_bindings()
+    if not (0 <= idx < len(bindings)):
+        return
+    chosen = None if app_data in (None, MIDI_LED_BEHAVIOR_NONE) else str(app_data)
+    bindings[idx]["led_behavior"] = chosen
+    save_midi_controllers()
+
+
+def _binding_effective_led(binding: dict[str, Any]) -> dict[str, Any] | None:
+    """The LED actually sent for a Binding: explicit spec, else the profile mirror (e53)."""
+    controller = selected_controller()
+    profile = controller_profile_of(controller) if controller is not None else None
+    return resolve_binding_led(binding, profile)
+
+
+def on_binding_led_change(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Bindings list > LED editor: merge one field into that Binding's LED spec (e53s03)."""
+    idx, field = user_data
+    bindings = selected_bindings()
+    if not (0 <= int(idx) < len(bindings)):
+        return
+    binding = bindings[int(idx)]
+    led = dict(_binding_effective_led(binding) or {})
+    led.setdefault("controller_port", str(binding.get("device") or ""))
+    led.setdefault("kind", MIDI_MODE_LED_KINDS[0])
+    for key, default in MIDI_MODE_LED_FIELD_DEFAULTS.items():
+        led.setdefault(key, default)
+    led[field] = str(app_data) if field == "kind" else int(app_data or 0)
+    binding["led"] = led
+    save_midi_controllers()
+
+
+def _midi_binding_led_editor(idx: int, binding: dict[str, Any]) -> None:
+    """One Binding's compact LED editor: behavior, kind, number, on, off (e53s03).
+
+    The controller port is implicit (the row belongs to the selected controller),
+    so the editor omits the port combo the e52 mode editor needs.
+    """
+    raw_led = binding.get("led")
+    led: dict[str, Any] = (
+        raw_led if isinstance(raw_led, dict) else (_binding_effective_led(binding) or {})
+    )
+    dpg.add_combo(
+        items=list(MIDI_LED_BEHAVIOR_CHOICES),
+        default_value=binding_led_behavior(binding),
+        width=66,
+        callback=on_binding_led_behavior_change,
+        user_data=idx,
+    )
+    dpg.add_combo(
+        items=list(MIDI_MODE_LED_KINDS),
+        default_value=str(led.get("kind") or MIDI_MODE_LED_KINDS[0]),
+        width=54,
+        callback=on_binding_led_change,
+        user_data=(idx, "kind"),
+    )
+    for field in MIDI_LED_BINDING_FIELDS:
+        dpg.add_drag_int(
+            default_value=int(led.get(field) or MIDI_MODE_LED_FIELD_DEFAULTS[field]),
+            width=50,
+            callback=on_binding_led_change,
+            user_data=(idx, field),
+        )
+
+
+def _midi_binding_row_label(binding: dict[str, Any]) -> str:
+    """Compact Bindings-list label: the device is redundant on the selected controller's list."""
+    params = binding.get("params") or {}
+    suffix = f" {params}" if params else ""
+    tag = binding_mode(binding)
+    mode_suffix = f" [mode {tag}]" if tag else ""
+    return (
+        f"{binding.get('type', '?')} {binding.get('number', '?')} -> "
+        f"{actions.action_label(str(binding.get('action', '?')))}{suffix}{mode_suffix}"
     )
 
 
 def refresh_midi_mappings_ui() -> None:
-    """Rebuild the Bindings list for the selected controller (main thread) (e14s03)."""
+    """Rebuild the Bindings list for the selected controller (main thread) (e14s03).
+
+    e52s02: each row carries a Mode combo (base + the registered modes), so ANY
+    Binding — not just a Mapper one — can be tagged. e53: the Mode + LED controls
+    live on a SECOND line, because one line (the long label plus six widgets)
+    overflows the 520 px window and the LED fields become unclickable.
+    """
     if not dpg.does_item_exist("midi_mappings_group"):
         return
     dpg.delete_item("midi_mappings_group", children_only=True)
-    bindings = selected_bindings()
-    for idx, binding in enumerate(bindings):
-        with dpg.group(horizontal=True, parent="midi_mappings_group"):
-            dpg.add_text(_midi_binding_label(binding))
-            dpg.add_button(label="Delete", callback=delete_midi_binding, user_data=idx)
+    choices = [MIDI_MODE_BASE_CHOICE, *mode_names()]
+    for idx, binding in enumerate(selected_bindings()):
+        with dpg.group(parent="midi_mappings_group"):
+            dpg.add_text(_midi_binding_row_label(binding))
+            with dpg.group(horizontal=True):
+                dpg.add_combo(
+                    items=choices,
+                    default_value=binding_mode(binding) or MIDI_MODE_BASE_CHOICE,
+                    width=110,
+                    callback=on_binding_mode_change,
+                    user_data=idx,
+                )
+                _midi_binding_led_editor(idx, binding)
+                dpg.add_button(label="Delete", callback=delete_midi_binding, user_data=idx)
+            dpg.add_spacer(height=2)
 
 
 def delete_midi_binding(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -5661,6 +6171,289 @@ def delete_midi_binding(sender: Any = None, app_data: Any = None, user_data: Any
         del bindings[idx]
         save_midi_controllers()  # 2026-09-07: deletions persist immediately
     refresh_midi_mappings_ui()
+
+
+# ---------- e52s01: MIDI modes — registry UI, toggle executors, toolbar chip ----------
+# The registry lives in viseqapp/midi.py (dpg-free); this block is only widget
+# wiring per REFACTOR_LATEST.md. Markers follow the e33 rule: rendered only while
+# state.midi_learn_mode is on (refresh_midi_modes_ui is rebuilt by
+# _refresh_learn_surfaces on every learn transition).
+
+MIDI_MODE_NAME_INPUT_TAG = "midi_mode_name_input"
+MIDI_MODE_ADD_BUTTON_TAG = "midi_mode_add_btn"
+MIDI_MODE_STATUS_TAG = "midi_mode_status"
+MIDI_MODES_SCROLL_TAG = "midi_modes_scroll"
+MIDI_MODES_GROUP_TAG = "midi_modes_group"
+MIDI_MODE_DELETE_CONFIRM_TAG = "midi_mode_delete_confirm"
+MIDI_MODE_LED_FIELDS: tuple[str, ...] = ("number", "on_value", "off_value")
+MIDI_MODE_LED_FIELD_DEFAULTS: dict[str, int] = {
+    "number": 0,
+    "on_value": MIDI_MODE_LED_ON_DEFAULT,
+    "off_value": MIDI_MODE_LED_OFF_DEFAULT,
+}
+MODE_BADGE_GROUP_TAG = "mode_badges"
+MODE_BADGE_ABBREV_CHARS = 3
+MODE_BADGE_W = 26
+MODE_BADGE_H = 18
+MODE_BADGE_TIP = "Mode {name} - click to turn it off"
+# e52s06 (rig feedback 2026-09-20): the strip is a SEPARATE window, decoupled
+# from the toolbar. Coupling it to the bar's width broke the bar itself (the
+# whole icon row vanished when no mode was active), so the bar is back to its
+# e46 shape and the badges live in their own small always-on-top window at the
+# top-left, hidden while no mode is active.
+MODE_BADGES_WINDOW_TAG = "mode_badges_window"
+MODE_BADGES_POS = (2, 4)  # the bar's original top-left slot, far from the icons
+
+# BUG-2026-09-20T mode chip: the boot project load runs BELOW this point but the
+# badges window is built further down, so the paint needs an explicit "is the
+# strip built yet" flag instead of a dpg query.
+MODE_BADGES_READY = False
+
+
+def on_add_midi_mode(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Modes > Add: register the typed name, or say why it was refused (e52s01)."""
+    typed = ""
+    if dpg.does_item_exist(MIDI_MODE_NAME_INPUT_TAG):
+        typed = str(dpg.get_value(MIDI_MODE_NAME_INPUT_TAG) or "")
+    added = add_mode(typed)
+    if dpg.does_item_exist(MIDI_MODE_STATUS_TAG):
+        message = f"Mode '{added}' added" if added else "Enter a unique, non-empty mode name"
+        dpg.set_value(MIDI_MODE_STATUS_TAG, message)
+    if added and dpg.does_item_exist(MIDI_MODE_NAME_INPUT_TAG):
+        dpg.set_value(MIDI_MODE_NAME_INPUT_TAG, "")
+    refresh_midi_modes_ui()
+
+
+def on_delete_midi_mode(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Modes > Delete: open the counted confirmation (e52s01; e52s03 counts it)."""
+    show_midi_mode_delete_confirm(str(user_data or ""))
+
+
+def show_midi_mode_delete_confirm(name: str) -> None:
+    """Open the delete-a-mode modal, stating what the delete would touch (e52s03)."""
+    if dpg.does_item_exist(MIDI_MODE_DELETE_CONFIRM_TAG):
+        dpg.delete_item(MIDI_MODE_DELETE_CONFIRM_TAG)
+    counts = mode_usage(name)
+    with dpg.window(
+        label="Delete mode",
+        tag=MIDI_MODE_DELETE_CONFIRM_TAG,
+        modal=True,
+        width=420,
+        height=150,
+        no_resize=True,
+    ):
+        themed_text(f"Delete mode '{name}'?", slot="text")
+        themed_text(
+            f"{counts['bindings_untagged']} binding(s) return to base, "
+            f"{counts['toggle_rows_dropped']} toggle binding(s) removed.",
+            slot="text_dim",
+        )
+        dpg.add_separator()
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="Cancel", callback=cancel_midi_mode_delete, width=140)
+            dpg.add_button(
+                label="Delete",
+                callback=confirm_midi_mode_delete,
+                user_data=name,
+                width=140,
+            )
+    show_centered_window(MIDI_MODE_DELETE_CONFIRM_TAG)  # e55: dialogs open centered
+
+
+def cancel_midi_mode_delete(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Delete-mode modal Cancel: close it, nothing changes (e52s03)."""
+    if dpg.does_item_exist(MIDI_MODE_DELETE_CONFIRM_TAG):
+        dpg.delete_item(MIDI_MODE_DELETE_CONFIRM_TAG)
+
+
+def confirm_midi_mode_delete(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Delete-mode modal Delete: clear the tags, drop the toggle rows, rebuild (e52s03)."""
+    name = str(user_data or "")
+    cancel_midi_mode_delete()
+    counts = remove_mode(name)
+    if dpg.does_item_exist(MIDI_MODE_STATUS_TAG):
+        dpg.set_value(
+            MIDI_MODE_STATUS_TAG,
+            f"Mode '{name}' deleted ({counts['bindings_untagged']} binding(s) back to base)",
+        )
+    refresh_midi_modes_ui()
+    refresh_midi_mappings_ui()
+    refresh_mapper_ui()
+
+
+def on_midi_mode_led_change(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """A mode's LED editor changed: merge the field into the mode's LED spec (e52s01)."""
+    name, field = user_data
+    definition = mode_definition(name)
+    led = dict(definition.get("led") or {}) if definition is not None else {}
+    led.setdefault("controller_port", "")
+    led.setdefault("kind", MIDI_MODE_LED_KINDS[0])
+    for key, default in MIDI_MODE_LED_FIELD_DEFAULTS.items():
+        led.setdefault(key, default)
+    value = app_data
+    led[field] = str(value) if field in ("controller_port", "kind") else int(value or 0)
+    set_mode_led(name, led)
+
+
+def _midi_mode_led_editor(name: str) -> None:
+    """One mode's compact LED editor: controller, kind, number, on, off (e52s01)."""
+    definition = mode_definition(name)
+    led = definition.get("led") if isinstance(definition, dict) else None
+    led = led if isinstance(led, dict) else {}
+    ports = [str(controller.get("port") or "") for controller in midi_controllers]
+    port = str(led.get("controller_port") or (ports[0] if ports else ""))
+    with dpg.group(horizontal=True):
+        dpg.add_combo(
+            items=ports,
+            default_value=port,
+            width=130,
+            tag=f"midi_mode_led_port_{name}",
+            callback=on_midi_mode_led_change,
+            user_data=(name, "controller_port"),
+        )
+        dpg.add_combo(
+            items=list(MIDI_MODE_LED_KINDS),
+            default_value=str(led.get("kind") or MIDI_MODE_LED_KINDS[0]),
+            width=64,
+            callback=on_midi_mode_led_change,
+            user_data=(name, "kind"),
+        )
+        for field in MIDI_MODE_LED_FIELDS:
+            dpg.add_drag_int(
+                default_value=int(led.get(field) or MIDI_MODE_LED_FIELD_DEFAULTS[field]),
+                width=52,
+                callback=on_midi_mode_led_change,
+                user_data=(name, field),
+            )
+
+
+def refresh_midi_modes_ui() -> None:
+    """Rebuild the Modes list of the MIDI window (e52s01)."""
+    if not dpg.does_item_exist(MIDI_MODES_GROUP_TAG):
+        return
+    dpg.delete_item(MIDI_MODES_GROUP_TAG, children_only=True)
+    for name in mode_names():
+        with dpg.group(horizontal=True, parent=MIDI_MODES_GROUP_TAG) as row:
+            dpg.add_text(name)
+            _midi_mode_led_editor(name)
+            if state.midi_learn_mode:
+                learn_marker(
+                    MIDI_ACTION_MODE_TOGGLE,
+                    {"mode": name},
+                    parent=row,
+                    tag=f"midi_mode_mk_{name}",
+                    tooltip=f"Map: toggle mode {name}",
+                )
+            dpg.add_button(label="Delete", callback=on_delete_midi_mode, user_data=name)
+    refresh_mode_chip()
+
+
+def mode_badge_tag(index: int) -> str:
+    """Tag of one badge in the strip (index-based: a mode name is free text) (e52s06)."""
+    return f"mode_badge_{index}"
+
+
+def mode_badge_label(name: str) -> str:
+    """The compact badge caption: the first few characters, uppercased (e52s06)."""
+    return str(name).strip()[:MODE_BADGE_ABBREV_CHARS].upper()
+
+
+def active_modes_in_order() -> list[str]:
+    """The active mode names, activation order first (e52s06; extras sorted)."""
+    ordered = [name for name in state.midi_mode_order if name in state.midi_modes]
+    extras = sorted(name for name in state.midi_modes if name not in ordered)
+    return ordered + extras
+
+
+def mode_badges_width() -> int:
+    """Width the badge strip window needs, 0 with no active mode (e52s06)."""
+    count = len(state.midi_modes)
+    if count == 0:
+        return 0
+    return count * (MODE_BADGE_W + TOOLBAR_ITEM_SPACING)
+
+
+def _build_mode_badges_window() -> None:
+    """The SEPARATE active-mode strip, independent of the toolbar (e52s06).
+
+    Built closed (`with dpg.group(...): pass`) because DearPyGui discards a bare
+    group (BUG-2026-09-20T). Hidden until a mode is active; never part of the
+    bar's width or position, so it cannot hide the icon row again.
+    """
+    with (
+        dpg.window(
+            label="Modes",
+            tag=MODE_BADGES_WINDOW_TAG,
+            no_title_bar=True,
+            no_resize=True,
+            no_move=True,
+            no_scrollbar=True,
+            no_collapse=True,
+            no_background=True,
+            no_bring_to_front_on_focus=True,
+            no_saved_settings=True,
+            no_scroll_with_mouse=True,
+            width=mode_badges_width() or MODE_BADGE_W,
+            height=TOOLBAR_BAR_H,
+            pos=MODE_BADGES_POS,
+            show=False,
+        ),
+        dpg.group(tag=MODE_BADGE_GROUP_TAG, horizontal=True),
+    ):
+        pass
+    dpg.bind_item_theme(MODE_BADGES_WINDOW_TAG, TOOLBAR_THEME_PLAIN)
+    global MODE_BADGES_READY
+    MODE_BADGES_READY = True
+
+
+def refresh_mode_chip() -> None:
+    """Rebuild the active-mode badge strip, in its OWN window (e52s01/e52s06).
+
+    One small badge per active mode, in activation order; the tooltip carries the
+    full name and a click turns THAT mode off. The strip window hugs the count
+    and is hidden while nothing is active. Decoupled from the toolbar on purpose:
+    nothing here touches the bar's width or position.
+    """
+    if not MODE_BADGES_READY:
+        # BUG-2026-09-20: the boot project load reaches this from
+        # apply_project_state BEFORE the strip window is built, so there is
+        # nothing to paint yet. The flag (not a dpg query) makes it explicit.
+        return
+    dpg.delete_item(MODE_BADGE_GROUP_TAG, children_only=True)
+    names = active_modes_in_order()
+    for index, name in enumerate(names):
+        tag = mode_badge_tag(index)
+        dpg.add_button(
+            label=mode_badge_label(name),
+            tag=tag,
+            parent=MODE_BADGE_GROUP_TAG,
+            width=MODE_BADGE_W,
+            height=MODE_BADGE_H,
+            callback=on_mode_badge_click,
+            user_data=name,
+        )
+        dpg.bind_item_theme(tag, TOOLBAR_THEME_LEARN)
+        with dpg.tooltip(tag):
+            dpg.add_text(MODE_BADGE_TIP.format(name=name))
+    if not names:
+        dpg.hide_item(MODE_BADGES_WINDOW_TAG)
+        return
+    dpg.configure_item(MODE_BADGES_WINDOW_TAG, width=mode_badges_width())
+    dpg.show_item(MODE_BADGES_WINDOW_TAG)
+
+
+def on_mode_badge_click(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """A toolbar badge click turns THAT mode off, LEDs included (e52s06)."""
+    name = str(user_data or "")
+    if toggle_mode(name) is False:
+        send_mode_led(name, False)
+    refresh_midi_modes_ui()  # its tail re-paints the strip too
 
 
 def refresh_midi_devices(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -5718,29 +6511,42 @@ def assign_grid_role(port_name: str) -> None:
     render_controllers_ui()
 
 
+def on_select_controller(port_name: str) -> None:
+    """Pick which controller's Bindings the MIDI window edits (e53 rig fix)."""
+    state.midi_selected_port = str(port_name)
+    render_controllers_ui()  # also refreshes the Bindings list
+
+
 def render_controllers_ui() -> None:
     """Rebuild the Controllers list rows (main thread; call after any change) (e14s03)."""
     if not dpg.does_item_exist("midi_controllers_group"):
         return
     dpg.delete_item("midi_controllers_group", children_only=True)
+    current = selected_controller()
+    current_port = str(current.get("port") or "") if current is not None else ""
     for controller in midi_controllers:
         profile = controller_profile_of(controller)
         profile_name = profile.get("name", "Generic") if profile else "Generic"
         role_mark = " [grid]" if controller.get("role") == "grid" else ""
+        picked = " [selected]" if str(controller["port"]) == current_port else ""
         with dpg.group(horizontal=True, parent="midi_controllers_group"):
-            dpg.add_text(f"{controller['port']} - {profile_name}{role_mark}")
+            dpg.add_text(f"{controller['port']} - {profile_name}{role_mark}{picked}")
+            port = controller["port"]
+            dpg.add_button(
+                label="Select",
+                callback=lambda s, a, p=port: on_select_controller(p),
+                user_data=port,
+            )
             if (
                 profile
                 and profile.get("features", {}).get("grid")
                 and (controller.get("role") != "grid")
             ):
-                port = controller["port"]
                 dpg.add_button(
                     label="Set as grid",
                     callback=lambda s, a, p=port: assign_grid_role(p),
                     user_data=port,
                 )
-            port = controller["port"]
             dpg.add_button(
                 label="Remove",
                 callback=lambda s, a, p=port: remove_controller(p),
@@ -5907,7 +6713,7 @@ def _build_io_monitor_window() -> None:
         tag="io_monitor_window",
         width=IO_MONITOR_WINDOW_WIDTH,
         height=IO_MONITOR_WINDOW_HEIGHT,
-        pos=(60, 60),
+        show=False,
     ):
         with dpg.group(horizontal=True):
             dpg.add_button(label="Pause", tag="io_monitor_pause", callback=toggle_io_monitor_pause)
@@ -5966,6 +6772,7 @@ def _build_io_monitor_window() -> None:
             height=IO_MONITOR_TEXT_HEIGHT,
             default_value="No control seen yet.",
         )
+    show_centered_window("io_monitor_window")  # e55: the diagnostic opens centered
     _sync_monitor_learn_marker()
     refresh_io_monitor()
 
@@ -6014,6 +6821,7 @@ def _exec_mapping_toggle(params: dict[str, Any], value: int) -> None:
     mapper.set_mapping_enabled(int(mapping["id"]), enabled)
     if dpg.does_item_exist(f"mapping_enable_{mapping['id']}"):
         dpg.set_value(f"mapping_enable_{mapping['id']}", enabled)
+    refresh_binding_leds()  # e53s02
 
 
 def _exec_mapping_add(params: dict[str, Any], value: int) -> None:
@@ -6548,7 +7356,9 @@ def _bind_mapper_font(tag: str) -> None:
         dpg.bind_item_font(tag, font)
 
 
-def _mapper_caption_spacer(label: str, spec: dict[str, Any], has_reset: bool = True) -> int:
+def _mapper_caption_spacer(
+    label: str, spec: dict[str, Any], has_reset: bool = True, extra_px: int = 0
+) -> int:
     """Spacer width that right-aligns the enable checkbox + X on a caption (e24).
 
     The caption is ONE row: label + spacer + enable checkbox + X. Labels render
@@ -6556,7 +7366,8 @@ def _mapper_caption_spacer(label: str, spec: dict[str, Any], has_reset: bool = T
     the budget uses that advance and subtracts the checkbox + X blocks + item
     gaps: every catalog property label fits on a single caption row. A
     cue-list card drops the R button (UAT e35) — the spacer must not reserve
-    its width, or its enable + X would sit left of the right edge.
+    its width, or its enable + X would sit left of the right edge. e52s02:
+    `extra_px` reserves the mode badge when the card carries a gate tag.
     """
     return max(
         2,
@@ -6565,7 +7376,8 @@ def _mapper_caption_spacer(label: str, spec: dict[str, Any], has_reset: bool = T
         - MAPPER_SMALL_CHAR_PX * len(label)
         - (MAPPER_RESET_W if has_reset else 0)
         - MAPPER_CB_W
-        - MAPPER_X_W,
+        - MAPPER_X_W
+        - extra_px,
     )
 
 
@@ -6573,8 +7385,8 @@ def _mapper_row_height(mappings: list[dict[str, Any]]) -> int:
     """Compact uniform height for one source row (e23 bugfix, e34s02 model).
 
     Fits the tallest mini-card in the row over the models that are present:
-    the legacy vertical anatomy (caption + 17 px slider + the 'output:' line +
-    the 'input:' line when a source is bound — sliders, answer A) and the
+    the legacy vertical anatomy (caption + 17 px slider + the 'output' line +
+    the 'input' line when a source is bound — sliders, answer A) and the
     compact band anatomy (caption + the 44 px knob/button band, its readouts
     INSIDE the band). A row mixing both takes the taller model; the card rows
     are height-constant across learn transitions — the card markers render in
@@ -6708,6 +7520,15 @@ def on_mapper_row_thumb_click(
         refresh_mapper_ui()
 
 
+def _mapper_add_slot_width() -> int:
+    """Width of a line's trailing '+' slot (e51s02 follow-up).
+
+    Wider while a Paste button rides the slot, so the label fits; the reflow
+    maths reads the SAME width, so the wider slot wraps like any other element.
+    """
+    return MAPPER_PASTE_SLOT_W if state.mapper_clipboard is not None else MAPPER_ADD_SLOT_W
+
+
 def _mapper_row_add(target_id: str, parent: Any, height: int, line_index: int) -> None:
     """The per-row '+' at the end of a Mapper line (e34s01, e40s10).
 
@@ -6715,11 +7536,13 @@ def _mapper_row_add(target_id: str, parent: Any, height: int, line_index: int) -
     rework: the '+' no longer wraps like a 150 px card on resize) as tall as the
     row, holding a small centered '+' button; a click opens the ONE Mapping
     editor in create mode with this line's source preselected. While learn mode
-    is on the slot carries the e33 learn marker of the create action.
+    is on the slot carries the e33 learn marker of the create action. e51s02:
+    while the clipboard is full the slot widens and carries a Paste button
+    under the '+'.
     """
     with dpg.child_window(
         parent=parent,
-        width=MAPPER_ADD_SLOT_W,
+        width=_mapper_add_slot_width(),
         height=height,
         border=False,
         no_scrollbar=True,
@@ -6734,12 +7557,29 @@ def _mapper_row_add(target_id: str, parent: Any, height: int, line_index: int) -
             user_data=target_id,
             tag=f"mapper_add_btn_{target_id}",
         )
+        if state.mapper_clipboard is not None:
+            # e51s02: paste the clipboard at the end of THIS line (mouse surface).
+            dpg.add_button(
+                label="Paste",
+                width=MAPPER_PASTE_W,
+                height=MAPPER_ADD_H,
+                callback=paste_mapper_mapping,
+                user_data=target_id,
+                tag=f"mapper_paste_{target_id}",
+            )
+            _bind_mapper_font(f"mapper_paste_{target_id}")
         if state.midi_learn_mode:  # e33 rule: the line creator is mappable
             learn_marker(
                 MIDI_ACTION_MAPPING_ADD,
                 {"line": line_index},
                 parent=f"mapper_add_{target_id}",
                 tag=f"mapper_mk_add_{target_id}",
+            )
+            learn_marker(
+                MIDI_ACTION_MAPPING_PASTE,
+                {"line": line_index},
+                parent=f"mapper_add_{target_id}",
+                tag=f"mapper_mk_paste_{target_id}",
             )
     with dpg.tooltip(parent=f"mapper_add_btn_{target_id}"):
         dpg.add_text("Add a Mapping to this line")
@@ -6791,6 +7631,48 @@ def _mapper_marker_slot(mapping: dict[str, Any], parent: Any) -> None:
     dpg.add_spacer(width=max(0, MAPPER_MINI_W - indent - cluster_w), parent=slot_tag)
 
 
+def _mapper_edit_marker_slot(mapping: dict[str, Any], parent: Any) -> None:
+    """One card's clipboard/move markers in a SECOND strip line (e51s02).
+
+    The existing strip has no horizontal room for four more markers (the card is
+    MAPPER_MINI_W wide), so Copy/Cut/Move left/Move right render on their own
+    line under the card, aligned on the same slot. Uniform red-M markers, the
+    e33 rule, only while learn mode is on.
+    """
+    mid = mapping["id"]
+    marker_count = 4
+    cluster_w = marker_count * MAPPER_MARKER_W
+    indent = max(0, (MAPPER_MINI_W - cluster_w) // 2)
+    slot_tag = f"mapper_mk_edit_slot_{mid}"
+    dpg.add_group(horizontal=True, parent=parent, tag=slot_tag)
+    dpg.add_spacer(width=indent, parent=slot_tag)
+    learn_marker(
+        MIDI_ACTION_MAPPING_COPY,
+        {"mapping_id": mid},
+        parent=slot_tag,
+        tag=f"mapper_mk_copy_{mid}",
+    )
+    learn_marker(
+        MIDI_ACTION_MAPPING_CUT,
+        {"mapping_id": mid},
+        parent=slot_tag,
+        tag=f"mapper_mk_cut_{mid}",
+    )
+    learn_marker(
+        MIDI_ACTION_MAPPING_MOVE,
+        {"mapping_id": mid, "delta": -1},
+        parent=slot_tag,
+        tag=f"mapper_mk_moveleft_{mid}",
+    )
+    learn_marker(
+        MIDI_ACTION_MAPPING_MOVE,
+        {"mapping_id": mid, "delta": 1},
+        parent=slot_tag,
+        tag=f"mapper_mk_moveright_{mid}",
+    )
+    dpg.add_spacer(width=max(0, MAPPER_MINI_W - indent - cluster_w), parent=slot_tag)
+
+
 def _mapper_card_has_source(mapping: dict[str, Any]) -> bool:
     """True when a mapping is bound to a band/MIDI/leap source (its Inp row shows).
 
@@ -6813,8 +7695,8 @@ def _mapper_readout_line(
 ) -> None:
     """One from/to readout row: a short label + two drag boxes (e34s02).
 
-    Shared by the legacy slider lines (label 'output:'/'input:', wide boxes)
-    and the compact Out/Inp column beside the band control (label 'Out'/'Inp',
+    Shared by the legacy slider lines (label 'output'/'input', wide boxes)
+    and the compact out/inp column beside the band control (label 'out'/'inp',
     MAPPER_BAND_DRAG_W boxes). Tags and handler wire-up stay the same for both
     so on_mapper_output/input and the card right-click registry keep working.
     """
@@ -6848,10 +7730,10 @@ def _mapper_band_control(mapping: dict[str, Any], mid: int) -> None:
     """Compact control band of a knob/button/cue-list card (e34s02, e34s04).
 
     ONE row as tall as the 44 px control: the control on the LEFT, and on the
-    right the readout — knob/button: the 'Out' line (always) with the 'Inp'
+    right the readout — knob/button: the 'out' line (always) with the 'inp'
     line under it when a band/MIDI/leap source is bound; cue list: a
     'Cue list...' button that opens the mapping's cue-list window instead of
-    the Out/Inp fields (e34s04, answer E). The readout no longer stacks BELOW
+    the out/inp fields (e34s04, answer E). The readout no longer stacks BELOW
     the control, so the rows shrink; the trigger becomes a 44 px square
     showing the value; the caption row above keeps the property label.
     """
@@ -6903,18 +7785,23 @@ def _mapper_band_control(mapping: dict[str, Any], mid: int) -> None:
             _bind_mapper_font(f"mapper_cue_prog_{mid}")
         else:
             with dpg.group():
-                _mapper_readout_line("Out", mid, "out", out_from, out_to, MAPPER_BAND_DRAG_W)
+                _mapper_readout_line("out", mid, "out", out_from, out_to, MAPPER_BAND_DRAG_W)
                 if _mapper_card_has_source(mapping):
                     in_from = mapping.get("input_from")
                     in_to = mapping.get("input_to")
                     _mapper_readout_line(
-                        "Inp",
+                        "inp",
                         mid,
                         "in",
                         in_from if in_from is not None else 0.0,
                         in_to if in_to is not None else 1.0,
                         MAPPER_BAND_DRAG_W,
                     )
+                    if mapper.toggle_on_press(mapping):
+                        # e51 follow-up: the row label is always 'inp' (uniform);
+                        # the alternate behaviour is explained on hover instead.
+                        with dpg.tooltip(parent=f"mapper_in_lbl_{mid}"):
+                            dpg.add_text(MAPPER_INPUT_ALT_TOOLTIP)
 
 
 def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> None:
@@ -6923,10 +7810,10 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
     Anatomy (e34s02): the caption row — dim property label left, X delete
     button right (NO value text: the control shows the value) — then the
     control. e34s02 (answers A/B): slider cards keep the vertical anatomy —
-    slider spanning the content width, then the 'output:' from/to line and
-    (when a band/MIDI/leap source is bound) the 'input:' line BELOW. Knob and
+    slider spanning the content width, then the 'output' from/to line and
+    (when a band/MIDI/leap source is bound) the 'input' line BELOW. Knob and
     button cards collapse into ONE band as tall as the 44 px control: the
-    control LEFT, the 'Out' (always) and 'Inp' (bound source only) readouts
+    control LEFT, the 'out' (always) and 'inp' (bound source only) readouts
     RIGHT (see _mapper_band_control). The card height is the row height
     (per-content, see _mapper_row_height). Tags are unchanged so the band/MIDI
     drive and delete keep working; the right-click source menu lives on the
@@ -6947,9 +7834,18 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
     ):
         with dpg.group(horizontal=True):
             themed_text(caption, slot="text_dim", tag=f"mapper_prop_{mid}")
+            # e52s02: the gate tag rides next to the caption, so a layered
+            # Mapping is recognisable without opening the menu.
+            mode_tag = modes_for_mapping(mid)
+            badge = f"[{mode_tag}]" if mode_tag else ""
+            if badge:
+                themed_text(badge, slot="text", tag=f"mapper_mode_badge_{mid}")
             dpg.add_spacer(
                 width=_mapper_caption_spacer(
-                    caption, {}, has_reset=mapping["control"] != "cue list"
+                    caption,
+                    {},
+                    has_reset=mapping["control"] != "cue list",
+                    extra_px=MAPPER_SMALL_CHAR_PX * len(badge),
                 )
             )
             # e27s01: the reset button sits LEFT of the enable checkbox — it
@@ -6996,12 +7892,12 @@ def _render_mapper_card(mapping: dict[str, Any], parent: Any, height: int) -> No
                 tag=f"mapper_slider_{mid}",
             )
             _bind_mapper_font(f"mapper_slider_{mid}")
-            _mapper_readout_line("output:", mid, "out", out_from, out_to, MAPPER_DRAG_W)
+            _mapper_readout_line("output", mid, "out", out_from, out_to, MAPPER_DRAG_W)
             if _mapper_card_has_source(mapping):
                 in_from = mapping.get("input_from")
                 in_to = mapping.get("input_to")
                 _mapper_readout_line(
-                    "input:",
+                    "input",
                     mid,
                     "in",
                     in_from if in_from is not None else 0.0,
@@ -7124,6 +8020,33 @@ def _render_mapper_source_menu(mapping: dict[str, Any]) -> None:
             )
             dpg.add_separator()
             dpg.add_menu_item(label="Clear source", callback=clear_mapping_source, user_data=mid)
+        # e52s02: the gate tag of the Binding(s) that drive this Mapping — the
+        # user's flow: right-click the card and pick the mode it needs.
+        current_mode = modes_for_mapping(mid)
+        bound = isinstance(mapping.get("midi"), dict)
+        with dpg.menu(label="Mode", enabled=bound, tag=f"mapper_mode_menu_{mid}"):
+            dpg.add_menu_item(
+                label=MIDI_MODE_BASE_CHOICE,
+                check=True,
+                default_value=current_mode is None,
+                callback=on_mapper_mode_menu,
+                user_data=(mid, ""),
+            )
+            for mode_name in mode_names():
+                dpg.add_menu_item(
+                    label=mode_name,
+                    check=True,
+                    default_value=(current_mode == mode_name),
+                    callback=on_mapper_mode_menu,
+                    user_data=(mid, mode_name),
+                )
+        # e51s02: copy/cut/move the Mapping itself (mouse surface of the clipboard
+        # actions; the MIDI-mappable markers live on the card strip).
+        dpg.add_separator()
+        dpg.add_menu_item(label="Copy mapping", callback=copy_mapper_mapping, user_data=mid)
+        dpg.add_menu_item(label="Cut mapping", callback=cut_mapper_mapping, user_data=mid)
+        dpg.add_menu_item(label="Move left", callback=move_mapper_mapping, user_data=(mid, -1))
+        dpg.add_menu_item(label="Move right", callback=move_mapper_mapping, user_data=(mid, 1))
     with dpg.item_handler_registry(tag=reg_tag):
         dpg.add_item_clicked_handler(1, callback=lambda *_, m=mid: _show_mapper_menu(m))
     for tag in (
@@ -7173,6 +8096,24 @@ def clear_mapping_source(sender: Any = None, app_data: Any = None, user_data: An
     """Mapper control menu: drop the band/MIDI source, manual control resumes (e18)."""
     mapper.clear_mapping_source(int(user_data))
     refresh_mapper_ui()
+
+
+def on_mapper_mode_menu(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Mapper card > Mode: tag the Binding(s) that drive the card (e52s02)."""
+    mapping_id, name = user_data
+    set_mapper_mapping_mode(int(mapping_id), str(name))
+
+
+def set_mapper_mapping_mode(mapping_id: int, name: str) -> None:
+    """Write (or clear) the gate tag on every Binding that drives one Mapping (e52s02)."""
+    for controller in midi_controllers:
+        for binding in controller.get("bindings") or []:
+            params = binding.get("params")
+            if isinstance(params, dict) and int(params.get("mapping_id") or 0) == mapping_id:
+                set_binding_mode(binding, name)
+    save_midi_controllers()
+    refresh_mapper_ui()
+    refresh_midi_mappings_ui()
 
 
 def _set_mapper_control_value(mapping_id: int, value: float) -> None:
@@ -7304,7 +8245,7 @@ def open_mapper_leap_picker(
                 label="Bind", callback=mapper_leap_confirm, user_data=mapping_id, width=90
             )
             dpg.add_button(label="Cancel", callback=mapper_leap_cancel, width=90)
-    dpg.show_item("mapper_leap_window")
+    show_centered_window("mapper_leap_window")  # e55: dialogs open centered
 
 
 def mapper_leap_confirm(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -7579,6 +8520,46 @@ def on_mapping_enable(sender: Any = None, app_data: Any = None, user_data: Any =
     share ONE handler (an arm is an arm, no body refresh — e24).
     """
     mapper.set_mapping_enabled(int(user_data), bool(app_data))
+    refresh_binding_leds()  # e53s02: the LED follows the arm from the mouse too
+
+
+def copy_mapper_mapping(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Card menu / MIDI: snapshot the Mapping into the clipboard (e51s02).
+
+    The body rebuild is what makes the per-line Paste buttons appear.
+    """
+    if mapper.copy_mapping(int(user_data)) is None:
+        return
+    refresh_mapper_ui()
+
+
+def cut_mapper_mapping(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Card menu / MIDI: snapshot the Mapping and remove it (e51s02)."""
+    mid = int(user_data)
+    if mapper.cut_mapping(mid) is None:
+        return
+    _drop_mapping_editor_and_runs(mid)
+    live_ids = {int(m["id"]) for m in state.mapper_mappings}
+    emission.prune_book(state.mapping_book, state.mapping_values, live_ids)
+    refresh_mapper_ui()
+
+
+def paste_mapper_mapping(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Line Paste button / MIDI: append the clipboard to that line (e51s02).
+
+    ``user_data`` is the line's source id (None on the Global line, which keeps
+    the snapshot's own target).
+    """
+    if mapper.paste_mapping(user_data) is None:
+        return
+    refresh_mapper_ui()
+
+
+def move_mapper_mapping(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Card menu / MIDI: shift the Mapping one slot inside its own line (e51s02)."""
+    mid, delta = user_data
+    if mapper.move_mapping_in_row(int(mid), int(delta)):
+        refresh_mapper_ui()
 
 
 def delete_mapping(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -7970,7 +8951,7 @@ def _open_mapping_editor(
             )
     on_mapping_destination_change(None, destination)
     _apply_mapping_editor_visibility(origin)
-    dpg.show_item(MAPPER_EDITOR_TAG)
+    show_centered_window(MAPPER_EDITOR_TAG)  # e55: dialogs open centered
 
 
 def _mapping_editor_values(mapping: dict[str, Any], *, creating: bool) -> dict[str, Any]:
@@ -8152,12 +9133,28 @@ def _render_global_block(global_mappings: list[dict[str, Any]]) -> None:
             callback=open_source_less_mapping_creator,
             tag="mapper_global_add",
         )
+        if state.mapper_clipboard is not None:  # e51s02: paste onto the Global line
+            dpg.add_button(
+                label="Paste",
+                width=MAPPER_PASTE_W,
+                height=MAPPER_X_H,
+                callback=paste_mapper_mapping,
+                user_data=None,
+                tag="mapper_paste_global",
+            )
+            _bind_mapper_font("mapper_paste_global")
         if state.midi_learn_mode:  # e33 rule: the source-less creator is mappable
             learn_marker(
                 MIDI_ACTION_MAPPING_ADD,
                 {"source_less": True},
                 parent=head_tag,
                 tag="mapper_mk_global",
+            )
+            learn_marker(
+                MIDI_ACTION_MAPPING_PASTE,
+                {"global": True},
+                parent=head_tag,
+                tag="mapper_mk_paste_global",
             )
 
     _render_mapping_box(
@@ -8237,7 +9234,7 @@ def refresh_mapper_ui() -> None:
             # pixel room fits it (mapper.add_fits_last_line) and only moves to its
             # own narrow line when a very narrow window leaves no room.
             add_inline = mapper.add_fits_last_line(
-                len(control_mappings), per_line, card_area, pitch, MAPPER_ADD_SLOT_W
+                len(control_mappings), per_line, card_area, pitch, _mapper_add_slot_width()
             )
             lines = mapper.row_slots(len(control_mappings), per_line)
             for line_no, slot_line in enumerate(lines):
@@ -8293,6 +9290,16 @@ def refresh_mapper_ui() -> None:
                     for slot in slot_line:
                         if slot < len(control_mappings):
                             _mapper_marker_slot(control_mappings[slot], parent=strip)
+                    # e51s02: a SECOND strip line for the clipboard/move markers
+                    edit_strip = dpg.add_group(
+                        horizontal=True,
+                        parent=block,
+                        tag=f"mapper_mk_edit_strip_{row_no}_{line_no}",
+                    )
+                    dpg.add_spacer(width=_mapper_row_lead_px(), parent=edit_strip)
+                    for slot in slot_line:
+                        if slot < len(control_mappings):
+                            _mapper_edit_marker_slot(control_mappings[slot], parent=edit_strip)
             if not add_inline:
                 # a very narrow window: the '+' gets its own narrow line under the
                 # cards (aligned with them) instead of overflowing the edge
@@ -9116,7 +10123,7 @@ def _open_cue_row_dialog(mid: int, insert_after: int = -1, edit_index: int | Non
     elif kind == "burst":
         prefill = values if isinstance(values, list) else [value]
         _cue_dlg_render_values("cue_burst_values", prop, prefill, ms_value=prop_ms)
-    dpg.show_item("cue_dialog")
+    show_centered_window("cue_dialog")  # e55: dialogs open centered
 
 
 def cue_dialog_confirm(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -9234,6 +10241,7 @@ def open_cue_list_window(sender: Any = None, app_data: Any = None, user_data: An
         tag="cue_list_window",
         width=520,
         height=420,
+        show=False,
     ):
         with dpg.group(horizontal=True):
             themed_text("Level gap (ms)", slot="text_dim")
@@ -9269,7 +10277,18 @@ def open_cue_list_window(sender: Any = None, app_data: Any = None, user_data: An
         dpg.add_separator()
         with dpg.child_window(tag="cue_rows_group", width=0, height=180, border=True):
             _render_cue_rows(mid)
-    dpg.show_item("cue_list_window")
+    show_centered_window("cue_list_window")  # e55: the cue editor opens centered
+
+
+def _reapply_leds_after_controller_connect() -> None:
+    """A (re)connected controller shows the active modes and state LEDs (e53).
+
+    The MIDI worker re-runs `controller_connect` (which re-sends the LED handshake
+    SysEx) when a controller reappears after a power cycle; this puts the current
+    LED truth back on the device. Runs on the main thread (it reads `state`).
+    """
+    reapply_mode_leds()
+    refresh_binding_leds()
 
 
 def midi_control_loop() -> None:
@@ -9285,22 +10304,42 @@ def midi_control_loop() -> None:
     # failing open can leak an ALSA sequencer client, so a dead ALSA is never
     # hammered every tick (that saturation silently killed controller detection).
     open_fail_at: dict[str, float] = {}
+    last_rescan = 0.0
     while True:
         if not state.midi_enabled:
             time.sleep(0.2)
             continue
+        now = time.monotonic()
+        # e53: a powered-off controller can leave a stale open port (`iter_pending`
+        # returns nothing instead of raising), so the LED handshake would never be
+        # re-sent until a viseq restart. Drop the ports that are gone; the loop
+        # below reopens them (and re-runs controller_connect) when they return.
+        if now - last_rescan >= MIDI_PORT_RESCAN_SECONDS:
+            last_rescan = now
+            try:
+                live: set[str] | None = set(mido.get_input_names())
+            except Exception as e:
+                live = None
+                log_error("MIDI", f"port rescan: {e}")
+            if live is not None:
+                for stale in stale_ports(list(open_ports), live):
+                    _close_midi_input(open_ports.pop(stale, None))
+                    controller = find_controller_by_port(stale)
+                    if controller is not None:
+                        controller_disconnect(controller)
         wanted = {c["port"] for c in midi_controllers}
         for port_name in [p for p in open_ports if p not in wanted]:
             _close_midi_input(open_ports.pop(port_name))
         for controller in midi_controllers:
             port_name = controller["port"]
             if port_name not in open_ports:
-                if not midi_open_retry_due(open_fail_at.get(port_name), time.monotonic()):
+                if not midi_open_retry_due(open_fail_at.get(port_name), now):
                     continue  # cooldown: stay quiet on a failing port
                 try:
                     open_ports[port_name] = mido.open_input(port_name)
                     open_fail_at.pop(port_name, None)
                     controller_connect(controller, mido)  # e14s02: LED output + grid bindings
+                    ui_task(_reapply_leds_after_controller_connect)  # e53: LEDs show the truth
                     append_log("MIDI", f"Control listening on {port_name}")
                 except Exception as e:
                     open_fail_at[port_name] = time.monotonic()
@@ -9706,6 +10745,102 @@ def centered_window_pos(
     return (max(0, (viewport_w - window_w) // 2), max(0, (viewport_h - window_h) // 2))
 
 
+# e55: the import-time WORKSPACE windows. They center once, when they first
+# become visible (a project layout, applied earlier, or the user's own move wins).
+FIRST_OPEN_CENTERED_WINDOWS: tuple[str, ...] = (
+    "sequencer_window",
+    "audio_window",
+    "vimix_media_window",
+    "logs_window",
+    "mapper_window",
+    "file_manager_window",
+)
+
+# Config panels: no workspace meaning, re-centered on EVERY open so a viewport
+# resize is always honoured (the live size is read at open time, never a stale
+# boot size). Transient dialogs center through `show_centered_window`.
+ALWAYS_CENTERED_WINDOWS: tuple[str, ...] = (
+    "settings_window",
+    "midi_window",
+    "leap_window",
+)
+
+
+def first_open_pos(width: int, height: int) -> tuple[int, int]:
+    """Top-left that centers a window of the given size on the viewport (e55).
+
+    The top is clamped below the toolbar strip, like `apply_window_layout`.
+    """
+    x, y = centered_window_pos(
+        int(dpg.get_viewport_client_width() or 0),
+        int(dpg.get_viewport_client_height() or 0),
+        int(width),
+        int(height),
+    )
+    return (x, max(y, TOOLBAR_BAR_H))
+
+
+def center_window_on_viewport(tag: str, *, force: bool = False) -> None:
+    """Center an OPEN window on the CURRENT viewport size (e55).
+
+    No-op when the window does not exist, its geometry is not measurable yet, or
+    (unless ``force``) it was already positioned by a project layout or an earlier
+    centering. The live viewport size is read here, so a resize is honoured.
+    """
+    if not force and tag in _positioned_windows:
+        return
+    if not dpg.does_item_exist(tag):
+        return
+    width = int(dpg.get_item_width(tag) or 0)
+    height = int(dpg.get_item_height(tag) or 0)
+    viewport_w = int(dpg.get_viewport_client_width() or 0)
+    viewport_h = int(dpg.get_viewport_client_height() or 0)
+    if width <= 0 or height <= 0 or viewport_w <= 0 or viewport_h <= 0:
+        return
+    dpg.set_item_pos(tag, first_open_pos(width, height))
+    _positioned_windows.add(tag)
+
+
+def show_centered_window(tag: str) -> None:
+    """Show a freshly (re)created window centered on the current viewport (e55).
+
+    A rebuilt item reuses its tag, so centering is forced: a dialog that opens a
+    second time centers again, on the viewport size of that moment.
+    """
+    _positioned_windows.discard(tag)
+    center_window_on_viewport(tag, force=True)
+    dpg.show_item(tag)
+
+
+# Shown state of the previous frame, so centering fires on the hidden -> shown
+# transition and reads the live viewport size then (BUG rig UAT: a stale boot
+# size left a window at the old center after a resize).
+_window_was_shown: dict[str, bool] = {}
+
+
+def _center_window_on_open(tag: str, *, force: bool) -> None:
+    """Center a window on its hidden -> shown transition (once, or every time)."""
+    shown = bool(dpg.does_item_exist(tag) and dpg.is_item_shown(tag))
+    was = _window_was_shown.get(tag, False)
+    _window_was_shown[tag] = shown
+    if shown and not was:
+        center_window_on_viewport(tag, force=force)
+
+
+def tick_first_open_centering() -> None:
+    """Center a window when it opens, using the CURRENT viewport size (e55).
+
+    Workspace windows center once (a project layout or the user's own move wins);
+    config panels re-center on every open. A window that has never been visible
+    keeps its centering pending, so a resize before its first open is honoured.
+    """
+    for tag in FIRST_OPEN_CENTERED_WINDOWS:
+        if tag not in _positioned_windows:  # once: a layout or an earlier center wins
+            _center_window_on_open(tag, force=False)
+    for tag in ALWAYS_CENTERED_WINDOWS:
+        _center_window_on_open(tag, force=True)
+
+
 def show_help_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
     """Open the About window from the menubar, re-centered on the viewport."""
     dpg.set_item_pos(
@@ -9824,6 +10959,7 @@ def _keep_toolbar_out_of_window_switch(now: float | None = None) -> None:
             if dpg.does_item_exist(TOOLBAR_BAR_TAG):
                 dpg.show_item(TOOLBAR_BAR_TAG)
                 reposition_toolbar()
+            refresh_mode_chip()  # e52s06: the strip restores its own visibility
         return
     if not dpg.is_key_down(dpg.mvKey_Tab):
         return  # Ctrl held on its own: no window switching
@@ -9838,6 +10974,8 @@ def _keep_toolbar_out_of_window_switch(now: float | None = None) -> None:
     if dpg.does_item_exist(TOOLBAR_BAR_TAG):
         dpg.hide_item(TOOLBAR_BAR_TAG)
         _toolbar_ctrl_tab_hidden = True
+    if dpg.does_item_exist(MODE_BADGES_WINDOW_TAG):  # e52s06: keep the strip out too
+        dpg.hide_item(MODE_BADGES_WINDOW_TAG)
 
 
 def tick_toolbar() -> None:
@@ -9998,11 +11136,181 @@ def on_band_enable(sender: Any, app_data: Any, user_data: Any) -> None:
         _set_band_variable(band_id, 0.0)
         dpg.set_value(f"band{band_id}_value_text", "—")
         dpg.configure_item(f"band{band_id}_rect", show=False)
+        dpg.configure_item(f"band{band_id}_edge_hl", show=False)  # e50s01: no grab highlight
+        if _band_drag["band_id"] == band_id:
+            _end_band_drag()
 
 
 def on_band_change(sender: Any, app_data: Any, user_data: Any) -> None:
     """Refresh a band when its selection sliders move."""
     refresh_band_value(state.spectrum_bars_cache, int(user_data))
+
+
+# --- e50s01: mouse-editable band rectangles -----------------------------------
+# The drawlist is the clickable surface (draw commands cannot host handler
+# registries, like the media tiles). The pointer is derived in the CLIENT space
+# because `get_mouse_pos(local=False)` is DPG's stable per-frame client mouse and
+# `get_item_rect_min` reports the item in that same space, so any padding cancels;
+# the L7145 note documents why the local mouse is draw-order dependent.
+_band_drag: dict[str, Any] = {"band_id": None, "edge": None, "x": 0.0, "y": 0.0}
+
+
+def _band_rect_pointer() -> tuple[float, float]:
+    """Pointer in drawlist-local pixels (e50s01)."""
+    return band_rect_local_pointer(
+        dpg.get_mouse_pos(local=False), dpg.get_item_rect_min("spec_drawlist")
+    )
+
+
+def _band_rect_hovered() -> bool:
+    """Is the pointer over the spectrum drawlist?
+
+    DPG 2.x accepts `mouse_*` handlers ONLY in a global handler registry (an
+    item_handler_registry takes just the `item_*` handlers — the real library
+    raises [1003] otherwise), so the seam gates on the item's client rectangle
+    itself. A drawlist that is not laid out (its window hidden or collapsed, or
+    the very first frame) reports rect_min and rect_size as (0, 0): it must NOT
+    be hovered, or the top-left corner of the client area would become a phantom
+    drag surface (verified against the real library).
+    """
+    size = dpg.get_item_rect_size("spec_drawlist")
+    if not float(size[0]) or not float(size[1]):
+        return False
+    origin = dpg.get_item_rect_min("spec_drawlist")
+    rect = (
+        float(origin[0]),
+        float(origin[1]),
+        float(origin[0]) + float(size[0]),
+        float(origin[1]) + float(size[1]),
+    )
+    return band_rect_contains(rect, dpg.get_mouse_pos(local=False))
+
+
+def _band_window(band_id: int) -> tuple[float, float, float, float]:
+    """One band's (start, end, min_level, max_level) from its four widgets (e50s01)."""
+    return (
+        float(dpg.get_value(f"band{band_id}_start")),
+        float(dpg.get_value(f"band{band_id}_end")),
+        float(dpg.get_value(f"band{band_id}_min")),
+        float(dpg.get_value(f"band{band_id}_max")),
+    )
+
+
+def enabled_band_rects_px() -> list[tuple[int, tuple[float, float, float, float]]]:
+    """The ENABLED bands' pixel rectangles, highest id first (hit priority, e50s01)."""
+    rects: list[tuple[int, tuple[float, float, float, float]]] = []
+    for band_id in sorted(bands_enabled, reverse=True):
+        if not bands_enabled[band_id]:
+            continue
+        rects.append(
+            (band_id, band_rect_px(_band_window(band_id), SPEC_DRAWLIST_W, SPEC_DRAWLIST_H))
+        )
+    return rects
+
+
+def _hide_band_edge_highlights() -> None:
+    """Hide every band's grab highlight (e50s01)."""
+    for band_id in bands_enabled:
+        tag = f"band{band_id}_edge_hl"
+        if dpg.does_item_exist(tag):
+            dpg.configure_item(tag, show=False)
+
+
+def _set_band_edge_highlight(band_id: int, edge: str) -> None:
+    """Move one band's highlight onto the armed edge, hiding the others (e50s01)."""
+    _hide_band_edge_highlights()
+    rects = dict(enabled_band_rects_px())
+    rect = rects.get(band_id)
+    tag = f"band{band_id}_edge_hl"
+    if rect is None or not dpg.does_item_exist(tag):
+        return
+    segment = band_rect_edge_segment(rect, edge)
+    if segment is None:
+        return  # a body drag has no single edge (e50s02)
+    dpg.configure_item(tag, p1=segment[0], p2=segment[1], show=True)
+
+
+def _end_band_drag() -> None:
+    """Forget the grabbed band edge (e50s01)."""
+    _band_drag["band_id"] = None
+    _band_drag["edge"] = None
+
+
+def _band_rect_mouse_down(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Grab the edge nearest the pointer on button down (e50s01).
+
+    DPG 2.3.1 re-fires this handler on EVERY frame while the button is held
+    (real-rig proof: three identical events per pointer position, each carrying
+    the current position). A repeat event must be ignored: re-arming there moves
+    the drag anchor to the current pointer every frame, so every delta reads
+    (0, 0) and the band never moves. The global release handler clears the grab,
+    which is what lets the next press arm a fresh drag.
+    """
+    if _band_drag["band_id"] is not None:
+        return
+    if not _band_rect_hovered():
+        return
+    hit = band_rect_hit_test(_band_rect_pointer(), enabled_band_rects_px())
+    if hit is None:
+        _hide_band_edge_highlights()
+        return
+    band_id, edge = hit
+    _band_drag["band_id"] = band_id
+    _band_drag["edge"] = edge
+    _band_drag["x"], _band_drag["y"] = _band_rect_pointer()
+    _set_band_edge_highlight(band_id, edge)
+
+
+def _band_rect_mouse_drag(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Apply the grabbed edge's pixel delta to its band values (e50s01)."""
+    band_id = _band_drag["band_id"]
+    edge = _band_drag["edge"]
+    if band_id is None or edge is None:
+        return
+    if not dpg.is_mouse_button_down(dpg.mvMouseButton_Left):
+        # Second line of defence: the global release handler is the primary end of
+        # a drag, but should the button come up without it (focus loss, a missed
+        # event), the first post-release frame must not keep dragging
+        _end_band_drag()
+        _hide_band_edge_highlights()
+        return
+    pointer = _band_rect_pointer()
+    delta_x = pointer[0] - float(_band_drag["x"])
+    delta_y = pointer[1] - float(_band_drag["y"])
+    _band_drag["x"], _band_drag["y"] = pointer[0], pointer[1]
+    window = _band_window(band_id)
+    dragged = band_rect_drag(window, edge, delta_x, delta_y, SPEC_DRAWLIST_W, SPEC_DRAWLIST_H)
+    if dragged == window:
+        return
+    for name, value in zip(("start", "end", "min", "max"), dragged, strict=True):
+        dpg.set_value(f"band{band_id}_{name}", value)
+    refresh_band_value(state.spectrum_bars_cache, band_id)
+    _set_band_edge_highlight(band_id, edge)
+
+
+def _band_rect_mouse_release(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """End the drag and clear the highlight (e50s01)."""
+    _end_band_drag()
+    _hide_band_edge_highlights()
+
+
+def _band_rect_mouse_move(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Hover feedback: highlight the edge the pointer would grab (e50s01)."""
+    if _band_drag["band_id"] is not None:
+        if not dpg.is_mouse_button_down(dpg.mvMouseButton_Left):
+            _end_band_drag()
+            _hide_band_edge_highlights()
+        return
+    if not _band_rect_hovered():
+        _hide_band_edge_highlights()
+        return
+    hit = band_rect_hit_test(_band_rect_pointer(), enabled_band_rects_px())
+    if hit is None:
+        _hide_band_edge_highlights()
+    else:
+        _set_band_edge_highlight(*hit)
 
 
 def spectrum_analyzer_loop() -> None:
@@ -10235,6 +11543,7 @@ def toggle_play(sender: Any = None, app_data: Any = None, user_data: Any = None)
     else:
         dpg.set_item_label("btn_play", "STOP")
         sync_event_seq.set()
+    refresh_binding_leds()  # e53s02
 
 
 dpg.create_context()
@@ -10268,6 +11577,14 @@ for _mapper_line_no_font_path in _TILE_TITLE_FONT_PATHS:
             )
         break
 
+# e55s02: a LARGE monospace font for the pairing code digits (DejaVuSansMono, or
+# the bundled ProggyTiny; a missing file leaves None -> the default font).
+for _pairing_code_font_path in _PAIRING_CODE_FONT_PATHS:
+    if os.path.exists(_pairing_code_font_path):
+        with dpg.font_registry():
+            _pairing_code_font = dpg.add_font(_pairing_code_font_path, size=PAIRING_CODE_FONT_SIZE)
+        break
+
 
 def _project_flow_ui_blocked() -> bool:
     """True while a project dialog or a confirmation modal is shown (e37s02).
@@ -10298,6 +11615,9 @@ with dpg.handler_registry():
     dpg.add_key_press_handler(dpg.mvKey_Tab, callback=on_cycle_window)
     # e37s02: Ctrl+S / Ctrl+Shift+S save / save-as (the wrapper checks modifiers).
     dpg.add_key_press_handler(dpg.mvKey_S, callback=_on_save_key)
+    # e55s02: Enter submits the pairing prompt while it is up (the digit filter
+    # owns the input callback, so Enter is routed through the global handler).
+    dpg.add_key_press_handler(dpg.mvKey_Return, callback=_on_pairing_code_enter)
 
 
 # e10s06: one click-handler registry per Mediagrid tile. DPG 2.x item handlers
@@ -10622,6 +11942,30 @@ with dpg.window(
                 tag=f"band{band_id}_rect",
                 show=False,
             )
+        # e50s01: the grab highlight — one line per band, moved onto the armed
+        # edge by the mouse handlers (hidden until an edge is hovered/grabbed)
+        for band_id, (_fill, edge) in BAND_RECT_COLORS.items():
+            dpg.draw_line(
+                p1=(0, 0),
+                p2=(0, 0),
+                color=edge,
+                thickness=BAND_EDGE_HIGHLIGHT_THICKNESS,
+                tag=f"band{band_id}_edge_hl",
+                show=False,
+            )
+    # e50s01/e50s02: the band-rect drag. Mouse handlers are GLOBAL ONLY in DPG
+    # 2.x (an item registry accepts just the item_* handlers; the real library
+    # raises [1003] "Incompatible parent" otherwise), so the seam gates every
+    # handler on the drawlist's own client rectangle (`_band_rect_hovered`).
+    with dpg.handler_registry(tag=SPECTRUM_MOUSE_REG):
+        dpg.add_mouse_down_handler(button=dpg.mvMouseButton_Left, callback=_band_rect_mouse_down)
+        dpg.add_mouse_drag_handler(
+            button=dpg.mvMouseButton_Left, threshold=0.0, callback=_band_rect_mouse_drag
+        )
+        dpg.add_mouse_release_handler(
+            button=dpg.mvMouseButton_Left, callback=_band_rect_mouse_release
+        )
+        dpg.add_mouse_move_handler(callback=_band_rect_mouse_move)
     for band_id, (start_default, end_default) in BAND_DEFAULT_RANGES.items():
         with dpg.group(horizontal=True):
             dpg.add_checkbox(
@@ -10839,6 +12183,22 @@ with dpg.window(label="MIDI", width=520, height=520, pos=(560, 320), tag="midi_w
     with (
         dpg.child_window(height=120, tag="midi_controllers_scroll"),
         dpg.group(tag="midi_controllers_group"),
+    ):
+        pass
+    dpg.add_separator()
+    dpg.add_spacer(height=4)
+    # e52s01: Modes — named, additive layers. Create/delete by name here; each
+    # row's red M captures MODE_TOGGLE{mode} while MIDI Learn is on.
+    themed_text("Modes", slot="text")
+    with dpg.group(horizontal=True):
+        dpg.add_input_text(tag=MIDI_MODE_NAME_INPUT_TAG, width=200)
+        dpg.add_button(
+            label="Add", tag=MIDI_MODE_ADD_BUTTON_TAG, callback=on_add_midi_mode, width=60
+        )
+    dpg.add_text("", tag=MIDI_MODE_STATUS_TAG)
+    with (
+        dpg.child_window(height=110, tag=MIDI_MODES_SCROLL_TAG),
+        dpg.group(tag=MIDI_MODES_GROUP_TAG),
     ):
         pass
     dpg.add_separator()
@@ -11088,7 +12448,6 @@ TOOLBAR_ITEM_GROUPS: tuple[tuple[ToolbarItem, ...], ...] = (
         ("toggle", "vimix_media_window", "\uf108", "Vimix sources", ""),
         ("toggle", "mapper_window", "\uf0ce", "Mapper", ""),
         ("toggle", "logs_window", "\uf0ca", "Logs", ""),
-        ("toggle", "io_monitor_window", "\uf0ec", "I/O Monitor", ""),
         ("toggle", "file_manager_window", "\uf07b", "File Manager", ""),
     ),
     (
@@ -11096,6 +12455,9 @@ TOOLBAR_ITEM_GROUPS: tuple[tuple[ToolbarItem, ...], ...] = (
         ("toggle", "midi_window", "\uf11c", "MIDI", ""),
         ("mode", "midi_learn", "\uf140", "MIDI Learn", ""),
         ("toggle", "leap_window", "\uf256", "Leap Motion", ""),
+        # e55: the I/O Monitor is not a workspace window; its icon joins the
+        # configuration block on the right.
+        ("toggle", "io_monitor_window", "\uf0ec", "I/O Monitor", ""),
         ("action", "pair", "\uf0c1", "Pair with viOSC...", ""),
     ),
     (("toggle", "help_window", "\uf05a", "Info", ""),),
@@ -11120,9 +12482,14 @@ TOOLBAR_LEARN_BUTTON_TAG = "toolbar_mode_midi_learn"
 TOOLBAR_LEARN_TOOLTIP_TEXT_TAG = f"{TOOLBAR_LEARN_BUTTON_TAG}_tooltip_text"
 # ASCII only: ProggyClean renders U+2014 EM DASH as a fallback glyph, not a dash
 # (BUG-2026-09-18T193805; the e13s01 convention).
-TOOLBAR_LEARN_TIP_READY = "MIDI Learn: arm, then click a control to bind"
-TOOLBAR_LEARN_TIP_CANCEL = "Cancel MIDI Learn"
+TOOLBAR_LEARN_TIP_READY = "MIDI Learn: arm, then click a control to bind (Ctrl+M)"
+TOOLBAR_LEARN_TIP_CANCEL = "Cancel MIDI Learn (Ctrl+M)"
 TOOLBAR_LEARN_TIP_UNAVAILABLE = "MIDI Learn: enable MIDI first"
+
+# e52s07: the keyboard entry point the e47 ADR reserved. Edge-triggered, so a
+# held chord toggles once, and guarded while a text input has focus.
+MIDI_LEARN_SHORTCUT_KEY = dpg.mvKey_M
+_midi_learn_shortcut_held = False
 toolbar_icon_font: Any = None
 _toolbar_geom_sig: tuple[int, int] | None = None
 
@@ -11230,6 +12597,8 @@ def toolbar_bar_width() -> int:
     separators = len(TOOLBAR_ITEM_GROUPS)
     frames = buttons * TOOLBAR_ICON_BUTTON_W + separators * TOOLBAR_GROUP_GAP
     gaps = max(0, buttons + separators - 1) * TOOLBAR_ITEM_SPACING
+    # e52s06: the badge strip lives in its OWN window (see
+    # _build_mode_badges_window); the bar keeps its exact e46 shape.
     return frames + gaps + 2 * TOOLBAR_BAR_PAD_X
 
 
@@ -11463,6 +12832,22 @@ def refresh_toolbar_learn_icon() -> None:
         dpg.set_value(TOOLBAR_LEARN_TOOLTIP_TEXT_TAG, tooltip)
 
 
+def tick_midi_learn_shortcut() -> None:
+    """Ctrl+M arms/cancels MIDI Learn, once per chord (e52s07).
+
+    The SAME mode transition as the toolbar icon (one source of truth); the tick
+    is edge-triggered so a held chord toggles once, and it yields while a text or
+    number input has focus (the guard Ctrl+C/V already rely on).
+    """
+    global _midi_learn_shortcut_held
+    held = bool(dpg.is_key_down(MIDI_LEARN_SHORTCUT_KEY)) and bool(
+        dpg.is_key_down(dpg.mvKey_ModCtrl)
+    )
+    if held and not _midi_learn_shortcut_held and not _any_input_focused():
+        toggle_midi_learn()
+    _midi_learn_shortcut_held = held
+
+
 def show_recent_projects_popup() -> None:
     """The Last project icon: a compact popup with the recent project files."""
     if dpg.does_item_exist(TOOLBAR_RECENTS_TAG):
@@ -11487,6 +12872,7 @@ def show_recent_projects_popup() -> None:
 
 load_toolbar_icon_font()
 _build_main_toolbar()
+_build_mode_badges_window()  # e52s06: the mode strip lives in a window of its own
 dpg.setup_dearpygui()
 dpg.show_viewport()
 refresh_window_title()  # e37s03: the title announces the boot project identity
@@ -11494,6 +12880,9 @@ autostart_osc()  # boot: auto-connect OSC client + start listening server (no ma
 
 try:
     while dpg.is_dearpygui_running():
+        # e55: center the import-time windows before the first frame is drawn (the
+        # viewport size is measurable now); a no-op once every window is placed.
+        tick_first_open_centering()
         if not state.pairing_prompt_shown:
             state.pairing_prompt_shown = True
             show_pairing_prompt()
@@ -11543,6 +12932,7 @@ try:
         tick_thumb_cycle(time.time())
 
         tick_toolbar()  # e46s01: keep the toolbar highlight + active mark fresh
+        tick_midi_learn_shortcut()  # e52s07: Ctrl+M arms/cancels MIDI Learn
 
         tick_project_dirty(time.time())  # e37s03: unsaved-changes marker cadence
 
