@@ -351,6 +351,28 @@ _midi_first_msg_logged: set[str] = set()  # ports that already logged their firs
 
 midi_controllers: list[dict[str, Any]] = []
 
+# e52s01: MIDI modes — the additive active set (never persisted) and the
+# registry of definitions (name + optional LED spec; the project persists these).
+midi_modes: set[str] = set()
+midi_mode_defs: list[dict[str, Any]] = []
+
+# e52s08: the activation order (oldest first) of the ACTIVE modes; the set above
+# stays the source of truth, this only answers "which was activated last".
+midi_mode_order: list[str] = []
+
+# e52s04: per-control rotation cursor — key -> (last CC value, residual). Owned
+# by the single MIDI worker thread; cleared on mode activation and MIDI disable.
+midi_step_last: dict[str, tuple[int, int]] = {}
+
+# e54s01: per-control step-rate budget (token bucket) — key -> (last_at, tokens).
+# Owned by the single MIDI worker thread; cleared with the rotation cursors.
+midi_step_budget: dict[str, tuple[float, float]] = {}
+
+# e53s02: per-LED flash generation. A `press` flash schedules its off; a `state`
+# write (or a newer flash) bumps the token, so a stale timer cannot turn off an
+# LED a state LED now owns. Key = "kind|channel|number". Main thread only.
+midi_led_flash_token: dict[str, int] = {}
+
 
 _controller_lock = threading.Lock()
 
@@ -425,6 +447,11 @@ mapper_mappings: list[dict[str, Any]] = []
 
 
 mapper_counter: int = 0
+
+
+# e51s02: the Mapper clipboard — a captured Mapping snapshot (MAPPER_PERSISTED_KEYS
+# minus the id) awaiting a Paste, mirroring `copied_step_data` for the sequencer.
+mapper_clipboard: dict[str, Any] | None = None
 
 
 # e35s02: active cue runs — written by the cue engine (viseqapp/cue.py) from

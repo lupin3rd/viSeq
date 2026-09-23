@@ -221,6 +221,15 @@ MAPPER_CB_W = 16  # px width of the enable checkbox on a caption row (measured, 
 MAPPER_ADD_W = 24  # the '+' button width
 MAPPER_ADD_H = 22  # the '+' button height
 MAPPER_ADD_SLOT_W = 36  # the slot child + its spacing (small, NOT the card pitch)
+# e51s02 follow-up (rig report): the Paste button needs to read its label —
+# wider than the '+' and wide enough for 5 compact-font characters plus the
+# mapper theme's 6 px frame padding (5 * 6 + 12 = 42), and its slot must hold
+# that button inside the 4 px child padding (42 + 8 = 50).
+MAPPER_PASTE_W = 42  # the 'Paste' button width
+MAPPER_PASTE_SLOT_W = 50  # the trailing slot width while a Paste button rides it
+# e51 follow-up: the Inp row label is always 'inp'; a button that toggles on each
+# press (MIDI note, or a 127..127 window) explains itself on hover instead.
+MAPPER_INPUT_ALT_TOOLTIP = "Alternate input: each press toggles ON/OFF"
 
 
 MAPPER_DRAG_W = 40  # px width of the from/to drag boxes on the slider 'output:'/'input:' lines
@@ -391,23 +400,18 @@ LIGHT_PALETTE: dict[str, list[int]] = {
 }
 
 
-# Fixed windows tracked by the layout save/restore; monitor-player windows are added at
-# snapshot time (they exist only while the app runs, e06s01).
+# The SIX workspace windows whose pos/size/open state persist with the project
+# (user decision e55, 2026-09-21). Config panels (settings), diagnostics (I/O
+# Monitor), MIDI/Leap and every dialog are NOT workspace: they open centered on
+# the viewport and are never restored by a project load.
 LAYOUT_WINDOW_TAGS: list[str] = [
     "sequencer_window",
     "audio_window",
-    "settings_window",
     "vimix_media_window",
     "logs_window",
     "mapper_window",  # e28s02: the Mapper is a workspace window — pos/size/open persist
     "file_manager_window",  # e43s02: the File Manager is a workspace window
 ]
-
-
-# The Settings window is a config panel, not workspace: a saved layout must never re-open it
-# at boot (otherwise every start would pop it up, since it is open while clicking "Salva").
-# snapshot records it as closed and apply always hides it (e06s01 user revision).
-LAYOUT_ALWAYS_HIDDEN_TAGS: tuple[str, ...] = ("settings_window",)
 
 
 # e08: About window (Help menubar). The ASCII logo is the user-supplied art, kept verbatim
@@ -477,16 +481,35 @@ MIDI_ACTION_MAPPER_BAND = "mapper_band"  # bind the mapping to an audio band (2/
 # action applies to the SELECTED source at trigger time.
 MIDI_ACTION_SOURCE_NEXT = "source_next"  # select the next source in the grid order (wrap)
 MIDI_ACTION_SOURCE_PREV = "source_prev"  # select the previous source in the grid order (wrap)
+# e52s04: the same selection move driven by a knob's ROTATION — the resolver
+# turns the signed CC delta into detents and hands them to the executor.
+MIDI_ACTION_SOURCE_STEP = "source_step"  # params {"steps": signed detent count}
 MIDI_ACTION_REGEN_SELECTED = "regen_selected_thumb"  # regen the selected source's thumbs
 MIDI_ACTION_SEQ_ROW_ASSIGN = "seq_row_assign"  # selected source -> a sequencer row (slot)
 MIDI_ACTION_SEQ_ROW_ENABLE = "seq_row_enable"  # activate every step of a sequencer row
 MIDI_ACTION_SEQ_ROW_DISABLE = "seq_row_disable"  # deactivate every step of a sequencer row
 MIDI_ACTION_ENABLE_CORRECTION = "enable_correction"  # arm the SELECTED source's CC block
+MIDI_ACTION_SET_CURRENT = "set_current"  # make the SELECTED source current in vimix
 MIDI_ACTION_IO_MONITOR_TOGGLE = "monitor_toggle"  # e39s01: show/hide the I/O Monitor window
 MIDI_ACTION_MAPPING_TOGGLE = "mapping_toggle"  # e40s01: arm/disarm a Mapping (Enabled gate)
 MIDI_ACTION_MAPPING_ADD = "mapping_add"  # e40s08: add a State Mapping on a source line
+
+# e51s02: Mapper clipboard + in-line moves (mirror of the sequencer step
+# clipboard, e08): Copy/Cut snapshot a Mapping into state.mapper_clipboard,
+# Paste appends it to a line (the line resolves at trigger time), Move shifts it
+# one slot inside its own line. All four are MIDI-mappable (e33 rule).
+MIDI_ACTION_MAPPING_COPY = "mapping_copy"  # snapshot a Mapping into the clipboard
+MIDI_ACTION_MAPPING_CUT = "mapping_cut"  # snapshot + remove the Mapping
+MIDI_ACTION_MAPPING_MOVE = "mapping_move"  # params mapping_id + delta: shift in its line
+MIDI_ACTION_MAPPING_PASTE = "mapping_paste"  # append the clipboard to a line
 MIDI_ACTION_PAIRING_PROMPT = "pairing_prompt"  # e42s02: re-pair with viOSC (code prompt)
 MIDI_ACTION_FILE_MANAGER_TOGGLE = "file_manager_toggle"  # e43s02: show/hide the File Manager
+
+# e52s01: MIDI modes — named, additive layers that gate Bindings. MODE_TOGGLE
+# turns ONE named mode on/off from a note (or a CC at the trigger threshold);
+# MODES_CLEAR is the all-off panic action. Both are MIDI-mappable (e33 rule).
+MIDI_ACTION_MODE_TOGGLE = "mode_toggle"  # params {"mode": name}
+MIDI_ACTION_MODES_CLEAR = "modes_clear"
 
 
 # e39s01: I/O Monitor (diagnostic window). The capture is bounded so a spinning
@@ -540,6 +563,57 @@ IO_MONITOR_OUTCOME_NOBIND = "NOBIND"
 # e33s02: momentary learn actions trigger at CC value >= this threshold (MIDI's
 # conventional CC-switch split); lower CC values are a deliberate no-op.
 MIDI_CC_TRIGGER_THRESHOLD = 64
+
+# e52s01: a mode's optional MIDI LED. The spec reuses the Destination = MIDI
+# shape (controller port, channel, kind, number) plus the two values, so the
+# mode editor and the Mapping editor look and behave alike.
+MIDI_MODE_LED_KINDS: tuple[str, ...] = ("note", "cc")
+MIDI_MODE_LED_ON_DEFAULT = 127
+MIDI_MODE_LED_OFF_DEFAULT = 0
+MIDI_MODE_LED_MIN_VALUE = 0
+MIDI_MODE_LED_MAX_VALUE = 127
+MIDI_MODE_LED_MIN_CHANNEL = 0
+MIDI_MODE_LED_MAX_CHANNEL = 15
+MIDI_MODE_LED_MIN_NUMBER = 0
+MIDI_MODE_LED_MAX_NUMBER = 127
+
+# e53s01: per-Binding LED feedback. `led_behavior` is how the LED follows its
+# action: `press` is a timed flash on the trigger edge, `state` mirrors the
+# action's boolean state (e53s02). A profile `feedback.led_mirror` derives the
+# LED from the input control (same kind/channel/number), so a whole surface
+# lights with no per-binding setup; MIDI_LED_PRESS_MS is the flash length.
+MIDI_LED_BEHAVIORS: tuple[str, ...] = ("press", "state")
+MIDI_LED_PRESS_MS = 120
+MIDI_LED_MIRROR_MODES: tuple[str, ...] = ("note", "cc")
+MIDI_LED_BEHAVIOR_PRESS = "press"
+MIDI_LED_BEHAVIOR_STATE = "state"
+
+# e52s04: rotation stepping. MIDI_STEP_SIZE is how many CC units make one
+# detent; MIDI_STEP_MAX_DELTA is the wrap/glitch guard (a controller wrapping
+# 127 -> 0 must not look like a full sweep).
+MIDI_STEP_SIZE = 8
+MIDI_STEP_MAX_DELTA = 64
+
+# e54s01: the rotation decoder. An absolute knob reports a POSITION (delta between
+# messages); a jog wheel / infinite encoder reports MOVEMENT. `relative64` is the
+# Xponent convention (value 64 = still, value - 64 = the signed movement);
+# `relative2s` is two's complement (1..63 = +n, 65..127 = -(128-n)). The cap
+# bounds what ONE message may fire so a fast spin cannot launch a burst.
+MIDI_STEP_ENCODINGS: tuple[str, ...] = ("absolute", "relative64", "relative2s")
+MIDI_STEP_ENCODING_ABSOLUTE = "absolute"
+MIDI_STEP_MAX_STEPS_PER_MESSAGE = 8
+
+# e54s01 (rig feedback 2026-09-21): a wheel can be slower/faster than the default,
+# so a profile's `feedback.step_size` (or a per-Binding override) changes how many
+# CC units make one detent. Clamped to [1, MIDI_STEP_SIZE_MAX].
+MIDI_STEP_SIZE_MAX = 64
+
+# e54s01 (rig feedback 2026-09-21): a fast jog spin must not run away. The step
+# budget caps how many steps a control may emit per second (a token bucket,
+# refilled at this rate), independently of the message magnitude/rate. Tunable
+# per controller through `feedback.max_steps_per_second`.
+MIDI_STEP_MAX_PER_SECOND = 8
+MIDI_STEP_MAX_PER_SECOND_MAX = 64
 
 
 # BUG-2026-09-06T124150: pitch-bend levers (DJ pitch faders) send mido
@@ -597,6 +671,12 @@ MIDI_LEARN_RED_RGBA: tuple[int, int, int, int] = (*MIDI_LEARN_RED, 255)
 # never be hammered — the 2 s retry loop saturated the 192-client kernel table
 # on the live rig and silently killed controller detection.
 MIDI_OPEN_RETRY_COOLDOWN_SECONDS = 15.0
+
+# e53 (rig feedback 2026-09-21): a powered-off controller can leave a stale open
+# input port in the worker, so a power-cycle is never noticed and the LED
+# handshake (setup SysEx) is never re-sent until viseq restarts. The worker
+# re-reads the live port list at this cadence and drops the stale ones.
+MIDI_PORT_RESCAN_SECONDS = 1.0
 
 
 PROJECT_FORMAT = "viseq-project"
@@ -773,6 +853,23 @@ SPEC_DRAWLIST_W = 330  # spectrum drawlist width (px)
 SPEC_DRAWLIST_H = 66  # spectrum drawlist height (px) — tall enough to read the bars
 
 
+# e50s01: mouse-editable band rectangles. The grab tolerance is in drawlist
+# pixels, the minimum span keeps a dragged window a real window (an empty or
+# inverted level window makes band_value_from_bars fall back to the plain bar
+# mean, so a collapsed rectangle would silently change the band's meaning).
+BAND_RECT_HIT_TOLERANCE_PX = 6.0
+BAND_RECT_MIN_SPAN = 0.01
+BAND_EDGE_LEFT = "left"
+BAND_EDGE_RIGHT = "right"
+BAND_EDGE_TOP = "top"
+BAND_EDGE_BOTTOM = "bottom"
+BAND_EDGE_BODY = "body"  # the whole-window move (e50s02)
+BAND_EDGE_HIGHLIGHT_THICKNESS = 2.0  # px: the armed-edge highlight line (e50s01)
+# the GLOBAL mouse handler registry: DPG 2.x accepts mouse_* handlers only there
+# (an item_handler_registry takes just the item_* handlers)
+SPECTRUM_MOUSE_REG = "spec_drawlist_mouse_reg"
+
+
 THUMB_CYCLE_INTERVAL = 0.75  # seconds per frame in the Mediagrid thumb cycle
 
 
@@ -821,3 +918,12 @@ MIDI_ACTION_DRAFT_LOAD = "draft_load"
 MIDI_ACTION_DRAFT_NEXT = "draft_next"
 MIDI_ACTION_DRAFT_PREV = "draft_prev"
 MIDI_ACTION_DRAFT_SAVE = "draft_save"
+
+# e54s02: rotary stepping targets. A `*_step` action carries the resolver's
+# signed `steps` and fires its momentary pair by rotation (STEP_ACTIONS in
+# viseqapp/actions.py); the momentary `file_next`/`file_prev` step the File
+# Manager selection through `state.fs_entries`.
+MIDI_ACTION_DRAFT_STEP = "draft_step"
+MIDI_ACTION_FILE_STEP = "file_step"
+MIDI_ACTION_FILE_NEXT = "file_next"
+MIDI_ACTION_FILE_PREV = "file_prev"

@@ -30,6 +30,7 @@ from viseqapp.constants import (
     MAPPING_MIN_CADENCE_MS,
     MAPPING_OSC_EMIT_EPSILON,
     MAPPING_STEPS_CONTINUOUS,
+    MIDI_KIND_NOTE,
     ORIGIN_CLOCK,
     ORIGIN_CONST,
     ORIGIN_CONTROL,
@@ -64,6 +65,7 @@ MAPPER_PROPERTIES: dict[str, dict[str, Any]] = {
 }
 
 MAPPER_CONTROL_MAPPING = "mapping"  # e40s01: a State/Clock/Constant Mapping has no control
+MAPPER_CONTROL_BUTTON = "button"  # e51s01: the two-state trigger control
 # e40s09: the value e40 originally persisted for the same sentinel (Route era).
 # sanitize_mapping still accepts it and heals it, so an old .viseq file loads.
 MAPPER_CONTROL_MAPPING_LEGACY = "route"
@@ -114,7 +116,32 @@ def control_tag_kind(control: str) -> str:
 def button_like(control: str) -> bool:
     """True for the momentary two-state controls (e34s04): the button and the
     cue-list trigger share the toggle/reset/OFF-end semantics."""
-    return control in ("button", "cue list")
+    return control in (MAPPER_CONTROL_BUTTON, "cue list")
+
+
+def _degenerate_input_window(mapping: dict[str, Any]) -> bool:
+    """True when a mapping's input window has collapsed to one value (e51s01)."""
+    in_from, in_to = mapping.get("input_from"), mapping.get("input_to")
+    if in_from is None or in_to is None:
+        return False
+    return float(in_from) == float(in_to)
+
+
+def toggle_on_press(mapping: dict[str, Any]) -> bool:
+    """A button Mapping toggles on a source press instead of rescaling (e51s01).
+
+    True when the control is a button AND the source delivers only presses:
+    a learned MIDI NOTE (its release is never dispatched — BUG-2026-09-19T233307)
+    or a degenerate input window (input_from == input_to, the user's 127..127
+    only-controller proposal). Sliders/knobs and value Mappings never alternate,
+    so the e23 rescale model is untouched.
+    """
+    if str(mapping.get("control") or "") != MAPPER_CONTROL_BUTTON:
+        return False
+    midi = mapping.get("midi")
+    if isinstance(midi, dict) and str(midi.get("type")) == MIDI_KIND_NOTE:
+        return True
+    return _degenerate_input_window(mapping)
 
 
 def _component_spec(prop: str, component: str | None) -> dict[str, Any]:
@@ -815,6 +842,107 @@ def remove_mapping(mapping_id: int) -> None:
     state.mapper_mappings[:] = [m for m in state.mapper_mappings if m["id"] != mapping_id]
 
 
+# e51s02: the Mapper clipboard (Copy/Cut/Paste) and in-line moves. The clipboard
+# is a persisted-projection snapshot (MAPPER_PERSISTED_KEYS minus the id) so Paste
+# can mint a fresh id on any line; the tree itself is only mutated by paste/cut.
+
+
+def copy_mapping(mapping_id: int) -> dict[str, Any] | None:
+    """Snapshot a mapping into ``state.mapper_clipboard`` (e51s02).
+
+    The snapshot is the same projection a project file stores, with the id
+    dropped; the mapping list is untouched. Returns the snapshot (None for an
+    unknown id).
+    """
+    mapping = find_mapping(mapping_id)
+    if mapping is None:
+        return None
+    snapshot = capture_mapping(mapping)
+    snapshot.pop("id", None)
+    state.mapper_clipboard = snapshot
+    return snapshot
+
+
+def cut_mapping(mapping_id: int) -> dict[str, Any] | None:
+    """Snapshot a mapping into the clipboard AND remove it (e51s02)."""
+    snapshot = copy_mapping(mapping_id)
+    if snapshot is None:
+        return None
+    remove_mapping(mapping_id)
+    return snapshot
+
+
+def _row_end_index(mapping: dict[str, Any]) -> int:
+    """Insert position after the last mapping of the same (target, origin).
+
+    Rows derive from first-appearance order, so appending inside the group keeps
+    the pasted Mapping at the end of its line even when other lines interleave.
+    """
+    target = mapping.get("target_id")
+    origin = origin_of(mapping)
+    end = len(state.mapper_mappings)
+    for index, existing in enumerate(state.mapper_mappings):
+        if existing.get("target_id") == target and origin_of(existing) == origin:
+            end = index + 1
+    return end
+
+
+def paste_mapping(target_id: str | None) -> dict[str, Any] | None:
+    """Append the clipboard's snapshot to a line with a fresh id (e51s02).
+
+    ``target_id`` is the line's source (None keeps the snapshot's own target,
+    the Global line case). The snapshot is re-validated through sanitize_mapping
+    so a hand-edited clipboard can never inject an invalid row; returns the new
+    mapping (None when the clipboard is empty or the snapshot is unusable).
+    """
+    snapshot = state.mapper_clipboard
+    if not isinstance(snapshot, dict):
+        return None
+    state.mapper_counter += 1
+    raw = copy.deepcopy(snapshot)
+    raw["id"] = state.mapper_counter
+    if target_id is not None:
+        raw["target_id"] = target_id
+    mapping = sanitize_mapping(raw)
+    if mapping is None:
+        return None
+    state.mapper_mappings.insert(_row_end_index(mapping), mapping)
+    return mapping
+
+
+def move_mapping_in_row(mapping_id: int, delta: int) -> bool:
+    """Shift a Mapping by ``delta`` slots inside its own line (e51s02).
+
+    The line groups by (target_id, origin), so Control cards and State rows move
+    independently. A move that would leave the line is a no-op (False); a
+    successful swap returns True.
+    """
+    mapping = find_mapping(mapping_id)
+    if mapping is None or delta == 0:
+        return False
+    target = mapping.get("target_id")
+    origin = origin_of(mapping)
+    group = [
+        (index, row)
+        for index, row in enumerate(state.mapper_mappings)
+        if row.get("target_id") == target and origin_of(row) == origin
+    ]
+    position = next(
+        (pos for pos, (_index, row) in enumerate(group) if row["id"] == mapping_id), None
+    )
+    if position is None:
+        return False
+    destination = position + delta
+    if destination < 0 or destination >= len(group):
+        return False
+    first, second = group[position][0], group[destination][0]
+    state.mapper_mappings[first], state.mapper_mappings[second] = (
+        state.mapper_mappings[second],
+        state.mapper_mappings[first],
+    )
+    return True
+
+
 def find_mapping(mapping_id: int) -> dict[str, Any] | None:
     """The mapping with the given id, or None."""
     for m in state.mapper_mappings:
@@ -968,6 +1096,21 @@ def _output_bounds(mapping: dict[str, Any]) -> tuple[float, float]:
     )
 
 
+def next_toggle_value(mapping: dict[str, Any]) -> float:
+    """The value one button press lands on, WITHOUT mutating (e51s01).
+
+    A button flips between output_from (OFF) and output_to (ON); a stored value
+    that is neither end (the default neutral) turns ON on the first press, the
+    same rule toggle_mapping_value always applied.
+    """
+    frm, to = mapping["output_from"], mapping["output_to"]
+    if mapping["value"] == frm:
+        return to
+    if mapping["value"] == to:
+        return frm
+    return to
+
+
 def toggle_mapping_value(mapping_id: int) -> float:
     """Button behavior: flip the stored value between output_from (OFF) and
     output_to (ON); returns the new value (e23s01).
@@ -978,15 +1121,8 @@ def toggle_mapping_value(mapping_id: int) -> float:
     mapping = find_mapping(mapping_id)
     if mapping is None:
         return 0.0
-    frm, to = mapping["output_from"], mapping["output_to"]
-    if mapping["value"] == frm:
-        new_value = to
-    elif mapping["value"] == to:
-        new_value = frm
-    else:  # default/undetermined state: first press = ON
-        new_value = to
-    mapping["value"] = new_value
-    return new_value
+    mapping["value"] = next_toggle_value(mapping)
+    return mapping["value"]
 
 
 def set_mapping_enabled(mapping_id: int, enabled: bool) -> None:
@@ -1116,12 +1252,16 @@ def set_mapping_midi(mapping_id: int, binding: dict[str, Any]) -> None:
     """Set the MIDI source of a mapping from a learned binding (e18).
 
     e23s02: binding a MIDI source seeds the input range to 0..127 (the raw
-    MIDI value scale). e26s03: also clears mapping['leap'] (three-way
+    MIDI value scale) — but ONLY when the mapping was not already MIDI-bound:
+    re-learning the value of a MIDI Mapping (e.g. a pasted one with an edited
+    or 127..127 ALT window) keeps the existing window, so learning never resets
+    what the user set. e26s03: also clears mapping['leap'] (three-way
     exclusivity).
     """
     mapping = find_mapping(mapping_id)
     if mapping is None:
         return
+    was_midi = isinstance(mapping.get("midi"), dict)
     mapping["midi"] = {
         "device": binding.get("device"),
         "type": binding.get("type"),
@@ -1129,8 +1269,9 @@ def set_mapping_midi(mapping_id: int, binding: dict[str, Any]) -> None:
     }
     mapping["band"] = None
     mapping["leap"] = None
-    mapping["input_from"] = 0.0
-    mapping["input_to"] = 127.0
+    if not was_midi:
+        mapping["input_from"] = 0.0
+        mapping["input_to"] = 127.0
 
 
 def set_mapping_leap(mapping_id: int, signal_key: str) -> None:
@@ -1222,13 +1363,51 @@ def preview_mapping_value(mapping: dict[str, Any], raw: float) -> tuple[float, s
     """
     if not mapping.get("enabled", False):
         return float(mapping["value"]), IO_MONITOR_OUTCOME_MUTED
+    if toggle_on_press(mapping):
+        if not _press_matches(mapping, raw):
+            return float(mapping["value"]), IO_MONITOR_OUTCOME_HOLD
+        return next_toggle_value(mapping), IO_MONITOR_OUTCOME_SENT
     unit = _raw_unit(mapping, raw)
     if unit is None:
         return float(mapping["value"]), IO_MONITOR_OUTCOME_HOLD
-    value = float(mapping["output_from"]) + unit * (
-        float(mapping["output_to"]) - float(mapping["output_from"])
-    )
-    return value, IO_MONITOR_OUTCOME_SENT
+    return _rescaled_unit_value(mapping, unit), IO_MONITOR_OUTCOME_SENT
+
+
+def _rescaled_unit_value(mapping: dict[str, Any], unit: float) -> float:
+    """The output value a clamped 0..1 unit lands on (e23s01).
+
+    e51s01: a BUTTON snaps to the nearest output end (a two-state trigger never
+    holds an intermediate value), so `_trigger_is_on` is exact and a pad velocity
+    below 127 still reads ON. Every other control kind keeps the continuous
+    rescale `output_from + unit * (output_to - output_from)`.
+    """
+    u = _clamp(unit, 0.0, 1.0)
+    frm, to = mapping["output_from"], mapping["output_to"]
+    if str(mapping.get("control") or "") == MAPPER_CONTROL_BUTTON:
+        return to if u >= 0.5 else frm
+    return frm + u * (to - frm)
+
+
+def _press_matches(mapping: dict[str, Any], raw: float) -> bool:
+    """True when a source event is the press of a toggling button (e51s01).
+
+    A note is always a press (its release is never delivered); a degenerate
+    input window accepts only its single value, so a released switch that sends
+    0 into a 127..127 window HOLDS instead of flipping twice.
+    """
+    midi = mapping.get("midi")
+    if isinstance(midi, dict) and str(midi.get("type")) == MIDI_KIND_NOTE:
+        return True
+    return float(raw) == float(mapping["input_from"])
+
+
+def _send_toggled(mapping_id: int) -> float:
+    """Flip a mapping's button value and send it; returns the new value."""
+    value = toggle_mapping_value(mapping_id)
+    mapping = find_mapping(mapping_id)
+    if mapping is not None:
+        _send(mapping)
+    return value
 
 
 def apply_input_value(mapping_id: int, raw: float) -> float:
@@ -1242,12 +1421,17 @@ def apply_input_value(mapping_id: int, raw: float) -> float:
     instead of pinning the nearest edge. Without the hold, two same-lever
     mappings writing one OSC address clamp-sent their edge on every message
     and overwrote each other — one slider looked dead. A degenerate range
-    yields unit 0 (output_from). Returns the effective value (0.0 for an
-    unknown id). Worker-safe, HIGH-1.
+    yields unit 0 (output_from). e51s01: a button whose source delivers only
+    presses (a MIDI note, or a degenerate window) TOGGLES instead of rescaling.
+    Returns the effective value (0.0 for an unknown id). Worker-safe, HIGH-1.
     """
     mapping = find_mapping(mapping_id)
     if mapping is None:
         return 0.0
+    if toggle_on_press(mapping):
+        if not _press_matches(mapping, raw):
+            return float(mapping["value"])  # not my press value: hold
+        return _send_toggled(mapping_id)
     unit = _raw_unit(mapping, raw)
     if unit is None:
         return float(mapping["value"])  # outside my window: hold (zone ownership)
@@ -1257,16 +1441,15 @@ def apply_input_value(mapping_id: int, raw: float) -> float:
 def apply_unit_value(mapping_id: int, unit: float) -> float:
     """Drive a mapping from a clamped 0..1 unit value (e18).
 
-    e23: the unit is rescaleped onto the mapping's OUTPUT range
-    (output_from + unit*(output_to-output_from)), stored on the mapping and
-    sent as OSC; a reversed output range sweeps the other way. Returns the
-    effective value (0.0 for an unknown id). Worker-safe, HIGH-1.
+    e23: the unit is rescaleped onto the mapping's OUTPUT range, stored on the
+    mapping and sent as OSC; a reversed output range sweeps the other way.
+    e51s01: a button snaps to the nearest end instead (_rescaled_unit_value).
+    Returns the effective value (0.0 for an unknown id). Worker-safe, HIGH-1.
     """
     mapping = find_mapping(mapping_id)
     if mapping is None:
         return 0.0
-    u = _clamp(unit, 0.0, 1.0)
-    value = mapping["output_from"] + u * (mapping["output_to"] - mapping["output_from"])
+    value = _rescaled_unit_value(mapping, unit)
     mapping["value"] = value
     _send(mapping)
     return value

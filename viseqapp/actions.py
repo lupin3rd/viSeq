@@ -18,8 +18,12 @@ from viseqapp.constants import (
     MIDI_ACTION_DRAFT_NEXT,
     MIDI_ACTION_DRAFT_PREV,
     MIDI_ACTION_DRAFT_SAVE,
+    MIDI_ACTION_DRAFT_STEP,
     MIDI_ACTION_ENABLE_CORRECTION,
     MIDI_ACTION_FILE_MANAGER_TOGGLE,
+    MIDI_ACTION_FILE_NEXT,
+    MIDI_ACTION_FILE_PREV,
+    MIDI_ACTION_FILE_STEP,
     MIDI_ACTION_IO_MONITOR_TOGGLE,
     MIDI_ACTION_MAPPER_BAND,
     MIDI_ACTION_MAPPER_CUE_OPEN,
@@ -28,7 +32,13 @@ from viseqapp.constants import (
     MIDI_ACTION_MAPPER_MAPPING,
     MIDI_ACTION_MAPPER_RESET,
     MIDI_ACTION_MAPPING_ADD,
+    MIDI_ACTION_MAPPING_COPY,
+    MIDI_ACTION_MAPPING_CUT,
+    MIDI_ACTION_MAPPING_MOVE,
+    MIDI_ACTION_MAPPING_PASTE,
     MIDI_ACTION_MAPPING_TOGGLE,
+    MIDI_ACTION_MODE_TOGGLE,
+    MIDI_ACTION_MODES_CLEAR,
     MIDI_ACTION_NUDGE_BACK,
     MIDI_ACTION_NUDGE_FORWARD,
     MIDI_ACTION_PAIRING_PROMPT,
@@ -37,8 +47,10 @@ from viseqapp.constants import (
     MIDI_ACTION_SEQ_ROW_DISABLE,
     MIDI_ACTION_SEQ_ROW_ENABLE,
     MIDI_ACTION_SEQ_TOGGLE,
+    MIDI_ACTION_SET_CURRENT,
     MIDI_ACTION_SOURCE_NEXT,
     MIDI_ACTION_SOURCE_PREV,
+    MIDI_ACTION_SOURCE_STEP,
     MIDI_ACTION_TRACK_ASSIGN,
     MIDI_ACTION_TRANSPORT_PLAY,
     MIDI_ACTION_TRANSPORT_RESYNC,
@@ -59,6 +71,9 @@ CATEGORY_MONITOR = "monitor"
 # e40s01: Mapping actions (arm/disarm a Mapping's Enabled gate).
 CATEGORY_MAPPING = "mapping"
 
+# e52s01: MIDI mode actions (toggle ONE named mode / clear every mode).
+CATEGORY_MODES = "modes"
+
 # e42s02: link-pairing actions (re-open the pairing prompt).
 CATEGORY_SETTINGS = "settings"
 
@@ -68,6 +83,7 @@ CATEGORY_FILES = "files"
 # Kinds describe how the incoming MIDI value maps onto the action.
 KIND_MOMENTARY = "momentary"  # note edges trigger; CC fires at the >=64 threshold
 KIND_VALUE = "value"  # the raw CC 0..127 value is consumed (rescaleped by the action)
+KIND_STEP = "step"  # e52s04: the signed CC delta becomes detents (params[\"steps\"])
 
 
 @dataclass(frozen=True)
@@ -126,11 +142,35 @@ ACTION_SPECS: dict[str, ActionSpec] = {
     MIDI_ACTION_MAPPER_CUE_OPEN: ActionSpec(
         MIDI_ACTION_MAPPER_CUE_OPEN, "Open cue list window", CATEGORY_MAPPER, KIND_MOMENTARY
     ),
+    # e51s02: the Mapper clipboard + in-line moves (e33 MIDI-mappable rule).
+    MIDI_ACTION_MAPPING_COPY: ActionSpec(
+        MIDI_ACTION_MAPPING_COPY, "Copy mapping", CATEGORY_MAPPER, KIND_MOMENTARY
+    ),
+    MIDI_ACTION_MAPPING_CUT: ActionSpec(
+        MIDI_ACTION_MAPPING_CUT, "Cut mapping", CATEGORY_MAPPER, KIND_MOMENTARY
+    ),
+    MIDI_ACTION_MAPPING_MOVE: ActionSpec(
+        MIDI_ACTION_MAPPING_MOVE, "Move mapping", CATEGORY_MAPPER, KIND_MOMENTARY
+    ),
+    MIDI_ACTION_MAPPING_PASTE: ActionSpec(
+        MIDI_ACTION_MAPPING_PASTE, "Paste mapping", CATEGORY_MAPPER, KIND_MOMENTARY
+    ),
+    # e52s01: MIDI modes — {"mode": name} on MODE_TOGGLE.
+    MIDI_ACTION_MODE_TOGGLE: ActionSpec(
+        MIDI_ACTION_MODE_TOGGLE, "Toggle mode", CATEGORY_MODES, KIND_MOMENTARY
+    ),
+    MIDI_ACTION_MODES_CLEAR: ActionSpec(
+        MIDI_ACTION_MODES_CLEAR, "All modes off", CATEGORY_MODES, KIND_MOMENTARY
+    ),
     MIDI_ACTION_SOURCE_NEXT: ActionSpec(
         MIDI_ACTION_SOURCE_NEXT, "Next source", CATEGORY_MEDIAGRID, KIND_MOMENTARY
     ),
     MIDI_ACTION_SOURCE_PREV: ActionSpec(
         MIDI_ACTION_SOURCE_PREV, "Previous source", CATEGORY_MEDIAGRID, KIND_MOMENTARY
+    ),
+    # e52s04: a knob browses the selection by rotation detents.
+    MIDI_ACTION_SOURCE_STEP: ActionSpec(
+        MIDI_ACTION_SOURCE_STEP, "Step source", CATEGORY_MEDIAGRID, KIND_STEP
     ),
     MIDI_ACTION_REGEN_SELECTED: ActionSpec(
         MIDI_ACTION_REGEN_SELECTED,
@@ -162,6 +202,12 @@ ACTION_SPECS: dict[str, ActionSpec] = {
         CATEGORY_MEDIAGRID,
         KIND_MOMENTARY,
     ),
+    MIDI_ACTION_SET_CURRENT: ActionSpec(
+        MIDI_ACTION_SET_CURRENT,
+        "Set current source",
+        CATEGORY_MEDIAGRID,
+        KIND_MOMENTARY,
+    ),
     MIDI_ACTION_IO_MONITOR_TOGGLE: ActionSpec(
         MIDI_ACTION_IO_MONITOR_TOGGLE, "I/O Monitor window", CATEGORY_MONITOR, KIND_MOMENTARY
     ),
@@ -189,6 +235,29 @@ ACTION_SPECS: dict[str, ActionSpec] = {
     MIDI_ACTION_DRAFT_PREV: ActionSpec(
         MIDI_ACTION_DRAFT_PREV, "Previous draft", CATEGORY_FILES, KIND_MOMENTARY
     ),
+    # e54s02: rotary stepping targets (a step action fires its pair by rotation).
+    MIDI_ACTION_DRAFT_STEP: ActionSpec(
+        MIDI_ACTION_DRAFT_STEP, "Step draft", CATEGORY_FILES, KIND_STEP
+    ),
+    MIDI_ACTION_FILE_STEP: ActionSpec(
+        MIDI_ACTION_FILE_STEP, "Step file", CATEGORY_FILES, KIND_STEP
+    ),
+    MIDI_ACTION_FILE_NEXT: ActionSpec(
+        MIDI_ACTION_FILE_NEXT, "Next file", CATEGORY_FILES, KIND_MOMENTARY
+    ),
+    MIDI_ACTION_FILE_PREV: ActionSpec(
+        MIDI_ACTION_FILE_PREV, "Previous file", CATEGORY_FILES, KIND_MOMENTARY
+    ),
+}
+
+
+# e54s02: a step action id -> its (next, prev) momentary pair. ONE generic
+# executor (viseq.py `_exec_step`) fires the pair by the signed `params["steps"]`
+# the resolver computes, so adding a new scroll target is one row here.
+STEP_ACTIONS: dict[str, tuple[str, str]] = {
+    MIDI_ACTION_SOURCE_STEP: (MIDI_ACTION_SOURCE_NEXT, MIDI_ACTION_SOURCE_PREV),
+    MIDI_ACTION_DRAFT_STEP: (MIDI_ACTION_DRAFT_NEXT, MIDI_ACTION_DRAFT_PREV),
+    MIDI_ACTION_FILE_STEP: (MIDI_ACTION_FILE_NEXT, MIDI_ACTION_FILE_PREV),
 }
 
 

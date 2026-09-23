@@ -14,6 +14,19 @@ import os
 from typing import Any
 
 from viseqapp.config import user_config_dir
+from viseqapp.constants import (
+    MIDI_LED_BEHAVIOR_PRESS,
+    MIDI_LED_BEHAVIORS,
+    MIDI_LED_MIRROR_MODES,
+    MIDI_MODE_LED_MAX_VALUE,
+    MIDI_MODE_LED_MIN_VALUE,
+    MIDI_MODE_LED_OFF_DEFAULT,
+    MIDI_MODE_LED_ON_DEFAULT,
+    MIDI_STEP_MAX_PER_SECOND,
+    MIDI_STEP_MAX_PER_SECOND_MAX,
+    MIDI_STEP_SIZE,
+    MIDI_STEP_SIZE_MAX,
+)
 from viseqapp.queues import log_error
 
 CONTROLLERS_DIR = os.path.join(
@@ -75,6 +88,10 @@ PROFILE_SEMANTIC_COLORS: tuple[str, ...] = ("off", "red", "amber", "white", "gre
 _DEFAULT_PROFILE_COLORS: dict[str, int] = {"off": 0, "red": 5, "amber": 12, "white": 3, "green": 60}
 
 
+# e53s03: bound for a profile's `feedback.relative_cc` list (a control-number hint).
+MIDI_FEEDBACK_MAX_RELATIVE_CC = 64
+
+
 _DEFAULT_GRID_NOTE_FORMULA = "row*16+col"
 
 
@@ -92,6 +109,7 @@ def _sanitize_profile(raw: Any) -> dict[str, Any]:
         "colors": dict(_DEFAULT_PROFILE_COLORS),
         "setup_sysex": None,
         "features": {"grid": False, "leds": False, "clock": False},
+        "feedback": None,
     }
     match = raw.get("match")
     if isinstance(match, list):
@@ -117,7 +135,63 @@ def _sanitize_profile(raw: Any) -> dict[str, Any]:
     if isinstance(features, dict):
         for flag in profile["features"]:
             profile["features"][flag] = bool(features.get(flag, False))
+    profile["feedback"] = _sanitize_feedback(raw.get("feedback"))
     return profile
+
+
+def _sanitize_feedback(raw: Any) -> dict[str, Any] | None:
+    """Coerce a profile's e53 `feedback` block; None when absent or unusable (e53s03).
+
+    `led_mirror` derives a Binding's LED from its input control (same kind,
+    channel and number); on/off values are clamped to the MIDI range and
+    `relative_cc` is the e54 rotation-encoding hint (deduped, bounded, sorted).
+    """
+    if not isinstance(raw, dict):
+        return None
+    mirror = str(raw.get("led_mirror") or "").strip().lower()
+    behavior = str(raw.get("default_behavior") or "").strip().lower()
+    relative: list[int] = []
+    raw_relative = raw.get("relative_cc")
+    if isinstance(raw_relative, list):
+        for item in raw_relative[:MIDI_FEEDBACK_MAX_RELATIVE_CC]:
+            value = _to_int(item, -1)
+            if value in range(0, MIDI_MODE_LED_MAX_VALUE + 1) and value not in relative:
+                relative.append(value)
+    return {
+        "led_mirror": mirror if mirror in MIDI_LED_MIRROR_MODES else None,
+        "on_value": _clamp_midi(raw.get("on_value"), MIDI_MODE_LED_ON_DEFAULT),
+        "off_value": _clamp_midi(raw.get("off_value"), MIDI_MODE_LED_OFF_DEFAULT),
+        "default_behavior": behavior if behavior in MIDI_LED_BEHAVIORS else MIDI_LED_BEHAVIOR_PRESS,
+        "relative_cc": sorted(relative),
+        "step_size": _clamp_step_size(raw.get("step_size")),
+        "max_steps_per_second": _clamp_step_rate(raw.get("max_steps_per_second")),
+    }
+
+
+def _clamp_step_rate(raw: Any) -> int:
+    """A profile `feedback.max_steps_per_second` (e54s01); a non-positive value falls back."""
+    value = _to_int(raw, MIDI_STEP_MAX_PER_SECOND)
+    if value < 1:
+        return MIDI_STEP_MAX_PER_SECOND
+    return min(value, MIDI_STEP_MAX_PER_SECOND_MAX)
+
+
+def _clamp_step_size(raw: Any) -> int:
+    """A profile `feedback.step_size`: CC units per detent (e54s01).
+
+    A missing/non-int or non-positive value falls back to the default; a value
+    above the maximum is clamped down, so a too-slow typo never disables stepping.
+    """
+    value = _to_int(raw, MIDI_STEP_SIZE)
+    if value < 1:
+        return MIDI_STEP_SIZE
+    return min(value, MIDI_STEP_SIZE_MAX)
+
+
+def _clamp_midi(raw: Any, default: int) -> int:
+    """Coerce a stored MIDI value into [0, 127], falling back on the default (e53s03)."""
+    value = _to_int(raw, default)
+    return max(MIDI_MODE_LED_MIN_VALUE, min(MIDI_MODE_LED_MAX_VALUE, value))
 
 
 def _to_int(value: Any, default: int) -> int:

@@ -1,0 +1,20 @@
+{
+  "id": "xponent",
+  "name": "M-Audio Torq Xponent",
+  "match": ["xponent"],
+  "priority": 40,
+  "protocol": "note",
+  "grid": {"rows": 8, "cols": 8, "note": "0"},
+  "colors": {"off": 0, "red": 127, "amber": 96, "white": 127, "green": 80},
+  "setup_sysex": [0, 32, 8, 0, 0, 99, 14, 22, 64, 0, 1],
+  "features": {"grid": false, "leds": true, "clock": true},
+  "feedback": {
+    "led_mirror": "note",
+    "on_value": 127,
+    "off_value": 0,
+    "default_behavior": "press",
+    "relative_cc": [22],
+    "step_size": 20,
+    "max_steps_per_second": 6
+  }
+}
