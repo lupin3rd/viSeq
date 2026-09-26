@@ -172,6 +172,7 @@ def poll_state_once() -> bool:
     if text is not None:
         state.state_pull_supported = True
         state.state_pull_failures = 0
+        state.last_viosc_state_ts = time.monotonic()
         state.ui_state_queue.put(text)
         return True
     if answered and status == 401:
@@ -302,6 +303,7 @@ def incoming_osc_handler(address: str, *args: Any) -> None:
             # the pushed table is no fresher). The I/O Monitor still records it:
             # observation is not ingestion.
             if state.state_pull_supported is not True:
+                state.last_viosc_state_ts = time.monotonic()
                 state.ui_state_queue.put(args[0])
         elif address.startswith("/viosc/reply/") and args:
             # e40s06: a targeted watch delta (prop, value, ...) for one source

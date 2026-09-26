@@ -42,15 +42,26 @@ from viseqapp.constants import (
     MIDI_ACTION_NUDGE_BACK,
     MIDI_ACTION_NUDGE_FORWARD,
     MIDI_ACTION_PAIRING_PROMPT,
+    MIDI_ACTION_PROJECT_NEW,
+    MIDI_ACTION_PROJECT_OPEN,
+    MIDI_ACTION_PROJECT_SAVE,
     MIDI_ACTION_REGEN_SELECTED,
     MIDI_ACTION_SEQ_ROW_ASSIGN,
     MIDI_ACTION_SEQ_ROW_DISABLE,
     MIDI_ACTION_SEQ_ROW_ENABLE,
     MIDI_ACTION_SEQ_TOGGLE,
     MIDI_ACTION_SET_CURRENT,
+    MIDI_ACTION_SHOW_WINDOW,
     MIDI_ACTION_SOURCE_NEXT,
     MIDI_ACTION_SOURCE_PREV,
     MIDI_ACTION_SOURCE_STEP,
+    MIDI_ACTION_TEXT_CLEAR,
+    MIDI_ACTION_TEXT_LINE,
+    MIDI_ACTION_TEXT_LINE_PLUS,
+    MIDI_ACTION_TEXT_SEND,
+    MIDI_ACTION_TEXT_WINDOW_TOGGLE,
+    MIDI_ACTION_TEXT_WORD,
+    MIDI_ACTION_TEXT_WORD_PLUS,
     MIDI_ACTION_TRACK_ASSIGN,
     MIDI_ACTION_TRANSPORT_PLAY,
     MIDI_ACTION_TRANSPORT_RESYNC,
@@ -79,6 +90,12 @@ CATEGORY_SETTINGS = "settings"
 
 # e43s02: File Manager actions (browse machine A's media over the /fs plane).
 CATEGORY_FILES = "files"
+
+# e59s02: Text window actions (toggle the window, send the document).
+CATEGORY_TEXT = "text"
+
+# e33s05: global actions (window show + project new/open/save).
+CATEGORY_GLOBAL = "global"
 
 # Kinds describe how the incoming MIDI value maps onto the action.
 KIND_MOMENTARY = "momentary"  # note edges trigger; CC fires at the >=64 threshold
@@ -247,6 +264,41 @@ ACTION_SPECS: dict[str, ActionSpec] = {
     ),
     MIDI_ACTION_FILE_PREV: ActionSpec(
         MIDI_ACTION_FILE_PREV, "Previous file", CATEGORY_FILES, KIND_MOMENTARY
+    ),
+    # e59s02: the Text window (e33 rule) — toggle the window, send the document.
+    MIDI_ACTION_TEXT_WINDOW_TOGGLE: ActionSpec(
+        MIDI_ACTION_TEXT_WINDOW_TOGGLE, "Text window", CATEGORY_TEXT, KIND_MOMENTARY
+    ),
+    MIDI_ACTION_TEXT_SEND: ActionSpec(
+        MIDI_ACTION_TEXT_SEND, "Send text to source", CATEGORY_TEXT, KIND_MOMENTARY
+    ),
+    MIDI_ACTION_TEXT_CLEAR: ActionSpec(
+        MIDI_ACTION_TEXT_CLEAR, "Clear text source", CATEGORY_TEXT, KIND_MOMENTARY
+    ),
+    MIDI_ACTION_TEXT_WORD: ActionSpec(
+        MIDI_ACTION_TEXT_WORD, "Text: 1 word", CATEGORY_TEXT, KIND_MOMENTARY
+    ),
+    MIDI_ACTION_TEXT_WORD_PLUS: ActionSpec(
+        MIDI_ACTION_TEXT_WORD_PLUS, "Text: 1 word +", CATEGORY_TEXT, KIND_MOMENTARY
+    ),
+    MIDI_ACTION_TEXT_LINE: ActionSpec(
+        MIDI_ACTION_TEXT_LINE, "Text: 1 line", CATEGORY_TEXT, KIND_MOMENTARY
+    ),
+    MIDI_ACTION_TEXT_LINE_PLUS: ActionSpec(
+        MIDI_ACTION_TEXT_LINE_PLUS, "Text: 1 line +", CATEGORY_TEXT, KIND_MOMENTARY
+    ),
+    # e33s05: the global actions (window show + project new/open/save).
+    MIDI_ACTION_SHOW_WINDOW: ActionSpec(
+        MIDI_ACTION_SHOW_WINDOW, "Open window", CATEGORY_GLOBAL, KIND_MOMENTARY
+    ),
+    MIDI_ACTION_PROJECT_NEW: ActionSpec(
+        MIDI_ACTION_PROJECT_NEW, "New project", CATEGORY_GLOBAL, KIND_MOMENTARY
+    ),
+    MIDI_ACTION_PROJECT_OPEN: ActionSpec(
+        MIDI_ACTION_PROJECT_OPEN, "Open project", CATEGORY_GLOBAL, KIND_MOMENTARY
+    ),
+    MIDI_ACTION_PROJECT_SAVE: ActionSpec(
+        MIDI_ACTION_PROJECT_SAVE, "Save project", CATEGORY_GLOBAL, KIND_MOMENTARY
     ),
 }
 

@@ -9,7 +9,7 @@ import random
 import time
 from typing import Any
 
-from viseqapp import catalog, osc, state
+from viseqapp import catalog, osc, state, textplay
 from viseqapp.constants import (
     BEAT_SOURCE_BAND1,
     BEAT_SOURCE_MANUAL,
@@ -245,6 +245,45 @@ def _rand_tag(row: int, col: int) -> str:
     return f"rand_v1_{row}_{col}"
 
 
+# ==============================================================================
+# e60s01: progressive text reveal as a step type. The ordered /vimix/<target>/
+# contents strings come from the pure textplay engine; the cursor is runtime-only
+# and per (track, mode), so each row drives its own source on its own sequence.
+# ==============================================================================
+
+_reveal_key: tuple[str, str] | None = None
+_reveal_cache: list[str] = []
+
+
+def reveal_steps(document: str, mode: str) -> list[str]:
+    """`textplay.steps` cached by (document, mode) — the sequencer thread only."""
+    global _reveal_key, _reveal_cache
+    key = (document, mode)
+    if key != _reveal_key:
+        _reveal_key = key
+        _reveal_cache = textplay.steps(document, mode)
+    return _reveal_cache
+
+
+def execute_text_step(track: dict[str, Any], base_address: str, mode: str) -> None:
+    """Send the NEXT reveal fragment of ``mode`` to the track's source (e60s01).
+
+    Forward-only: the cursor advances by one per firing, and past the end of the
+    document the step is a silent no-op. The document itself is never modified.
+    """
+    steps = reveal_steps(state.text_document, mode)
+    cursors = track.setdefault("reveal_cursor", {})
+    index = int(cursors.get(mode, 0))
+    if index >= len(steps):
+        return
+    fragment = steps[index]
+    cursors[mode] = index + 1
+    address = f"{base_address}/contents"
+    _send(address, fragment)
+    preview = fragment.replace("\n", "\\n")
+    append_log("OUT", f"{address} [{preview[:48]}]")
+
+
 def execute_step(
     track: dict[str, Any], row: int, col: int, beat_seconds: float | None = None
 ) -> None:
@@ -260,9 +299,20 @@ def execute_step(
     step_data = track["steps"][col]
     if not step_data.get("active", False):
         return  # the tick only calls active steps; the engine guards anyway
-    parsed = parse_step_token(str(step_data.get("type", "NONE")))
     base_addr = str(track.get("base_address") or "")
-    if parsed is None or not base_addr or not base_addr.strip():
+    if not base_addr or not base_addr.strip():
+        return
+
+    # e60s01: a text reveal step goes through textplay, never the catalog token
+    # parser (its four tokens are not catalog properties).
+    token = str(step_data.get("type", "NONE"))
+    text_mode = textplay.MODE_BY_STEP_TOKEN.get(token)
+    if text_mode is not None:
+        execute_text_step(track, base_addr, text_mode)
+        return
+
+    parsed = parse_step_token(token)
+    if parsed is None:
         return
     prop, mode = parsed
     if mode not in step_modes_for(prop):

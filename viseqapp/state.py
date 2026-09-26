@@ -26,6 +26,7 @@ from viseqapp.constants import (
     NUM_TRACKS,
     SPECTRUM_BARS,
 )
+from viseqapp.textplay import DEFAULT_REVEAL_MODE
 
 viosc_client: Any = None
 
@@ -92,6 +93,14 @@ thumb_http_supported: bool | None = None
 thumb_http_failures: int = 0
 dataplane_host: str = ""
 dataplane_port: int = 0
+
+# e58s03: the last time ANY viOSC state arrived (either lane — the OSC push or
+# the /state poll), as a monotonic timestamp. Drives the settings connection LED.
+last_viosc_state_ts: float = 0.0
+
+# e58s03: the effective viOSC config last loaded into the Settings > viOSC page
+# (the diff base for the next save). Empty until the page is loaded.
+viosc_config_values: dict[str, Any] = {}
 
 # e42s02: the pairing prompt is shown once per run (main loop), so a boot with
 # no display (tests, headless import) never opens a modal.
@@ -491,6 +500,27 @@ trigger_theme_signature: tuple[tuple[int, ...], ...] | None = None
 # get_active_window() returns None while the viewport menu bar has focus, so
 # the Windows-menu mark and the Ctrl+Tab anchor come from this tracking instead.
 current_window: str | None = None
+
+
+# e59: the Text window's live document, its OSC target and the last loaded file.
+# Main-thread only (the editor callback writes the document); the project save/
+# load flows in the composition root persist the three with the project. An
+# empty target means "no source chosen yet".
+text_document: str = ""
+text_target: str = ""
+text_source_path: str = ""
+# e59: the tracked caret (a shadow position — DearPyGui exposes none; see the
+# Text window's infer_edit_caret). Runtime only, never persisted.
+text_caret: int = 0
+# e59s05: the LIVE ImGui input state captured through the private-ABI reader:
+# the selected (lo, hi) range (None when the caret only) and the widget id that
+# owns the single ImGui state slot (None until a read succeeds). Runtime only.
+text_selection: tuple[int, int] | None = None
+text_widget_id: int | None = None
+# e59s08: the progressive-reveal cursor for the four send modes. Runtime only
+# (never persisted): the selected mode and the index of the last sent step.
+text_reveal_mode: str = DEFAULT_REVEAL_MODE
+text_reveal_step: int = 0
 
 
 # e37 (project-save-as-titlebar): the session's project identity — which .viseq

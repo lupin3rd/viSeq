@@ -22,6 +22,7 @@ from pythonosc import dispatcher, udp_client
 import viseqapp  # noqa: F401  scaffold hook (REFACTOR_LATEST.md commit 1): proves the package import path works at boot
 from viseqapp import (
     actions,
+    caret,
     catalog,
     cue,
     drafts,
@@ -34,6 +35,9 @@ from viseqapp import (
     pairing,
     preview,
     state,
+    textmarkup,
+    textplay,
+    viosccfg,
 )
 from viseqapp.actions import STEP_ACTIONS
 from viseqapp.audio import (
@@ -91,6 +95,8 @@ from viseqapp.constants import (
     IO_MONITOR_TRANSPORT_OSC,
     LAYOUT_WINDOW_TAGS,
     LOG_HISTORY_LIMIT,
+    MAP_ACTIONS_ROWS_TAG,
+    MAP_ACTIONS_WINDOW_TAG,
     MAPPER_ADD_H,
     MAPPER_ADD_SLOT_W,
     MAPPER_ADD_W,
@@ -143,6 +149,7 @@ from viseqapp.constants import (
     MEDIA_BADGE_H,
     MEDIA_BADGE_W,
     MEDIA_TILE_H,
+    MEDIA_TILE_NAME_CHARS,
     MEDIA_TILE_PAD,
     MEDIA_TITLE_CHAR_PX,
     MEDIA_TITLE_CHARS_PER_LINE,
@@ -181,15 +188,26 @@ from viseqapp.constants import (
     MIDI_ACTION_NUDGE_BACK,
     MIDI_ACTION_NUDGE_FORWARD,
     MIDI_ACTION_PAIRING_PROMPT,
+    MIDI_ACTION_PROJECT_NEW,
+    MIDI_ACTION_PROJECT_OPEN,
+    MIDI_ACTION_PROJECT_SAVE,
     MIDI_ACTION_REGEN_SELECTED,
     MIDI_ACTION_SEQ_ROW_ASSIGN,
     MIDI_ACTION_SEQ_ROW_DISABLE,
     MIDI_ACTION_SEQ_ROW_ENABLE,
     MIDI_ACTION_SEQ_TOGGLE,
     MIDI_ACTION_SET_CURRENT,
+    MIDI_ACTION_SHOW_WINDOW,
     MIDI_ACTION_SOURCE_NEXT,
     MIDI_ACTION_SOURCE_PREV,
     MIDI_ACTION_SOURCE_STEP,
+    MIDI_ACTION_TEXT_CLEAR,
+    MIDI_ACTION_TEXT_LINE,
+    MIDI_ACTION_TEXT_LINE_PLUS,
+    MIDI_ACTION_TEXT_SEND,
+    MIDI_ACTION_TEXT_WINDOW_TOGGLE,
+    MIDI_ACTION_TEXT_WORD,
+    MIDI_ACTION_TEXT_WORD_PLUS,
     MIDI_ACTION_TRACK_ASSIGN,
     MIDI_ACTION_TRANSPORT_PLAY,
     MIDI_ACTION_TRANSPORT_RESYNC,
@@ -237,6 +255,23 @@ from viseqapp.constants import (
     STEP_COLOR_SQUARE_INDENT,
     STEP_COLOR_SQUARE_SIZE,
     STEP_PERSISTED_KEYS,
+    TEXT_EDITOR_HEIGHT,
+    TEXT_EDITOR_TAG,
+    TEXT_LEARN_SLOT_TAG,
+    TEXT_LIVE_VALIDATE_MAX_CHARS,
+    TEXT_LOAD_DIALOG_TAG,
+    TEXT_MAX_LOAD_BYTES,
+    TEXT_MODE_LEARN_SLOT_TAG,
+    TEXT_SAVE_DIALOG_TAG,
+    TEXT_SOURCE_COMBO_TAG,
+    TEXT_SOURCE_INDEX_PREFIX,
+    TEXT_STATUS_TAG,
+    TEXT_WINDOW_HEIGHT,
+    TEXT_WINDOW_PADDING,
+    TEXT_WINDOW_TAG,
+    TEXT_WINDOW_WIDTH,
+    TEXT_WRAP_CLIPBOARD_TAG,
+    TEXT_WRAP_ROW_TAG,
     THEME_PRESET_LABELS,
     THEME_PRIMARY_LABELS,
     THEME_PRIMARY_SLOTS,
@@ -401,6 +436,9 @@ Image.MAX_IMAGE_PIXELS = 25_000_000  # PIL's hard ceiling (~25 MP)
 # viseq application version — single source of truth (matches specs/release-plan.yaml, e08s02).
 # e13s01: this is the first real release of viSeq (user decision).
 # e20s03: 0.2.0 — viseqapp refactor + controller profiles + new project + Mapper family.
+# 0.10.0 — the Text window (Pango markup + progressive reveal) and its four reveal modes as
+# Step Sequencer step types; viOSC remote config + source-kind tiles; global MIDI-mappable
+# actions (viOSC 0.6.0).
 # 0.9.0 — audio band rectangles, Mapper toggle/clipboard/move, MIDI modes + LED feedback +
 # rotation stepping, window layout/centering, tile "Set current".
 # 0.8.0 — MIDI Learn as the toolbar's red icon, the Leap Motion signal expansion (four-column
@@ -418,7 +456,7 @@ Image.MAX_IMAGE_PIXELS = 25_000_000  # PIL's hard ceiling (~25 MP)
 # 0.4.0 — Leap Motion mapper source, per-mapping reset, project save + OSC config persist,
 # Mapper tile/row workflows (thumb assign, Add-to-Mapper submenu, line numbers).
 # 0.3.0 — Mapper family (rows/rescale/enable/cycle), compact Vimix-sources grid, windows, XDG.
-APP_VERSION: str = "0.9.0"
+APP_VERSION: str = "0.10.0"
 
 # Author's GitHub profile, shown as a link in the About window (e08s01, user request).
 GITHUB_URL: str = "https://github.com/lupin3rd"
@@ -665,6 +703,11 @@ def capture_project_state() -> dict[str, Any]:
             ],
             "audio": _capture_audio_state(),
         },
+        "text": {
+            "document": state.text_document,
+            "target": state.text_target,
+            "path": state.text_source_path,
+        },
         "mapper": _capture_mapper_state(),
         # 2026-09-07: the project also carries the MIDI rows that drive ITS
         # Mapper mappings, so opening the project restores its MIDI routing.
@@ -836,6 +879,9 @@ def apply_project_state(doc: dict[str, Any]) -> None:
     seq = doc.get("sequencer")
     if isinstance(seq, dict):
         _apply_sequencer_state(seq)
+    text_section = doc.get("text")
+    if isinstance(text_section, dict):
+        _apply_text_state(text_section)
 
 
 def pristine_project_state() -> dict[str, Any]:
@@ -877,6 +923,7 @@ def pristine_project_state() -> dict[str, Any]:
                 },
             },
         },
+        "text": {"document": "", "target": "", "path": ""},
         "mapper": {"mappings": []},
     }
 
@@ -894,6 +941,7 @@ def apply_new_project() -> None:
     _apply_sequencer_state(pristine_project_state()["sequencer"])
     mapper.restore_mappings([])
     refresh_mapper_ui()
+    _apply_text_state({"document": "", "target": "", "path": ""})
 
 
 def _project_document(state: dict[str, Any]) -> dict[str, Any]:
@@ -1075,6 +1123,15 @@ def _sanitize_project_state(raw: dict[str, Any]) -> dict[str, Any]:
             clean_midi["mode_bindings"] = rows[: MAPPER_MAX_MAPPINGS * 8]
         if clean_midi:
             clean["midi"] = clean_midi
+    # e59s03: the text section is only present when the loaded project carried
+    # one — a pre-e59 document must leave the live document alone.
+    raw_text = raw.get("text")
+    if isinstance(raw_text, dict):
+        clean["text"] = {
+            "document": str(raw_text.get("document") or "")[:TEXT_MAX_LOAD_BYTES],
+            "target": str(raw_text.get("target") or ""),
+            "path": str(raw_text.get("path") or ""),
+        }
     return clean
 
 
@@ -1807,8 +1864,9 @@ def update_step_ui(row: int, col: int) -> None:
             ),
             user_data=(row, col),
         )
+        display_type = step_data["type"] if step_data["type"] != "NONE" else ""
         dpg.add_text(
-            step_data["type"] if step_data["type"] != "NONE" else "",
+            textplay.step_label(display_type) if display_type else "",
             color=palette_rgba(state.active_palette["text"]),
             tag=f"seq_type_{row}_{col}",
         )
@@ -1837,6 +1895,16 @@ def update_step_ui(row: int, col: int) -> None:
             dpg.add_menu_item(
                 label="Seek Random", callback=set_step_type, user_data=(row, col, "SeekR")
             )
+            dpg.add_separator()
+            # e60s01: the four progressive text reveal step types (the Text
+            # window's modes) — one markup-aware /vimix/<target>/contents
+            # fragment per firing, sent to the ROW's own source.
+            for mode, label in textplay.REVEAL_MODES:
+                dpg.add_menu_item(
+                    label=f"Text: {label}",
+                    callback=set_step_type,
+                    user_data=(row, col, textplay.STEP_TOKEN_BY_MODE[mode]),
+                )
             dpg.add_separator()
             # e36s04: the extended (property x mode) steps open in a lazy modal
             # picker — built on demand so the import-time menubar capture stays
@@ -2146,15 +2214,17 @@ def _add_tile_context_items(target_id: str) -> None:
     """
     # e38s03: content preview of the source's file (video-only per user
     # decision; unknown-kind media classify on activation)
-    if _preview_offered(_source_props(target_id)):
+    props = _source_props(target_id)
+    if _preview_offered(props):
         dpg.add_menu_item(label="Preview...", callback=start_source_preview, user_data=target_id)
         dpg.add_separator()
-    dpg.add_menu_item(
-        label="Regenerate Thumbnails",
-        callback=regen_thumb_callback,
-        user_data=target_id,
-    )
-    dpg.add_separator()
+    if not props or props.get("media_kind") != "other":  # e57s02: nothing to regenerate
+        dpg.add_menu_item(
+            label="Regenerate Thumbnails",
+            callback=regen_thumb_callback,
+            user_data=target_id,
+        )
+        dpg.add_separator()
     with dpg.menu(label="Add to Step Sequencer"):
         for row in range(NUM_TRACKS):
             dpg.add_menu_item(
@@ -2510,6 +2580,22 @@ def truncate_media_title(name: str) -> str:
     return text[:keep] + MEDIA_TITLE_ELLIPSIS
 
 
+def _tile_other_label(name: str) -> str:
+    """A short single-line label for a non-media tile (e57s02).
+
+    vimix exposes no source type over OSC, so the tile shows the raw source
+    name (a text source reads 'Text', a shader 'Shader', a clone the inherited
+    origin name). DPG's draw_text is single-line, hence the hard cut.
+    """
+    if not name:
+        return name
+    text = str(name)
+    if len(text) <= MEDIA_TILE_NAME_CHARS:
+        return text
+    keep = max(0, MEDIA_TILE_NAME_CHARS - len(MEDIA_TITLE_ELLIPSIS))
+    return text[:keep] + MEDIA_TITLE_ELLIPSIS
+
+
 def _tile_theme_for(idx: Any, target_id: str) -> Any:
     """Pick the Mediagrid tile theme (e10s06).
 
@@ -2579,6 +2665,8 @@ def request_missing_thumbnails(now: float) -> None:
         target_id = str(name) if name else str(idx)
         if not uri:
             continue
+        if props.get("media_kind") == "other":
+            continue  # e57s02: no file / no video stream, nothing to request
         received = len(thumbnails_data.get(target_id, ()))
         frame_index = next_thumb_frame_index(
             received, thumb_frames_at_last_request.get(target_id, 0)
@@ -2665,6 +2753,7 @@ def update_vimix_sources_ui(json_string: str) -> None:
         sources = {k: v for k, v in sources.items() if isinstance(v, dict)}
         state.global_vimix_state["current_source"] = payload.get("current_source")
         state.global_vimix_state["sources"] = sources
+        refresh_text_source_options()  # e59s02: the picker follows the live table
 
         # e36s06: seed anchored vector caches (color/corner) from the live feed
         # so component mappings start from real values instead of neutral ones.
@@ -2695,7 +2784,15 @@ def update_vimix_sources_ui(json_string: str) -> None:
         # current_source joins the signature so a selection change re-runs the structural
         # tile updates (theme/title/index) — the only per-source fields it affects (perf e07).
         current_signature = f"cols:{state.last_num_cols}_src:{current_source}_" + str(
-            [(k, data_dict[k].get("name"), data_dict[k].get("index")) for k in sorted_keys]
+            [
+                (
+                    k,
+                    data_dict[k].get("name"),
+                    data_dict[k].get("index"),
+                    data_dict[k].get("media_kind"),  # e57s02: other -> video rebuilds
+                )
+                for k in sorted_keys
+            ]
         )
 
         if current_signature != state.last_ui_signature:
@@ -2865,22 +2962,37 @@ def update_vimix_sources_ui(json_string: str) -> None:
                             )
                             _text_color_bindings[index_tag] = "text_bright"
                             if target_id not in thumbnails_data:
-                                loading_tag = f"loading_txt_{target_id}"
-                                is_failed = (
-                                    thumb_fail_count.get(target_id, 0) >= THUMB_FAIL_THRESHOLD
-                                )
-                                dpg.draw_text(
-                                    (8, 26),
-                                    THUMB_FAIL_LABEL if is_failed else " [ Loading... ]",
-                                    color=palette_rgba(
-                                        state.active_palette["warning"]
-                                        if is_failed
-                                        else state.active_palette["text_dim"]
-                                    ),
-                                    size=13,
-                                    tag=loading_tag,
-                                )
-                                _text_color_bindings[loading_tag] = "text_dim"
+                                if data_dict[idx].get("media_kind") == "other":
+                                    # e57s02: no file behind the source — draw the name
+                                    # instead of a loading / failed label (nothing will
+                                    # ever arrive; the kind change rebuilds via the
+                                    # grid signature).
+                                    name_tag = f"other_txt_{target_id}"
+                                    dpg.draw_text(
+                                        (8, 26),
+                                        _tile_other_label(display_name),
+                                        color=palette_rgba(state.active_palette["text_dim"]),
+                                        size=13,
+                                        tag=name_tag,
+                                    )
+                                    _text_color_bindings[name_tag] = "text_dim"
+                                else:
+                                    loading_tag = f"loading_txt_{target_id}"
+                                    is_failed = (
+                                        thumb_fail_count.get(target_id, 0) >= THUMB_FAIL_THRESHOLD
+                                    )
+                                    dpg.draw_text(
+                                        (8, 26),
+                                        THUMB_FAIL_LABEL if is_failed else " [ Loading... ]",
+                                        color=palette_rgba(
+                                            state.active_palette["warning"]
+                                            if is_failed
+                                            else state.active_palette["text_dim"]
+                                        ),
+                                        size=13,
+                                        tag=loading_tag,
+                                    )
+                                    _text_color_bindings[loading_tag] = "text_dim"
 
                         # thin vertical alpha slider, same height as the thumbnail
                         alpha_tag = f"tile_alpha_{target_id}"
@@ -3052,19 +3164,24 @@ def _source_props(target_id: str) -> dict[str, Any] | None:
 
 
 def _preview_offered(props: dict[str, Any] | None) -> bool:
-    """Preview popup gating: offered for media sources (uri) that are not known
-    images — i.e. video, or still-unclassified media (classified on activation)."""
+    """Preview popup gating: offered for media sources (uri) that are videos —
+    images and 'other' (no video stream) are excluded; a still-unclassified
+    media source (kind absent, older viOSC) classifies on activation."""
     if not props or not props.get("uri"):
         return False
-    return props.get("media_kind") != "image"
+    kind = props.get("media_kind")
+    return kind not in ("image", "other")  # e57s02: only a video source previews
 
 
 def _preview_reason(target_id: str, props: dict[str, Any] | None, meta_provider: Any) -> str:
-    """Why a preview can start ('ok') or the explicit message. Images and
-    non-media never start a transport — the reason is surfaced instead."""
+    """Why a preview can start ('ok') or the explicit message. Images, non-media
+    sources and 'other' media (no video stream) never start a transport — the
+    reason is surfaced instead."""
     if not props or not props.get("uri"):
         return f"'{target_id}' is not a media source"
     kind = props.get("media_kind")
+    if kind == "other":
+        return f"'{target_id}' is not a video source"
     if kind == "image":
         return f"'{target_id}' is an image source: preview is video-only"
     if kind is None:
@@ -3564,6 +3681,146 @@ def autostart_osc() -> None:
     endpoints = _osc_endpoints_from_config(load_config())
     connect_osc_client(endpoints["client_ip"], endpoints["client_port"])
     start_osc_server(endpoints["listen_ip"], endpoints["listen_port"])
+
+
+# --- e58s03: viOSC REMOTE CONFIG PAGE ---
+# viOSC is the backend of viSeq: its settings are edited here, over the machine-A
+# HTTP /config surface (e58s01). The link (ui_ip/reply_port) is DERIVED from
+# viseq's own listen endpoint on save, so the two sides cannot drift — the
+# single-source link collapse.
+VIOSC_CFG_FIELDS_TAG = "viosc_cfg_fields"
+VIOSC_CFG_STATUS_TAG = "viosc_cfg_status"
+VIOSC_CFG_INPUT_PREFIX = "viosc_cfg_"
+
+# e58s03: the settings-window connection LED — green while viOSC state flows,
+# red when the link is silent.
+VIOSC_LED_TAG = "viosc_conn_led"
+VIOSC_LED_OK_RGBA = (60, 200, 60, 255)
+VIOSC_LED_DOWN_RGBA = (200, 60, 60, 255)
+VIOSC_LED_STALE_SECONDS = 5.0
+
+
+def _viosc_dataplane_endpoint() -> tuple[str, int]:
+    """The machine-A HTTP endpoint (set with the OSC client)."""
+    return str(state.dataplane_host or ""), int(state.dataplane_port or 0)
+
+
+def _rebuild_viosc_config_fields(payload: dict[str, Any]) -> None:
+    """(Re)build the editable widgets for the remote-editable fields (e58s03)."""
+    if dpg.does_item_exist(VIOSC_CFG_FIELDS_TAG):
+        dpg.delete_item(VIOSC_CFG_FIELDS_TAG, children_only=True)
+    else:
+        dpg.add_group(tag=VIOSC_CFG_FIELDS_TAG, parent="settings_window")
+    values = payload.get("values") or {}
+    for key in payload.get("editable") or []:
+        with dpg.group(horizontal=True, parent=VIOSC_CFG_FIELDS_TAG):
+            dpg.add_text(key)
+            dpg.add_input_text(
+                default_value=viosccfg.format_value(values.get(key)),
+                tag=f"{VIOSC_CFG_INPUT_PREFIX}{key}",
+                width=220,
+            )
+
+
+def _set_viosc_cfg_status(message: str = "") -> None:
+    """Show the viOSC configuration status ONLY when there is something to say (e58s03).
+
+    Success is silent (no "Loaded from viOSC" / "Saved" noise); errors and the
+    per-field report still appear, and the line is hidden when empty.
+    """
+    if not dpg.does_item_exist(VIOSC_CFG_STATUS_TAG):
+        return
+    dpg.set_value(VIOSC_CFG_STATUS_TAG, message)
+    dpg.configure_item(VIOSC_CFG_STATUS_TAG, show=bool(message))
+
+
+def load_viosc_config() -> None:
+    """Fetch the viOSC config and populate the page (e58s03)."""
+    host, port = _viosc_dataplane_endpoint()
+    payload, err = viosccfg.fetch_config(host, port)
+    if err or payload is None:
+        _set_viosc_cfg_status(f"viOSC unreachable: {err or 'no data'}")
+        return
+    state.viosc_config_values = dict(payload.get("values") or {})
+    _rebuild_viosc_config_fields(payload)
+    _set_viosc_cfg_status()
+
+
+def save_viosc_config() -> None:
+    """Post the changed fields (link derived) and show the report (e58s03)."""
+    host, port = _viosc_dataplane_endpoint()
+    original = dict(state.viosc_config_values or {})
+    if not original:
+        _set_viosc_cfg_status("Load the viOSC settings first")
+        return
+    edited: dict[str, Any] = {}
+    for key, current in original.items():
+        tag = f"{VIOSC_CFG_INPUT_PREFIX}{key}"
+        if dpg.does_item_exist(tag):
+            try:
+                edited[key] = viosccfg.parse_field(str(dpg.get_value(tag)), current)
+            except (ValueError, TypeError):
+                _set_viosc_cfg_status(f"{key}: invalid input")
+                return
+    endpoints = _osc_endpoints_from_config(load_config())
+    edited.update(viosccfg.link_fields(endpoints["listen_ip"], endpoints["listen_port"]))
+    report, err = viosccfg.apply_config(host, port, viosccfg.config_diff(original, edited))
+    if err or report is None:
+        _set_viosc_cfg_status(f"viOSC error: {err or 'no report'}")
+        return
+    lines = viosccfg.report_lines(report)
+    _set_viosc_cfg_status(" | ".join(lines))
+
+
+def restart_viosc() -> None:
+    """Trigger a viOSC restart over HTTP (e58s03)."""
+    host, port = _viosc_dataplane_endpoint()
+    ok, err = viosccfg.trigger_restart(host, port)
+    _set_viosc_cfg_status("" if ok else f"Restart failed: {err}")
+
+
+def change_osc_endpoint(viosc_listen_ip: str, viosc_listen_port: int) -> str:
+    """Two-sided OSC bind change: tell viOSC, persist our side, reconnect (e58s04).
+
+    viOSC's OSC input bind and viseq's client endpoint are two sides of the same
+    link: changing one without the other points the control plane at a dead port.
+    The order is: tell viOSC the new bind -> persist our matching endpoint ->
+    restart viOSC -> reconnect and verify. HTTP stays reachable throughout (its
+    bind is local-only, e58s02), so a failure never locks the operator out — the
+    repair path is this page.
+    """
+    host, port = _viosc_dataplane_endpoint()
+    if not host or not port:
+        return "viOSC endpoint not configured"
+    report, err = viosccfg.apply_config(
+        host, port, {"listen_ip": viosc_listen_ip, "listen_port": viosc_listen_port}
+    )
+    if err or report is None:
+        return f"viOSC unreachable: {err or 'no report'}"
+    if viosccfg.has_problems(report):
+        return " | ".join(viosccfg.report_lines(report))
+    persist_osc_endpoints(client_ip=viosc_listen_ip, client_port=viosc_listen_port)
+    ok, rerr = viosccfg.trigger_restart(host, port)
+    if not ok:
+        return f"restart failed: {rerr} — repair the bind from this page"
+    if not connect_osc_client(viosc_listen_ip, viosc_listen_port):
+        return "reconnect failed — repair the bind from this page"
+    return f"viOSC OSC bind moved to {viosc_listen_ip}:{viosc_listen_port}"
+
+
+def tick_viosc_led() -> None:
+    """Colour the viOSC connection LED (e58s03).
+
+    Green when the OSC client is connected AND state has arrived recently (either
+    lane), red otherwise — a client object alone does not mean viOSC answers.
+    """
+    if not dpg.does_item_exist(VIOSC_LED_TAG):
+        return
+    alive = (
+        state.viosc_client is not None
+        and (time.monotonic() - state.last_viosc_state_ts) < VIOSC_LED_STALE_SECONDS
+    )
+    dpg.configure_item(VIOSC_LED_TAG, fill=VIOSC_LED_OK_RGBA if alive else VIOSC_LED_DOWN_RGBA)
 
 
 # e42s02: PAIRING PROMPT — viOSC is paired by default (a code shown on machine
@@ -5472,6 +5729,20 @@ _MIDI_EXECUTORS: dict[str, Callable[[dict[str, Any], int], None]] = {
     MIDI_ACTION_PAIRING_PROMPT: lambda p, v: _exec_pairing_prompt(p, v),
     # e43s02: show/hide the File Manager window
     MIDI_ACTION_FILE_MANAGER_TOGGLE: lambda p, v: _exec_file_manager_toggle(p, v),
+    # e59s02: the Text window (e33 rule) — toggle the window, send the document
+    MIDI_ACTION_TEXT_WINDOW_TOGGLE: lambda p, v: _exec_text_window_toggle(p, v),
+    MIDI_ACTION_TEXT_SEND: lambda p, v: _exec_text_send(p, v),
+    MIDI_ACTION_TEXT_CLEAR: lambda p, v: _exec_text_clear(p, v),
+    # e59s08: the four progressive reveal modes (momentary)
+    MIDI_ACTION_TEXT_WORD: lambda p, v: _exec_text_reveal(textplay.MODE_WORD, p, v),
+    MIDI_ACTION_TEXT_WORD_PLUS: lambda p, v: _exec_text_reveal(textplay.MODE_WORD_PLUS, p, v),
+    MIDI_ACTION_TEXT_LINE: lambda p, v: _exec_text_reveal(textplay.MODE_LINE, p, v),
+    MIDI_ACTION_TEXT_LINE_PLUS: lambda p, v: _exec_text_reveal(textplay.MODE_LINE_PLUS, p, v),
+    # e33s05: global actions (window show + project new/open/save)
+    MIDI_ACTION_SHOW_WINDOW: lambda p, v: _exec_show_window(p, v),
+    MIDI_ACTION_PROJECT_NEW: lambda p, v: _exec_project_new(p, v),
+    MIDI_ACTION_PROJECT_OPEN: lambda p, v: _exec_project_open(p, v),
+    MIDI_ACTION_PROJECT_SAVE: lambda p, v: _exec_project_save(p, v),
     # e43s07: Session Draft actions (Load always asks for the confirmation)
     MIDI_ACTION_DRAFT_LOAD: lambda p, v: _exec_draft_load(p, v),
     MIDI_ACTION_DRAFT_SAVE: _exec_draft_save,
@@ -5691,6 +5962,9 @@ def _refresh_learn_surfaces() -> None:
     _sync_settings_pairing_learn_marker()
     _sync_file_manager_learn_marker()
     _sync_drafts_learn_markers()
+    _sync_text_learn_markers()  # e59s02
+    _sync_text_mode_learn_markers()  # e59s08
+    _sync_map_actions_panel()  # e33s05
 
 
 def learn_marker(
@@ -10715,9 +10989,10 @@ def leap_control_loop() -> None:
 
 
 def show_settings_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
-    """Open the general settings window from the top menubar."""
+    """Open the general settings window (it hosts ALL of viOSC too, e58s03)."""
     dpg.show_item("settings_window")
     dpg.focus_item("settings_window")  # e17: a shown window must come to the front
+    load_viosc_config()  # populate the OSC Configuration section on open
 
 
 def show_logs_window(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
@@ -10752,6 +11027,7 @@ FIRST_OPEN_CENTERED_WINDOWS: tuple[str, ...] = (
     "audio_window",
     "vimix_media_window",
     "logs_window",
+    "text_window",
     "mapper_window",
     "file_manager_window",
 )
@@ -10763,6 +11039,7 @@ ALWAYS_CENTERED_WINDOWS: tuple[str, ...] = (
     "settings_window",
     "midi_window",
     "leap_window",
+    MAP_ACTIONS_WINDOW_TAG,
 )
 
 
@@ -10884,6 +11161,7 @@ _FOCUS_TRACKED_WINDOWS: tuple[str, ...] = (
     "audio_window",
     "vimix_media_window",
     "logs_window",
+    "text_window",
     "mapper_window",
     # BUG-2026-09-19T003052: both icon windows were missing here, so focusing
     # them left the previously focused icon wearing the full accent.
@@ -11743,6 +12021,794 @@ with dpg.theme() as theme_step_copied, dpg.theme_component(dpg.mvChildWindow):
     dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 5)
 
 
+# ==============================================================================
+# e59: TEXT WINDOW — author Pango markup and push it to a vimix Text source with
+# the frozen-contract message /vimix/<target>/contents (one string argument).
+# The markup toolkit (escape/validate/templates) is dpg-free in
+# viseqapp/textmarkup.py; this section is main-thread widget wiring only (HIGH-1).
+# Verified: vimix's OSC wiki "contents: Set text contents: Text source only";
+# vimix TextSource renders via GStreamer textoverlay -> pango_layout_set_markup.
+# ==============================================================================
+_text_source_options_cache: list[str] = []
+# e59s05: the private-ABI caret reader, built lazily on the main thread; the
+# `ready` flag stops a failing environment (no symbols / off Linux) from being
+# probed again on every tick.
+_text_caret_reader: caret.CaretReader | None = None
+_text_caret_reader_ready = False
+# e59s08: the reveal-steps cache (document + mode -> the ordered strings); the
+# key recomputes it on an editor change or a mode switch.
+_text_reveal_key: tuple[str, str] | None = None
+_text_reveal_cache: list[str] = []
+
+
+def text_source_targets(sources: dict[str, Any]) -> list[str]:
+    """OSC targets of every live source, in grid order (e59s02).
+
+    A named source is addressed by its exact name (vimix: case sensitive); an
+    unnamed one by '#<index>' (ControlManager accepts the '#' form). The picker
+    cannot filter to Text sources: the OSC state feed exposes no source type,
+    and vimix silently ignores `contents` for a non-text source
+    (specs/SOURCE_TYPES_LATEST.md §3).
+    """
+    ordered = sorted(sources, key=lambda key: _source_numeric_sort_key(sources, key))
+    targets: list[str] = []
+    for key in ordered:
+        name = (sources.get(key) or {}).get("name")
+        targets.append(str(name) if name else f"{TEXT_SOURCE_INDEX_PREFIX}{key}")
+    return targets
+
+
+def refresh_text_source_options(*_args: Any, force: bool = False) -> None:
+    """Rebuild the source combo from the live state table (e59s02).
+
+    Called on window open, on the Refresh button and on every state push; the
+    cached list short-circuits a steady state so no widget is touched needlessly.
+    """
+    global _text_source_options_cache
+    if not dpg.does_item_exist(TEXT_SOURCE_COMBO_TAG):
+        return
+    options = text_source_targets(state.global_vimix_state.get("sources") or {})
+    if options == _text_source_options_cache and not force:
+        return
+    _text_source_options_cache = options
+    selected = str(dpg.get_value(TEXT_SOURCE_COMBO_TAG) or "")
+    if selected not in options:
+        selected = state.text_target if state.text_target in options else ""
+    if not selected and options:
+        selected = options[0]
+    dpg.configure_item(TEXT_SOURCE_COMBO_TAG, items=options)
+    if selected:
+        dpg.set_value(TEXT_SOURCE_COMBO_TAG, selected)
+    state.text_target = selected
+
+
+def on_text_target_changed(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """The source combo changed: remember the OSC target."""
+    state.text_target = str(app_data or "")
+
+
+def _set_text_status(message: str) -> None:
+    """Write the Text window's one status line (markup validity or action result)."""
+    if dpg.does_item_exist(TEXT_STATUS_TAG):
+        dpg.set_value(TEXT_STATUS_TAG, message)
+
+
+def update_text_markup_status() -> None:
+    """Validate the live document and report it in the status line (e59s01)."""
+    issue = textmarkup.validate_pango_markup(state.text_document)
+    _set_text_status("Markup OK" if issue is None else textmarkup.format_markup_issue(issue))
+
+
+def sync_text_editor_from_state() -> None:
+    """Push state.text_document into the editor (main thread only)."""
+    if dpg.does_item_exist(TEXT_EDITOR_TAG):
+        dpg.set_value(TEXT_EDITOR_TAG, state.text_document)
+    update_text_markup_status()
+
+
+def on_text_editor_changed(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Editor edit: sync state, track the caret and refresh the validity line.
+
+    DearPyGui exposes no caret, so the shadow caret is inferred from the value
+    change (`infer_edit_caret`); the structural check parses the whole document,
+    so a large one is validated on demand (rate-limit category).
+    """
+    if isinstance(app_data, str):
+        caret = textmarkup.infer_edit_caret(state.text_document, app_data)
+        if caret is not None:
+            state.text_caret = caret
+        state.text_document = app_data
+    if len(state.text_document) > TEXT_LIVE_VALIDATE_MAX_CHARS:
+        _set_text_status("Large document: press Validate")
+        return
+    update_text_markup_status()
+
+
+def _text_document_to_editor(document: str, status: str, caret: int | None = None) -> None:
+    """Adopt a transformed document into both state and the editor."""
+    state.text_document = document
+    if caret is not None:
+        state.text_caret = max(0, min(int(caret), len(document)))
+    sync_text_editor_from_state()
+    _set_text_status(status)
+
+
+def _insert_markup_snippet(snippet: str, status: str) -> None:
+    """Insert a snippet at the tracked caret, or append it when the caret is unknown.
+
+    `state.text_caret == 0` on a non-empty document means "never typed here"
+    (a fresh load / project open), so the template goes on its own line at the
+    end; a mid-document caret inserts exactly there.
+    """
+    caret_position = state.text_caret
+    if 0 < caret_position < len(state.text_document):
+        document = textmarkup.insert_at(state.text_document, caret_position, snippet)
+        _text_document_to_editor(document, status, caret_position + len(snippet))
+        return
+    document = textmarkup.append_snippet(state.text_document, snippet)
+    _text_document_to_editor(document, status, len(document))
+
+
+def _text_wrap_clipboard_enabled() -> bool:
+    """True when the palette should wrap the clipboard instead of inserting."""
+    return bool(dpg.get_value(TEXT_WRAP_CLIPBOARD_TAG))
+
+
+def _wrap_clipboard_text(open_tag: str, close_tag: str, label: str) -> None:
+    """Wrap the clipboard text in a tag pair and put it back on the clipboard.
+
+    Selection-accurate markup without a selection API (upstream #1650): the
+    operator cuts the text (Ctrl+X), clicks the tag, and pastes it back (Ctrl+V).
+    The clipboard is the only channel the editor and this window share.
+    """
+    clipboard = str(dpg.get_clipboard_text() or "")
+    if not clipboard:
+        _set_text_status("Clipboard is empty")
+        return
+    dpg.set_clipboard_text(textmarkup.wrap_markup(clipboard, open_tag, close_tag))
+    _set_text_status(f"{label}: clipboard wrapped - paste with Ctrl+V")
+
+
+def _text_caret_reader_instance() -> caret.CaretReader | None:
+    """The lazily-built live-caret reader, or None when unavailable (e59s05)."""
+    global _text_caret_reader, _text_caret_reader_ready
+    if not _text_caret_reader_ready:
+        try:
+            backend = caret.CtypesImGuiBackend.from_environment()
+        except Exception as exc:
+            log_error("Text caret", str(exc))
+            backend = None
+        _text_caret_reader = caret.CaretReader(backend) if backend is not None else None
+        _text_caret_reader_ready = True
+    return _text_caret_reader
+
+
+def _text_caret_reader_available() -> bool:
+    """True when the private-ABI caret reader could be built (e59s07)."""
+    return _text_caret_reader_instance() is not None
+
+
+def _sync_text_wrap_row() -> None:
+    """Show the wrap-clipboard row ONLY when the caret reader is unavailable.
+
+    With the reader working the row is dead UI (the palette wraps the real
+    selection); it stays as the graceful-degradation fallback (e59s07, option A).
+    """
+    if dpg.does_item_exist(TEXT_WRAP_ROW_TAG):
+        dpg.configure_item(TEXT_WRAP_ROW_TAG, show=not _text_caret_reader_available())
+
+
+def tick_text_caret() -> None:
+    """Capture the live caret/selection while the editor owns the ImGui input (e59s05).
+
+    The ImGui state slot is single-slot: it survives blur (so a palette click can
+    still read it) but is reused by any other InputText, so the captured widget id
+    is validated on every later read and a mismatch keeps the last values.
+    """
+    if not dpg.does_item_exist(TEXT_EDITOR_TAG):
+        return
+    if not (dpg.is_item_active(TEXT_EDITOR_TAG) or dpg.is_item_focused(TEXT_EDITOR_TAG)):
+        return
+    reader = _text_caret_reader_instance()
+    if reader is None:
+        return
+    captured = reader.read(state.text_widget_id)
+    if captured is None:
+        return
+    state.text_widget_id = captured.widget_id
+    state.text_caret = captured.cursor
+    state.text_selection = captured.selection
+
+
+def _wrap_text_selection(open_tag: str, close_tag: str, label: str) -> bool:
+    """Wrap the captured selection in place (e59s05); False when there is none."""
+    selection = state.text_selection
+    if selection is None:
+        return False
+    document = _resolved_text_document()
+    edit = textmarkup.wrap_range(document, selection, open_tag, close_tag)
+    state.text_selection = None
+    _text_document_to_editor(edit.document, f"Wrapped selection: {label}", edit.caret)
+    return True
+
+
+def _insert_at_live_caret(open_tag: str, close_tag: str, label: str) -> bool:
+    """Insert a template at the real caret (e59s05); False when never captured."""
+    if state.text_widget_id is None:
+        return False
+    document = _resolved_text_document()
+    snippet = textmarkup.wrap_markup(textmarkup.MARKUP_SAMPLE_TEXT, open_tag, close_tag)
+    caret = state.text_caret
+    _text_document_to_editor(
+        textmarkup.insert_at(document, caret, snippet), f"Inserted {label}", caret + len(snippet)
+    )
+    return True
+
+
+def _apply_markup(open_tag: str, close_tag: str, label: str) -> None:
+    """Route a palette tag: selection, then the live caret, then the fallbacks."""
+    if _wrap_text_selection(open_tag, close_tag, label):
+        return
+    if _insert_at_live_caret(open_tag, close_tag, label):
+        return
+    # The clipboard wrap is the fallback for a missing reader only (e59s07).
+    if not _text_caret_reader_available() and _text_wrap_clipboard_enabled():
+        _wrap_clipboard_text(open_tag, close_tag, label)
+        return
+    snippet = textmarkup.wrap_markup(textmarkup.MARKUP_SAMPLE_TEXT, open_tag, close_tag)
+    _insert_markup_snippet(snippet, f"Inserted {label}")
+
+
+def on_text_insert_template(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Palette: apply a template (insert at the caret, or wrap the clipboard)."""
+    template = user_data
+    if not isinstance(template, textmarkup.MarkupTemplate):
+        return
+    _apply_markup(template.open_tag, template.close_tag, template.label)
+
+
+def _pango_color_from_edit(tag: str) -> str:
+    """The '#' colour of a DPG colour edit (0..255 channels; white when unreadable)."""
+    value = dpg.get_value(tag)
+    if not isinstance(value, (list, tuple)) or len(value) < 3:
+        return textmarkup.pango_color(255, 255, 255)
+    red, green, blue = (round(float(channel)) for channel in list(value)[:3])
+    return textmarkup.pango_color(red, green, blue)
+
+
+def on_text_insert_foreground(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Palette: apply a foreground-coloured span."""
+    open_tag, close_tag = textmarkup.span_tag("foreground", _pango_color_from_edit("text_fg_color"))
+    _apply_markup(open_tag, close_tag, "Foreground")
+
+
+def on_text_insert_background(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Palette: apply a background-coloured span."""
+    open_tag, close_tag = textmarkup.span_tag("background", _pango_color_from_edit("text_bg_color"))
+    _apply_markup(open_tag, close_tag, "Background")
+
+
+def on_text_insert_size(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Palette: apply a size span with the chosen Pango keyword."""
+    keyword = str(dpg.get_value("text_size_keyword") or "medium")
+    open_tag, close_tag = textmarkup.span_tag("size", keyword)
+    _apply_markup(open_tag, close_tag, f"Size {keyword}")
+
+
+def on_text_escape(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Escape the WHOLE document so plain &, <, > render literally."""
+    _text_document_to_editor(
+        textmarkup.escape_pango_text(state.text_document), "Escaped plain text"
+    )
+
+
+def on_text_unescape(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Reverse the whole-document escaping."""
+    _text_document_to_editor(textmarkup.unescape_pango_text(state.text_document), "Unescaped text")
+
+
+def on_text_validate(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Run the structural markup check and report it."""
+    update_text_markup_status()
+
+
+def on_text_clear(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Empty the document (state + editor) after the user's Clear click."""
+    _text_document_to_editor("", "Cleared", 0)
+
+
+def load_text_file(path: str) -> bool:
+    """Read a UTF-8 text file into the editor; False + status on any problem."""
+    try:
+        size = os.path.getsize(path)
+    except OSError as exc:
+        log_error("Text", f"cannot stat {path}: {exc}")
+        _set_text_status(f"Cannot read {path}")
+        return False
+    if size > TEXT_MAX_LOAD_BYTES:
+        _set_text_status(f"File too large ({size} bytes > {TEXT_MAX_LOAD_BYTES})")
+        return False
+    try:
+        with open(path, encoding="utf-8") as handle:
+            document = handle.read()
+    except (OSError, UnicodeDecodeError) as exc:
+        log_error("Text", f"cannot read {path}: {exc}")
+        _set_text_status(f"Cannot read {path}")
+        return False
+    state.text_source_path = path
+    _text_document_to_editor(
+        document, f"Loaded {len(document)} chars from {os.path.basename(path)}", len(document)
+    )
+    return True
+
+
+def on_text_file_picked(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Load-dialog result -> read the chosen file into the editor."""
+    path = app_data.get("file_path_name") if isinstance(app_data, dict) else None
+    if path:
+        load_text_file(str(path))
+
+
+def show_text_load_dialog(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Open the Load-from-file dialog (.txt/.srt/any), fresh each time."""
+    if dpg.does_item_exist(TEXT_LOAD_DIALOG_TAG):
+        dpg.delete_item(TEXT_LOAD_DIALOG_TAG)
+    default_path = os.path.dirname(state.text_source_path) or os.path.expanduser("~")
+    with dpg.file_dialog(
+        tag=TEXT_LOAD_DIALOG_TAG,
+        show=True,
+        width=520,
+        height=380,
+        callback=on_text_file_picked,
+        default_path=default_path,
+        modal=True,
+    ):
+        dpg.add_file_extension(".txt")
+        dpg.add_file_extension(".srt")
+        dpg.add_file_extension(".*")
+        dpg.add_file_extension("")
+
+
+def save_text_file(path: str) -> bool:
+    """Write the current document as UTF-8; False + status on any problem (e59s06)."""
+    document = _resolved_text_document()
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(document)
+    except OSError as exc:
+        log_error("Text", f"cannot write {path}: {exc}")
+        _set_text_status(f"Cannot write {path}")
+        return False
+    state.text_source_path = path
+    _set_text_status(f"Saved {len(document)} chars to {os.path.basename(path)}")
+    return True
+
+
+def on_text_file_saved(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Save-dialog result -> write the chosen file."""
+    path = app_data.get("file_path_name") if isinstance(app_data, dict) else None
+    if path:
+        save_text_file(str(path))
+
+
+def show_text_save_dialog(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Open the Save-to-file dialog (.txt/any), prefilled with the current name."""
+    if dpg.does_item_exist(TEXT_SAVE_DIALOG_TAG):
+        dpg.delete_item(TEXT_SAVE_DIALOG_TAG)
+    default_path = os.path.dirname(state.text_source_path) or os.path.expanduser("~")
+    default_name = os.path.basename(state.text_source_path) or "text.txt"
+    with dpg.file_dialog(
+        tag=TEXT_SAVE_DIALOG_TAG,
+        show=True,
+        width=520,
+        height=380,
+        callback=on_text_file_saved,
+        default_path=default_path,
+        default_filename=default_name,
+        modal=True,
+    ):
+        dpg.add_file_extension(".txt")
+        dpg.add_file_extension(".*")
+        dpg.add_file_extension("")
+
+
+def _resolved_text_document() -> str:
+    """The document to send: the live editor value when readable, else state."""
+    if dpg.does_item_exist(TEXT_EDITOR_TAG):
+        widget_value = dpg.get_value(TEXT_EDITOR_TAG)
+        if isinstance(widget_value, str):
+            state.text_document = widget_value
+    return state.text_document
+
+
+def _resolved_text_target() -> str:
+    """The OSC target to send to: the live combo value when readable, else state."""
+    if dpg.does_item_exist(TEXT_SOURCE_COMBO_TAG):
+        widget_value = dpg.get_value(TEXT_SOURCE_COMBO_TAG)
+        if isinstance(widget_value, str):
+            state.text_target = widget_value
+    return state.text_target
+
+
+def _send_contents(target: str, document: str, status: str, log_detail: str) -> None:
+    """Send ONE `/vimix/<target>/contents` message (the frozen contract).
+
+    Shared by Send (the document) and Clear (an empty string): refuses without a
+    target or a client, reporting in the status line and never raising.
+    """
+    if not target:
+        _set_text_status("Select a source first")
+        return
+    if osc_client is None:
+        log_error("Text", f"cannot send contents: no OSC client ({status})")
+        _set_text_status("OSC client not connected")
+        return
+    address = f"/vimix/{target}/contents"
+    osc_client.send_message(address, document)
+    append_log("OUT", f"{address} [{log_detail}]")
+    _set_text_status(status)
+
+
+def send_text_contents(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Send the whole document to the selected source (e59s02).
+
+    The only message is the frozen-contract `/vimix/<target>/contents` with one
+    string argument; vimix ignores it for a non-text source. Empty text is legal
+    (it clears the source). Refusals report in the status line and never raise.
+    """
+    target = _resolved_text_target()
+    document = _resolved_text_document()
+    _send_contents(
+        target, document, f"Sent {len(document)} chars to {target}", f"{len(document)} chars"
+    )
+
+
+def clear_text_source(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """Send an EMPTY contents, blanking the vimix Text source (e59s06).
+
+    This clears the SOURCE, never the local document (`on_text_clear` does that).
+    """
+    target = _resolved_text_target()
+    _send_contents(target, "", f"Cleared {target}", "clear")
+
+
+def show_text_window(*_args: Any) -> None:
+    """Open the Text window: fresh source list + validity line (e59s02)."""
+    _sync_text_wrap_row()  # e59s07: the fallback row follows the reader
+    dpg.show_item(TEXT_WINDOW_TAG)
+    dpg.focus_item(TEXT_WINDOW_TAG)
+    refresh_text_source_options(force=True)
+    sync_text_editor_from_state()
+    _sync_text_learn_markers()
+    _sync_text_mode_learn_markers()
+
+
+def toggle_text_window(*_args: Any) -> None:
+    """Show the Text window, or hide it when it is already open."""
+    if dpg.does_item_exist(TEXT_WINDOW_TAG) and dpg.is_item_shown(TEXT_WINDOW_TAG):
+        dpg.hide_item(TEXT_WINDOW_TAG)
+        return
+    show_text_window()
+
+
+def _exec_text_window_toggle(params: dict[str, Any], value: int) -> None:
+    """e59s02: a momentary press shows or hides the Text window."""
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    toggle_text_window()
+
+
+def _exec_text_send(params: dict[str, Any], value: int) -> None:
+    """e59s02: a momentary press sends the document to the selected source."""
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    send_text_contents()
+
+
+def _exec_text_clear(params: dict[str, Any], value: int) -> None:
+    """e59s06: a momentary press clears (empty contents) the selected source."""
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    clear_text_source()
+
+
+def _text_reveal_steps() -> list[str]:
+    """The cached reveal steps for the live document and mode (e59s08)."""
+    global _text_reveal_key, _text_reveal_cache
+    document = _resolved_text_document()
+    key = (document, state.text_reveal_mode)
+    if key != _text_reveal_key:
+        _text_reveal_key = key
+        _text_reveal_cache = textplay.steps(document, state.text_reveal_mode)
+    return _text_reveal_cache
+
+
+def _reveal_status(mode: str, step: int, total: int, fragment: str) -> str:
+    """The one-line readout for a reveal step (mode, k/n, a short preview)."""
+    label = textplay.REVEAL_LABELS.get(mode, mode)
+    preview = fragment.replace("\n", "\\n")
+    if len(preview) > 48:
+        preview = f"{preview[:45]}..."
+    return f"{label} - {step + 1}/{total} - {preview!r}"
+
+
+def on_text_mode(mode: str) -> None:
+    """A reveal mode press: select + first step, or advance (e59s08).
+
+    The buttons are momentary: pressing a DIFFERENT mode selects it and sends
+    step 1; pressing the SAME mode advances one step. Past the end it reports and
+    holds the last step. The document itself is never modified.
+    """
+    if mode not in textplay.REVEAL_LABELS:
+        return
+    if not _resolved_text_target():
+        _set_text_status("Select a source first")
+        return
+    if osc_client is None:
+        _set_text_status("OSC client not connected")
+        return
+    if state.text_reveal_mode != mode:
+        state.text_reveal_mode = mode
+        state.text_reveal_step = 0
+    else:
+        state.text_reveal_step += 1
+    steps = _text_reveal_steps()
+    if not steps:
+        _set_text_status(f"{textplay.REVEAL_LABELS[mode]}: empty document")
+        return
+    if state.text_reveal_step >= len(steps):
+        state.text_reveal_step = len(steps) - 1
+        _set_text_status(f"{textplay.REVEAL_LABELS[mode]}: end of text ({len(steps)} steps)")
+        return
+    fragment = steps[state.text_reveal_step]
+    _send_contents(
+        _resolved_text_target(),
+        fragment,
+        _reveal_status(mode, state.text_reveal_step, len(steps), fragment),
+        f"{textplay.REVEAL_LABELS[mode]} {state.text_reveal_step + 1}/{len(steps)}",
+    )
+
+
+def on_text_mode_button(sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
+    """The reveal-row button callback: user_data is the mode id (e59s08)."""
+    if isinstance(user_data, str):
+        on_text_mode(user_data)
+
+
+def _exec_text_reveal(mode: str, params: dict[str, Any], value: int) -> None:
+    """e59s08: a momentary press runs one reveal mode (threshold-gated)."""
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    on_text_mode(mode)
+
+
+def _sync_text_mode_learn_markers() -> None:
+    """(Re)render the reveal row's learn markers (e33 rule)."""
+    if not dpg.does_item_exist(TEXT_MODE_LEARN_SLOT_TAG):
+        return
+    dpg.delete_item(TEXT_MODE_LEARN_SLOT_TAG, children_only=True)
+    if not state.midi_learn_mode:
+        return
+    for action_id, tag in (
+        (MIDI_ACTION_TEXT_WORD, "text_mk_word"),
+        (MIDI_ACTION_TEXT_WORD_PLUS, "text_mk_word_plus"),
+        (MIDI_ACTION_TEXT_LINE, "text_mk_line"),
+        (MIDI_ACTION_TEXT_LINE_PLUS, "text_mk_line_plus"),
+    ):
+        learn_marker(
+            action_id,
+            {},
+            parent=TEXT_MODE_LEARN_SLOT_TAG,
+            tag=tag,
+            tooltip=f"Map: {actions.action_label(action_id)}",
+        )
+
+
+def _sync_text_learn_markers() -> None:
+    """(Re)render the Text window's learn markers (e33 rule)."""
+    if not dpg.does_item_exist(TEXT_LEARN_SLOT_TAG):
+        return
+    dpg.delete_item(TEXT_LEARN_SLOT_TAG, children_only=True)
+    if not state.midi_learn_mode:
+        return
+    for action_id, tag in (
+        (MIDI_ACTION_TEXT_WINDOW_TOGGLE, "text_mk_toggle"),
+        (MIDI_ACTION_TEXT_SEND, "text_mk_send"),
+        (MIDI_ACTION_TEXT_CLEAR, "text_mk_clear"),
+    ):
+        learn_marker(
+            action_id,
+            {},
+            parent=TEXT_LEARN_SLOT_TAG,
+            tag=tag,
+            tooltip=f"Map: {actions.action_label(action_id)}",
+        )
+
+
+def _apply_text_state(section: dict[str, Any]) -> None:
+    """Re-apply a project's `text` section onto the live app (e59s03)."""
+    state.text_document = str(section.get("document") or "")
+    state.text_target = str(section.get("target") or "")
+    state.text_source_path = str(section.get("path") or "")
+    state.text_caret = len(state.text_document)
+    if dpg.does_item_exist(TEXT_SOURCE_COMBO_TAG) and state.text_target:
+        dpg.set_value(TEXT_SOURCE_COMBO_TAG, state.text_target)
+    sync_text_editor_from_state()
+
+
+# ==============================================================================
+# e33s05: GLOBAL ACTIONS — the window-show and project actions become mappable
+# through ONE "Map actions" panel (ADR-midi-learn-global-actions). One row per
+# action with the uniform red-M marker while MIDI Learn is on; the toolbar stays
+# clean (e47) and there is no native menu anymore (e46).
+# ==============================================================================
+_MAP_ACTION_WINDOW_LABELS: dict[str, str] = {
+    "sequencer_window": "Step Sequencer",
+    "audio_window": "Audio analyzer",
+    "vimix_media_window": "Vimix sources",
+    "mapper_window": "Mapper",
+    "logs_window": "Logs",
+    "settings_window": "Settings",
+    "midi_window": "MIDI",
+    "leap_window": "Leap Motion",
+    "help_window": "Info",
+}
+_MAP_ACTIONS_ENTRIES: tuple[tuple[str, dict[str, Any], str], ...] = (
+    *(
+        (MIDI_ACTION_SHOW_WINDOW, {"window": window}, label)
+        for window, label in _MAP_ACTION_WINDOW_LABELS.items()
+    ),
+    (MIDI_ACTION_PROJECT_NEW, {}, "New project"),
+    (MIDI_ACTION_PROJECT_OPEN, {}, "Open project"),
+    (MIDI_ACTION_PROJECT_SAVE, {}, "Save project"),
+)
+
+
+def show_map_actions_window(
+    sender: Any = None, app_data: Any = None, user_data: Any = None
+) -> None:
+    """Open the Map actions panel: the global actions as mappable rows (e33s05)."""
+    dpg.show_item(MAP_ACTIONS_WINDOW_TAG)
+    dpg.focus_item(MAP_ACTIONS_WINDOW_TAG)
+    _sync_map_actions_panel()
+
+
+def _sync_map_actions_panel() -> None:
+    """(Re)render the Map actions rows: one label + red-M marker per action."""
+    if not dpg.does_item_exist(MAP_ACTIONS_ROWS_TAG):
+        return
+    dpg.delete_item(MAP_ACTIONS_ROWS_TAG, children_only=True)
+    for index, (action_id, params, label) in enumerate(_MAP_ACTIONS_ENTRIES):
+        row_tag = f"{MAP_ACTIONS_ROWS_TAG}_{index}"
+        with dpg.group(horizontal=True, tag=row_tag, parent=MAP_ACTIONS_ROWS_TAG):
+            themed_text(label, slot="text")
+        if state.midi_learn_mode:
+            learn_marker(
+                action_id,
+                params,
+                parent=row_tag,
+                tag=f"{row_tag}_marker",
+                tooltip=f"Map: {label}",
+            )
+
+
+def _exec_show_window(params: dict[str, Any], value: int) -> None:
+    """e33s05: show + focus an allow-listed window (logged no-op otherwise)."""
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    window = str(params.get("window", ""))
+    if window not in _MAP_ACTION_WINDOW_LABELS:
+        log_error("MIDI", f"show_window: unknown window '{window}'")
+        return
+    show = _toolbar_show_func(window)
+    if show is None or not dpg.does_item_exist(window):
+        log_error("MIDI", f"show_window: window '{window}' is not available")
+        return
+    show()
+
+
+def _exec_project_new(params: dict[str, Any], value: int) -> None:
+    """e33s05: the New-project flow (confirm-aware) from MIDI."""
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    request_new_project()
+
+
+def _exec_project_open(params: dict[str, Any], value: int) -> None:
+    """e33s05: the Open-project dialog from MIDI."""
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    show_open_project_dialog()
+
+
+def _exec_project_save(params: dict[str, Any], value: int) -> None:
+    """e33s05: Save (or Save-as) the project from MIDI."""
+    if value < MIDI_CC_TRIGGER_THRESHOLD:
+        return
+    save_current_project()
+
+
+# WINDOW 0b: TEXT (e59s02; hidden until opened from the toolbar work group).
+with dpg.window(
+    label="Text",
+    width=TEXT_WINDOW_WIDTH,
+    height=TEXT_WINDOW_HEIGHT,
+    pos=(300, TOOLBAR_BAR_H),
+    tag=TEXT_WINDOW_TAG,
+    show=False,
+):
+    # Row 1: the vimix-interaction tools (e59s06: separated from the editor tools).
+    with dpg.group(horizontal=True):
+        themed_text("Source:", slot="text")
+        dpg.add_combo([], tag=TEXT_SOURCE_COMBO_TAG, width=200, callback=on_text_target_changed)
+        dpg.add_button(label="Refresh", callback=refresh_text_source_options)
+        dpg.add_button(
+            label="Clear", callback=clear_text_source
+        )  # clears the SOURCE (empty contents)
+        dpg.add_button(label="Send to source", callback=send_text_contents)
+        dpg.add_group(tag=TEXT_LEARN_SLOT_TAG, horizontal=True)
+    dpg.add_separator()
+    # Row 2 (e59s08): the progressive reveal modes. Momentary: a first press
+    # selects the mode and sends step 1, pressing the same mode again advances.
+    with dpg.group(horizontal=True):
+        for mode, label in textplay.REVEAL_MODES:
+            dpg.add_button(label=label, callback=on_text_mode_button, user_data=mode)
+        dpg.add_group(tag=TEXT_MODE_LEARN_SLOT_TAG, horizontal=True)
+    dpg.add_separator()
+    # Row 3: the editor's file tools (Load / Save / Clear the local document).
+    with dpg.group(horizontal=True):
+        dpg.add_button(label="Load from file...", callback=show_text_load_dialog)
+        dpg.add_button(label="Save to file...", callback=show_text_save_dialog)
+        dpg.add_button(label="Clear", callback=on_text_clear)  # clears the DOCUMENT
+    with dpg.group(horizontal=True, tag=TEXT_WRAP_ROW_TAG):
+        dpg.add_checkbox(label="Wrap clipboard", tag=TEXT_WRAP_CLIPBOARD_TAG, default_value=True)
+        themed_text("(fallback: Ctrl+X the text, click a tag, Ctrl+V)", slot="text_dim")
+    with dpg.group(horizontal=True):
+        for template in textmarkup.BASE_MARKUP_TEMPLATES:
+            dpg.add_button(
+                label=template.label,
+                width=28,
+                callback=on_text_insert_template,
+                user_data=template,
+            )
+        dpg.add_combo(
+            list(textmarkup.PANGO_SIZE_KEYWORDS),
+            default_value="large",
+            tag="text_size_keyword",
+            width=100,
+        )
+        dpg.add_button(label="Size", callback=on_text_insert_size)
+    with dpg.group(horizontal=True):
+        dpg.add_color_edit(
+            default_value=(255, 255, 255, 255), no_alpha=True, width=80, tag="text_fg_color"
+        )
+        dpg.add_button(label="Foreground", callback=on_text_insert_foreground)
+        dpg.add_color_edit(
+            default_value=(0, 0, 0, 255), no_alpha=True, width=80, tag="text_bg_color"
+        )
+        dpg.add_button(label="Background", callback=on_text_insert_background)
+    with dpg.group(horizontal=True):
+        dpg.add_button(label="Escape text", callback=on_text_escape)
+        dpg.add_button(label="Unescape text", callback=on_text_unescape)
+        dpg.add_button(label="Validate", callback=on_text_validate)
+    dpg.add_input_text(
+        tag=TEXT_EDITOR_TAG,
+        multiline=True,
+        width=TEXT_WINDOW_WIDTH - TEXT_WINDOW_PADDING,
+        height=TEXT_EDITOR_HEIGHT,
+        callback=on_text_editor_changed,
+    )
+    themed_text("Markup OK", slot="text_dim", tag=TEXT_STATUS_TAG)
+
+_sync_text_wrap_row()  # e59s07: decide the fallback row once, at build time
+
+
 # WINDOW 1: SEQUENCER (explicit tag so the layout save/restore can address it, e06)
 with dpg.window(
     label="Step Sequencer",
@@ -12035,12 +13101,22 @@ with dpg.window(
         callback=on_lowpass_toggle,
     )
 
-# WINDOW 3: SETTINGS (hidden; opened from the menubar "Settings" entry)
-with dpg.window(
-    label="General", width=340, height=320, pos=(370, 820), tag="settings_window", show=False
+# WINDOW 3: SETTINGS (hidden; opened from the toolbar "Settings" entry).
+# e58s03 rework (user decision 2026-09-25): ONE configuration window holds
+# everything, in this order: Project, Theme (colours on two columns), viOSC
+# connections, OSC Configuration and the raw source-data table.
+with (
+    dpg.window(
+        label="General",
+        width=900,
+        height=860,
+        pos=(370, 60),
+        tag="settings_window",
+        show=False,
+    ),
+    dpg.child_window(height=-1, border=False),
 ):
-    # e11s04: Project section first — restore-last-project-at-boot replaces the
-    # removed Windows layout save/restore section.
+    # --- Project (e11s04) ---
     themed_text("Project", slot="text")
     dpg.add_separator()
     dpg.add_checkbox(
@@ -12049,34 +13125,9 @@ with dpg.window(
         default_value=True,
         callback=on_restore_project_boot_toggle,
     )
+
+    # --- Theme (e06s02): preset combo + five colour pickers on two columns ---
     dpg.add_spacer(height=8)
-    themed_text("OSC", slot="text")
-    dpg.add_separator()
-    dpg.add_text("1. Setup Client (to viOSC):")
-    with dpg.group(horizontal=True):
-        dpg.add_input_text(default_value="127.0.0.1", tag="viosc_ip", width=120)
-        dpg.add_input_int(default_value=6666, tag="viosc_port", width=80, step=0)
-        dpg.add_button(label="Connect Client", callback=connect_to_viosc)
-    with dpg.group(horizontal=True):
-        dpg.add_button(label="Pair with viOSC...", callback=show_pairing_prompt)
-        with dpg.group(tag="settings_pairing_learn_slot"):
-            pass
-    themed_text("Client Status: Waiting", slot="text_dim", tag="viosc_status")
-    dpg.add_separator()
-    dpg.add_spacer(height=5)
-    dpg.add_text("2. Setup Server (Listening):")
-    with dpg.group(horizontal=True):
-        dpg.add_input_text(default_value="127.0.0.1", tag="listen_ip", width=120)
-        dpg.add_input_int(default_value=VIOSC_LISTEN_PORT, tag="listen_port", width=80, step=0)
-        dpg.add_button(label="Start Server", tag="btn_server_toggle", callback=toggle_local_server)
-    themed_text("Server Status: Stopped", slot="text_dim", tag="server_status")
-    dpg.add_separator()
-    dpg.add_spacer(height=5)
-
-    with dpg.group(tag="vimix_raw_group"):
-        pass
-
-    # --- Tema section (e06s02): preset combo + five custom color pickers ---
     themed_text("Theme", slot="text")
     dpg.add_separator()
     dpg.add_combo(
@@ -12086,15 +13137,70 @@ with dpg.window(
         width=150,
         callback=on_theme_preset,
     )
-    for slot in THEME_PRIMARY_SLOTS:
-        dpg.add_color_edit(
-            label=THEME_PRIMARY_LABELS[slot],
-            default_value=palette_rgba(state.active_palette[slot]),
-            tag=f"theme_color_{slot}",
-            width=170,
-            callback=on_theme_color,
-            user_data=slot,
-        )
+    with dpg.table(header_row=False, policy=dpg.mvTable_SizingStretchSame):
+        dpg.add_table_column()
+        dpg.add_table_column()
+        for index in range(0, len(THEME_PRIMARY_SLOTS), 2):
+            with dpg.table_row():
+                for slot in THEME_PRIMARY_SLOTS[index : index + 2]:
+                    dpg.add_color_edit(
+                        label=THEME_PRIMARY_LABELS[slot],
+                        default_value=palette_rgba(state.active_palette[slot]),
+                        tag=f"theme_color_{slot}",
+                        width=170,
+                        callback=on_theme_color,
+                        user_data=slot,
+                    )
+
+    # --- viOSC connections (the link: pairing + both OSC endpoints) ---
+    dpg.add_spacer(height=8)
+    themed_text("viOSC connections", slot="text")
+    dpg.add_separator()
+    with dpg.group(horizontal=True):
+        dpg.add_button(label="Pair with viOSC", callback=show_pairing_prompt)
+        # e58s03: green while viOSC state flows, red when the link is silent.
+        with dpg.drawlist(width=14, height=14):
+            dpg.draw_circle(
+                center=[7, 7],
+                radius=5,
+                color=(0, 0, 0, 255),
+                fill=VIOSC_LED_DOWN_RGBA,
+                tag=VIOSC_LED_TAG,
+            )
+        with dpg.group(tag="settings_pairing_learn_slot"):
+            pass
+    dpg.add_text("client OSC (to viOSC):")
+    with dpg.group(horizontal=True):
+        dpg.add_input_text(default_value="127.0.0.1", tag="viosc_ip", width=120)
+        dpg.add_input_int(default_value=6666, tag="viosc_port", width=80, step=0)
+        dpg.add_button(label="Connect Client", callback=connect_to_viosc)
+        themed_text("Client Status: Waiting", slot="text_dim", tag="viosc_status")
+    dpg.add_text("OSC Server (from viOSC):")
+    with dpg.group(horizontal=True):
+        dpg.add_input_text(default_value="127.0.0.1", tag="listen_ip", width=120)
+        dpg.add_input_int(default_value=VIOSC_LISTEN_PORT, tag="listen_port", width=80, step=0)
+        dpg.add_button(label="Start Server", tag="btn_server_toggle", callback=toggle_local_server)
+        themed_text("Server Status: Stopped", slot="text_dim", tag="server_status")
+
+    # --- viOSC configuration: the remote settings ---
+    dpg.add_spacer(height=8)
+    themed_text("viOSC configuration", slot="text")
+    dpg.add_separator()
+    with dpg.group(horizontal=True):
+        dpg.add_button(label="Load", callback=load_viosc_config)
+        dpg.add_button(label="Save", callback=save_viosc_config)
+        dpg.add_button(label="Restart viOSC", callback=restart_viosc)
+    # e58s03: shown only when there is something to say (errors / the report).
+    themed_text("", slot="text_dim", tag=VIOSC_CFG_STATUS_TAG, show=False)
+    dpg.add_group(tag=VIOSC_CFG_FIELDS_TAG)
+
+    # --- Sources data: the raw state table viOSC reports ---
+    dpg.add_spacer(height=8)
+    themed_text("Sources data", slot="text")
+    dpg.add_separator()
+    with dpg.group(tag="vimix_raw_group"):
+        pass
+
 
 # WINDOW 4: VIMIX MEDIA
 with (
@@ -12208,6 +13314,8 @@ with dpg.window(label="MIDI", width=520, height=520, pos=(560, 320), tag="midi_w
         label="Learn mapping...", tag="midi_learn_btn", callback=toggle_midi_learn, width=150
     )
     dpg.add_text("", tag="midi_learn_status")
+    # e33s05: the global actions (window show + project) live in their own panel.
+    dpg.add_button(label="Map global actions...", callback=show_map_actions_window, width=200)
     dpg.add_separator()
     dpg.add_spacer(height=4)
     with (
@@ -12220,6 +13328,26 @@ with dpg.window(label="MIDI", width=520, height=520, pos=(560, 320), tag="midi_w
     # bind) calls save_midi_controllers() at the moment it happens, so a manual
     # save only re-wrote identical data — and pressing it after opening a project
     # leaked that project's Mapper bindings into the global config.
+
+# WINDOW 7b: MAP ACTIONS (e33s05; hidden, opened from the MIDI window). One row
+# per global action with the uniform red-M marker while MIDI Learn is on.
+with dpg.window(
+    label="Map actions",
+    width=360,
+    height=380,
+    pos=(560, 320),
+    tag=MAP_ACTIONS_WINDOW_TAG,
+    show=False,
+):
+    themed_text("Arm an action, then press a MIDI control.", slot="text_dim")
+    dpg.add_separator()
+    with (
+        dpg.child_window(height=300, tag=f"{MAP_ACTIONS_WINDOW_TAG}_scroll"),
+        dpg.group(tag=MAP_ACTIONS_ROWS_TAG),
+    ):
+        pass
+_sync_map_actions_panel()
+
 
 # WINDOW 8: Leap Motion (hidden; opened from Settings > "Leap Motion"). One
 # window hosts EVERYTHING (user request, e26s02): the Enable switch, the
@@ -12446,6 +13574,7 @@ TOOLBAR_ITEM_GROUPS: tuple[tuple[ToolbarItem, ...], ...] = (
         ("toggle", "sequencer_window", "\uf00a", "Step Sequencer", ""),
         ("toggle", "audio_window", "\uf080", "Audio analyzer", ""),
         ("toggle", "vimix_media_window", "\uf108", "Vimix sources", ""),
+        ("toggle", "text_window", "\uf031", "Text", ""),
         ("toggle", "mapper_window", "\uf0ce", "Mapper", ""),
         ("toggle", "logs_window", "\uf0ca", "Logs", ""),
         ("toggle", "file_manager_window", "\uf07b", "File Manager", ""),
@@ -12458,7 +13587,6 @@ TOOLBAR_ITEM_GROUPS: tuple[tuple[ToolbarItem, ...], ...] = (
         # e55: the I/O Monitor is not a workspace window; its icon joins the
         # configuration block on the right.
         ("toggle", "io_monitor_window", "\uf0ec", "I/O Monitor", ""),
-        ("action", "pair", "\uf0c1", "Pair with viOSC...", ""),
     ),
     (("toggle", "help_window", "\uf05a", "Info", ""),),
 )
@@ -12558,6 +13686,7 @@ def _toolbar_show_func(target: str) -> Any:
         "logs_window": show_logs_window,
         "io_monitor_window": show_io_monitor,
         "file_manager_window": show_file_manager_window,
+        "text_window": show_text_window,
         "settings_window": show_settings_window,
         "midi_window": show_midi_window,
         "leap_window": show_leap_window,
@@ -12932,6 +14061,7 @@ try:
         tick_thumb_cycle(time.time())
 
         tick_toolbar()  # e46s01: keep the toolbar highlight + active mark fresh
+        tick_viosc_led()  # e58s03: the settings connection LED
         tick_midi_learn_shortcut()  # e52s07: Ctrl+M arms/cancels MIDI Learn
 
         tick_project_dirty(time.time())  # e37s03: unsaved-changes marker cadence
@@ -12940,6 +14070,8 @@ try:
         tick_send_remap(time.monotonic())  # e45s02: expire an unreached reassignment
 
         tick_cue_triggers()  # e35s03: cue-list card running labels (idle-cheap)
+
+        tick_text_caret()  # e59s05: capture the live caret/selection while editing
 
         tick_io_monitor()  # e39s01: I/O Monitor panes (idle-cheap, revision-gated)
 
