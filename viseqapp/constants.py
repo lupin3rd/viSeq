@@ -122,6 +122,9 @@ MEDIA_BADGE_H = 20  # px height of the media-index badge overlay on the thumbnai
 MEDIA_TILE_H = 104  # px height of a media tile (two-line title + thumbnail + alpha slider)
 
 
+MEDIA_TILE_NAME_CHARS = 14  # max chars of a source name in a non-media tile (fits 115 px)
+
+
 MEDIA_ALPHA_SLIDER_W = 10  # px width of the thin vertical alpha slider on a tile
 
 
@@ -400,15 +403,17 @@ LIGHT_PALETTE: dict[str, list[int]] = {
 }
 
 
-# The SIX workspace windows whose pos/size/open state persist with the project
-# (user decision e55, 2026-09-21). Config panels (settings), diagnostics (I/O
-# Monitor), MIDI/Leap and every dialog are NOT workspace: they open centered on
-# the viewport and are never restored by a project load.
+# The SEVEN workspace windows whose pos/size/open state persist with the project
+# (user decision e55, 2026-09-21; e59 added the Text window). Config panels
+# (settings), diagnostics (I/O Monitor), MIDI/Leap and every dialog are NOT
+# workspace: they open centered on the viewport and are never restored by a
+# project load.
 LAYOUT_WINDOW_TAGS: list[str] = [
     "sequencer_window",
     "audio_window",
     "vimix_media_window",
     "logs_window",
+    "text_window",  # e59s02: the Text window (vimix `contents` authoring)
     "mapper_window",  # e28s02: the Mapper is a workspace window — pos/size/open persist
     "file_manager_window",  # e43s02: the File Manager is a workspace window
 ]
@@ -437,6 +442,38 @@ HELP_WINDOW_HEIGHT = 300  # logo + title + version/license/author lines + GitHub
 
 
 HELP_LOGO_INDENT = (HELP_WINDOW_WIDTH - int(53 * 7.8)) // 2
+
+
+# e59: TEXT WINDOW — authors Pango markup and sends it to a vimix Text source
+# with the frozen-contract message /vimix/<target>/contents (one string arg).
+TEXT_WINDOW_WIDTH = 640
+TEXT_WINDOW_HEIGHT = 470
+TEXT_WINDOW_TAG = "text_window"
+TEXT_EDITOR_TAG = "text_editor"
+TEXT_SOURCE_COMBO_TAG = "text_source_combo"
+TEXT_STATUS_TAG = "text_status"
+TEXT_LEARN_SLOT_TAG = "text_learn_slot"
+TEXT_MODE_LEARN_SLOT_TAG = "text_mode_learn_slot"
+# e33s05: the Map actions panel (one row + marker per global action).
+MAP_ACTIONS_WINDOW_TAG = "map_actions_window"
+MAP_ACTIONS_ROWS_TAG = "map_actions_rows"
+TEXT_WRAP_CLIPBOARD_TAG = "text_wrap_clipboard"
+TEXT_WRAP_ROW_TAG = "text_wrap_row"
+TEXT_LOAD_DIALOG_TAG = "text_load_dialog"
+TEXT_SAVE_DIALOG_TAG = "text_save_dialog"
+# Rate limit (defensive category): a text file / a project document is bounded
+# so a stray multi-megabyte file cannot be loaded into the editor and pushed.
+TEXT_MAX_LOAD_BYTES = 1_000_000
+# The per-keystroke validity check parses the whole document as XML; a large
+# document is only validated on demand (the Validate button) to keep typing cheap.
+TEXT_LIVE_VALIDATE_MAX_CHARS = 20_000
+# Editor geometry: the window width minus its two side margins, and the editor's
+# own height (small on purpose: ImGui's multiline input scrolls the overflow).
+TEXT_WINDOW_PADDING = 24
+TEXT_EDITOR_HEIGHT = 200
+# vimix resolves #<n> and the bare <n> index form; the '#' form is the
+# documented one (ControlManager.cpp OSC_SOURCEID) and is what the picker shows.
+TEXT_SOURCE_INDEX_PREFIX = "#"
 
 
 MIDI_ACTION_SEQ_TOGGLE = "seq_toggle"
@@ -504,6 +541,20 @@ MIDI_ACTION_MAPPING_MOVE = "mapping_move"  # params mapping_id + delta: shift in
 MIDI_ACTION_MAPPING_PASTE = "mapping_paste"  # append the clipboard to a line
 MIDI_ACTION_PAIRING_PROMPT = "pairing_prompt"  # e42s02: re-pair with viOSC (code prompt)
 MIDI_ACTION_FILE_MANAGER_TOGGLE = "file_manager_toggle"  # e43s02: show/hide the File Manager
+# e59s02/e59s06: the Text window (e33 rule) — toggle, send, clear the source.
+MIDI_ACTION_TEXT_WINDOW_TOGGLE = "text_window_toggle"
+MIDI_ACTION_TEXT_SEND = "text_send"
+MIDI_ACTION_TEXT_CLEAR = "text_clear"  # e59s06: send an EMPTY contents
+# e59s08: progressive reveal modes (momentary: select + first step, then advance).
+MIDI_ACTION_TEXT_WORD = "text_word"
+MIDI_ACTION_TEXT_WORD_PLUS = "text_word_plus"
+MIDI_ACTION_TEXT_LINE = "text_line"
+MIDI_ACTION_TEXT_LINE_PLUS = "text_line_plus"
+# e33s05: the global actions (window show + project) made mappable.
+MIDI_ACTION_SHOW_WINDOW = "show_window"  # params {"window": <tag>}
+MIDI_ACTION_PROJECT_NEW = "project_new"
+MIDI_ACTION_PROJECT_OPEN = "project_open"
+MIDI_ACTION_PROJECT_SAVE = "project_save"
 
 # e52s01: MIDI modes — named, additive layers that gate Bindings. MODE_TOGGLE
 # turns ONE named mode on/off from a note (or a CC at the trigger threshold);

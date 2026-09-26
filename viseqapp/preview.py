@@ -75,12 +75,13 @@ def preview_availability(media_kind: Any) -> bool | None:
     """Map a source's state media_kind to preview availability.
 
     video -> True (show the action/panel), image -> False (excluded per user
-    decision), None/absent -> None (kind unknown: classify on activation via
+    decision), other -> False (e57s02: no file / no video stream, nothing to
+    preview), None/absent -> None (kind unknown: classify on activation via
     the meta endpoint).
     """
     if media_kind == "video":
         return True
-    if media_kind == "image":
+    if media_kind in ("image", "other"):
         return False
     return None
 
